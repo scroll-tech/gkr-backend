@@ -1,0 +1,46 @@
+name: Tests
+
+on:
+  merge_group:
+  pull_request:
+    types: [ synchronize, opened, reopened, ready_for_review ]
+  push:
+    branches:
+      - master
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  tests:
+    name: Run Tests
+    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          targets: riscv32im-unknown-none-elf
+          # TODO: figure out way to keep this in sync with rust-toolchain.toml automatically
+          toolchain: nightly-2025-03-25
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+            ceno_rt/target/
+            examples/target/
+          key: tests-${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: tests-${{ runner.os }}-cargo-
+
+      - name: Install cargo make
+        run: |
+          cargo make --version || cargo install cargo-make
+      - name: run test
+        run: cargo make tests

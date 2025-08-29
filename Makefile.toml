@@ -16,14 +16,6 @@ env = { RUST_MIN_STACK = "33554432" }
 workspace = false
 
 [tasks.clippy]
-args = [
-  "clippy",
-  "--workspace",
-  "--all-targets",
-  "--",
-  "-D",
-  "warnings",
-]
+args = ["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
 command = "cargo"
 workspace = false
-

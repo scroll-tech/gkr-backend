@@ -13,7 +13,9 @@ version.workspace = true
 either.workspace = true
 ff_ext.workspace = true
 itertools.workspace = true
-multilinear_extensions = { path = "../multilinear_extensions", features = ["parallel"] }
+multilinear_extensions = { path = "../multilinear_extensions", features = [
+  "parallel",
+] }
 p3.workspace = true
 rayon.workspace = true
 serde.workspace = true
