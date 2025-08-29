@@ -1,0 +1,15 @@
+target
+.vscode
+*.log
+*.txt
+logs/
+.idea/
+report.txt
+report.json
+table_cache_dev_*
+.DS_Store
+.env
+proptest-regressions/
+
+# ceno serialized files
+*.bin
