@@ -14,6 +14,7 @@ bincode = "1.3.3"
 clap.workspace = true
 ff_ext.workspace = true
 itertools.workspace = true
+whir.workspace = true
 multilinear_extensions.workspace = true
 num-integer = "0.1"
 p3.workspace = true
