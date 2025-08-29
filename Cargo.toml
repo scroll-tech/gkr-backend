@@ -32,7 +32,7 @@ poseidon = { path = "crates/poseidon", default-features = false }
 sumcheck_macro = { path = "crates/sumcheck_macro", default-features = false }
 transcript = { path = "crates/transcript", default-features = false }
 witness = { path = "crates/witness", default-features = false }
-whir = { path = "crates/whir", default-features = false }
+whir = { path = "crates/whir" }
 
 bincode = "1"
 clap = { version = "4.5", features = ["derive"] }
