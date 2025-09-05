@@ -2,7 +2,7 @@ use core::ops::Mul;
 
 use num::{BigUint, One};
 
-use super::{utils::biguint_to_bits_le, AffinePoint, EllipticCurve};
+use super::{AffinePoint, EllipticCurve, utils::biguint_to_bits_le};
 
 impl<E: EllipticCurve> AffinePoint<E> {
     pub fn scalar_mul(&self, scalar: &BigUint) -> Self {

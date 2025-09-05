@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use super::CurveType;
 use crate::{
+    AffinePoint, EllipticCurve, EllipticCurveParameters,
     params::{FieldParameters, NumLimbs, NumWords},
     utils::biguint_to_bits_le,
-    AffinePoint, EllipticCurve, EllipticCurveParameters,
 };
 
 #[cfg(feature = "bigint-rug")]
