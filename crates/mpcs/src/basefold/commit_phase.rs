@@ -38,11 +38,7 @@ use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
     virtual_poly::build_eq_x_r_vec,
 };
-use rayon::{
-    iter::{IntoParallelIterator, IntoParallelRefMutIterator},
-    prelude::{IndexedParallelIterator, ParallelIterator},
-    slice::ParallelSlice,
-};
+use p3::maybe_rayon::prelude::*;
 
 use super::structure::BasefoldCommitmentWithWitness;
 

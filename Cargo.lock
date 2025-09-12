@@ -471,6 +471,7 @@ dependencies = [
  "multilinear_extensions",
  "num-integer",
  "p3",
+ "p3-maybe-rayon",
  "rand",
  "rand_chacha",
  "rayon",

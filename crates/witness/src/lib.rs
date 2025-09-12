@@ -2,12 +2,9 @@ use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 use p3::{
     field::{Field, FieldAlgebra},
     matrix::Matrix,
+    maybe_rayon::prelude::*,
 };
 use rand::{Rng, distributions::Standard, prelude::Distribution};
-use rayon::{
-    iter::{IndexedParallelIterator, IntoParallelIterator, ParallelExtend, ParallelIterator},
-    slice::ParallelSliceMut,
-};
 use std::{
     ops::{Deref, DerefMut, Index},
     slice::{Chunks, ChunksMut},
