@@ -27,7 +27,7 @@ use transcript::Transcript;
 
 use crate::whir::fs_utils::get_challenge_stir_queries;
 #[cfg(feature = "parallel")]
-use rayon::prelude::*;
+use p3::maybe_rayon::prelude::*;
 
 struct RoundStateBatch<'a, E: ExtensionField> {
     round_state: RoundState<'a, E>,

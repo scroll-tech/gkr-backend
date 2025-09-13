@@ -5,8 +5,8 @@ use p3::{
         Dimensions,
         dense::{DenseMatrix, RowMajorMatrix},
     },
+    maybe_rayon::prelude::*,
 };
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use transcript::Transcript;
 

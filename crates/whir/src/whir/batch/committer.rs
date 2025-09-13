@@ -19,7 +19,7 @@ use sumcheck::macros::{entered_span, exit_span};
 use transcript::{BasicTranscript, Transcript};
 
 #[cfg(feature = "parallel")]
-use rayon::prelude::*;
+use p3::maybe_rayon::prelude::*;
 
 #[derive(Debug)]
 pub struct Witnesses<E: ExtensionField> {

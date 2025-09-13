@@ -1379,6 +1379,7 @@ dependencies = [
  "itertools 0.14.0",
  "multilinear_extensions",
  "p3",
+ "p3-maybe-rayon",
  "rand",
  "rand_chacha",
  "rayon",

@@ -3,8 +3,10 @@ use crate::ntt::matrix_skip::MatrixMutSkip;
 use super::{super::utils::is_power_of_two, MatrixMut, utils::workload_size};
 use std::mem::swap;
 
-use p3::matrix::{Matrix, dense::RowMajorMatrix};
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
+use p3::{
+    matrix::{Matrix, dense::RowMajorMatrix},
+    maybe_rayon::prelude::*,
+};
 #[cfg(feature = "parallel")]
 use rayon::join;
 use sumcheck::macros::{entered_span, exit_span};
