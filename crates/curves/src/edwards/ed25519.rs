@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use typenum::{U32, U62};
 
 use crate::{
+    AffinePoint, CurveType, EllipticCurveParameters,
     edwards::{EdwardsCurve, EdwardsParameters},
     params::{FieldParameters, NumLimbs},
-    AffinePoint, CurveType, EllipticCurveParameters,
 };
 
 pub type Ed25519 = EdwardsCurve<Ed25519Parameters>;

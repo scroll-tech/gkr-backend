@@ -5,8 +5,8 @@ use typenum::{U32, U62};
 
 use super::{FieldType, FpOpField, SwCurve, WeierstrassParameters};
 use crate::{
-    params::{FieldParameters, NumLimbs},
     CurveType, EllipticCurveParameters,
+    params::{FieldParameters, NumLimbs},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -97,6 +97,9 @@ mod tests {
 
     #[test]
     fn test_weierstrass_biguint_scalar_mul() {
-        assert_eq!(biguint_from_limbs(Bn254BaseField::MODULUS), Bn254BaseField::modulus());
+        assert_eq!(
+            biguint_from_limbs(Bn254BaseField::MODULUS),
+            Bn254BaseField::modulus()
+        );
     }
 }

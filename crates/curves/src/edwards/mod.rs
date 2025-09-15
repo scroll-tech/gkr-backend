@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use super::CurveType;
 use crate::{
-    params::{FieldParameters, NumLimbs},
     AffinePoint, EllipticCurve, EllipticCurveParameters,
+    params::{FieldParameters, NumLimbs},
 };
 
 use crate::{edwards::ed25519::Ed25519BaseField, params::NumWords};
