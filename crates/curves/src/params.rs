@@ -4,6 +4,8 @@ use std::{
     slice::Iter,
 };
 
+use ff_ext::ExtensionField;
+use multilinear_extensions::{Expression, ToExpr};
 use serde::{Serialize, de::DeserializeOwned};
 
 use typenum::{U2, U4, Unsigned};
@@ -70,6 +72,11 @@ pub trait FieldParameters:
     fn to_limbs_field<E: From<F>, F: Field>(x: &BigUint) -> Limbs<E, Self::Limbs> {
         limbs_from_vec(Self::to_limbs_field_vec(x))
     }
+
+    /// Convert a BigUint to Limbs<Expression<E>, Self::Limbs>.
+    fn to_limbs_expr<E: ExtensionField>(x: &BigUint) -> Limbs<Expression<E>, Self::Limbs> {
+        limbs_expr_from_vec(Self::to_limbs_field_vec(x))
+    }
 }
 
 /// Convert a vec of F limbs to a Limbs of N length.
@@ -78,6 +85,18 @@ pub fn limbs_from_vec<E: From<F>, N: ArrayLength, F: Field>(limbs: Vec<F>) -> Li
     let mut result = GenericArray::<E, N>::generate(|_i| F::ZERO.into());
     for (i, limb) in limbs.into_iter().enumerate() {
         result[i] = limb.into();
+    }
+    Limbs(result)
+}
+
+/// Convert a vec of F limbs to a Limbs of N length.
+pub fn limbs_expr_from_vec<E: ExtensionField, N: ArrayLength>(
+    limbs: Vec<E::BaseField>,
+) -> Limbs<Expression<E>, N> {
+    debug_assert_eq!(limbs.len(), N::USIZE);
+    let mut result = GenericArray::<Expression<E>, N>::generate(|_i| Expression::<E>::ZERO);
+    for (i, limb) in limbs.into_iter().enumerate() {
+        result[i] = limb.expr();
     }
     Limbs(result)
 }
