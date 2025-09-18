@@ -9,15 +9,11 @@ use crate::{
 };
 use either::Either;
 use ff_ext::{ExtensionField, FromUniformBytes};
-use p3::field::{Field, FieldAlgebra};
-use rand::Rng;
-use rayon::{
-    iter::{
-        IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
-        IntoParallelRefMutIterator, ParallelIterator,
-    },
-    slice::ParallelSliceMut,
+use p3::{
+    field::{Field, FieldAlgebra},
+    maybe_rayon::prelude::*,
 };
+use rand::Rng;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::fmt::Debug;
 

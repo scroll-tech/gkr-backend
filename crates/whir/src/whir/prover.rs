@@ -14,8 +14,7 @@ use crate::{
 };
 use ff_ext::ExtensionField;
 use multilinear_extensions::mle::{FieldType, MultilinearExtension};
-use p3::matrix::dense::RowMajorMatrix;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use p3::{matrix::dense::RowMajorMatrix, maybe_rayon::prelude::*};
 use sumcheck::macros::{entered_span, exit_span};
 use transcript::Transcript;
 

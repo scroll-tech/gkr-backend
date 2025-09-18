@@ -10,12 +10,8 @@ use crate::{
 use either::Either;
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use p3::field::Field;
+use p3::{field::Field, maybe_rayon::prelude::*};
 use rand::Rng;
-use rayon::{
-    iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator},
-    slice::ParallelSliceMut,
-};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub type MonomialTermsType<'a, E> =

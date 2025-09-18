@@ -1,9 +1,9 @@
 use super::proof::SumcheckPolynomial;
 use crate::sumcheck::prover_single::SumcheckSingle;
 use ff_ext::ExtensionField;
-use p3::{field::Field, util::log2_strict_usize};
+use p3::{field::Field, maybe_rayon::prelude::*, util::log2_strict_usize};
 #[cfg(feature = "parallel")]
-use rayon::{join, prelude::*};
+use rayon::join;
 
 pub struct SumcheckBatched<F: ExtensionField> {
     // The evaluation on each p and eq

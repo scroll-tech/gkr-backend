@@ -7,9 +7,9 @@ use itertools::Itertools;
 use mpcs::util::arithmetic::interpolate_field_type_over_boolean_hypercube;
 
 use multilinear_extensions::mle::{FieldType, MultilinearExtension};
+use p3::maybe_rayon::prelude::*;
 use rand::{SeedableRng, rngs::OsRng};
 use rand_chacha::ChaCha8Rng;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 type E = GoldilocksExt2;
 
