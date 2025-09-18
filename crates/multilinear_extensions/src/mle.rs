@@ -958,6 +958,25 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
     pub fn index(&self, index: usize) -> Either<E::BaseField, E> {
         self.evaluations.index(index)
     }
+
+    /// encode evaluations vector into a position-sensitive extension field scalar
+    pub fn bh_signature(&self) -> E {
+        match &self.evaluations() {
+            FieldType::Base(slice) => E::from(
+                slice
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| E::BaseField::from_canonical_u32(i as u32 + 1) + *v)
+                    .product::<E::BaseField>(),
+            ),
+            FieldType::Ext(slice) => slice
+                .iter()
+                .enumerate()
+                .map(|(i, v)| E::from_canonical_u32(i as u32 + 1) + *v)
+                .product::<E>(),
+            _ => unreachable!(),
+        }
+    }
 }
 
 #[allow(clippy::wrong_self_convention)]
