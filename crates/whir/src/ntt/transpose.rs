@@ -7,8 +7,6 @@ use p3::{
     matrix::{Matrix, dense::RowMajorMatrix},
     maybe_rayon::prelude::*,
 };
-#[cfg(feature = "parallel")]
-use rayon::join;
 use sumcheck::macros::{entered_span, exit_span};
 
 // NOTE: The assumption that rows and cols are a power of two are actually only relevant for the square matrix case.

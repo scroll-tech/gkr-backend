@@ -21,13 +21,11 @@ use crate::{
 use ff_ext::{ExtensionField, PoseidonField};
 use itertools::zip_eq;
 use multilinear_extensions::mle::{FieldType, MultilinearExtension};
-use p3::{commit::Mmcs, matrix::dense::RowMajorMatrix};
+use p3::{commit::Mmcs, matrix::dense::RowMajorMatrix, maybe_rayon::prelude::*};
 use sumcheck::macros::{entered_span, exit_span};
 use transcript::Transcript;
 
 use crate::whir::fs_utils::get_challenge_stir_queries;
-#[cfg(feature = "parallel")]
-use p3::maybe_rayon::prelude::*;
 
 struct RoundStateBatch<'a, E: ExtensionField> {
     round_state: RoundState<'a, E>,

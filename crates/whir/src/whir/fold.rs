@@ -3,11 +3,10 @@ use crate::{
     parameters::FoldType,
 };
 
-#[cfg(feature = "parallel")]
-use p3::maybe_rayon::prelude::*;
 use p3::{
     field::{Field, TwoAdicField},
     matrix::Matrix,
+    maybe_rayon::prelude::*,
 };
 
 /// Given the evaluation of f on the coset specified by coset_offset * <coset_gen>

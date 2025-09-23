@@ -1,9 +1,9 @@
 use super::proof::SumcheckPolynomial;
 
 use ff_ext::ExtensionField;
-use p3::{maybe_rayon::prelude::*, util::log2_strict_usize};
 #[cfg(feature = "parallel")]
-use rayon::join;
+use p3::maybe_rayon::prelude::join;
+use p3::{maybe_rayon::prelude::*, util::log2_strict_usize};
 
 pub struct SumcheckSingle<E: ExtensionField> {
     // The evaluation of p
@@ -261,10 +261,12 @@ mod tests {
 
         let eval = MultilinearExtension::from_evaluations_ext_vec(2, polynomial.clone())
             .evaluate(&eval_point);
-        let mut prover =
-            SumcheckSingle::new(polynomial, &[eval_point], &[E::from_canonical_u64(1)], &[
-                eval,
-            ]);
+        let mut prover = SumcheckSingle::new(
+            polynomial,
+            &[eval_point],
+            &[E::from_canonical_u64(1)],
+            &[eval],
+        );
 
         let poly_1 = prover.compute_sumcheck_polynomial();
 

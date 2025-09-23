@@ -9,12 +9,11 @@ mod wavelet;
 
 use self::matrix::MatrixMut;
 
-#[cfg(feature = "parallel")]
-use p3::maybe_rayon::prelude::*;
 use p3::{
     dft::{Radix2DitParallel, TwoAdicSubgroupDft},
     field::TwoAdicField,
     matrix::Matrix,
+    maybe_rayon::prelude::*,
 };
 use tracing::instrument;
 use witness::{InstancePaddingStrategy, RowMajorMatrix};

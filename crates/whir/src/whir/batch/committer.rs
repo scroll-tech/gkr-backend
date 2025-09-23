@@ -13,13 +13,11 @@ use derive_more::Debug;
 use ff_ext::ExtensionField;
 use p3::{
     matrix::{Matrix, dense::RowMajorMatrix},
+    maybe_rayon::prelude::*,
     util::log2_strict_usize,
 };
 use sumcheck::macros::{entered_span, exit_span};
 use transcript::{BasicTranscript, Transcript};
-
-#[cfg(feature = "parallel")]
-use p3::maybe_rayon::prelude::*;
 
 #[derive(Debug)]
 pub struct Witnesses<E: ExtensionField> {

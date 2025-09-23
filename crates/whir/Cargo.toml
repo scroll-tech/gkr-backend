@@ -43,6 +43,6 @@ nightly-features = [
   "transcript/nightly-features",
   "witness/nightly-features",
 ]
-parallel = ["p3-maybe-rayon/parallel","dep:rayon"]
+parallel = ["p3-maybe-rayon/parallel", "dep:rayon"]
 print-trace = ["tracing/log"]
 rayon = ["dep:rayon"]

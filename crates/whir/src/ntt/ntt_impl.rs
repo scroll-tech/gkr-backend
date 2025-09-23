@@ -14,15 +14,14 @@ use p3::{
         Matrix,
         dense::{DenseMatrix, RowMajorMatrix},
     },
+    maybe_rayon::prelude::*,
 };
 use std::{
     any::{Any, TypeId},
+    cmp::max,
     collections::HashMap,
     sync::{Arc, LazyLock, Mutex, RwLock, RwLockReadGuard},
 };
-
-#[cfg(feature = "parallel")]
-use {rayon::prelude::*, std::cmp::max};
 
 /// Global cache for NTT engines, indexed by field.
 // TODO: Skip `LazyLock` when `HashMap::with_hasher` becomes const.
