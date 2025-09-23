@@ -1,8 +1,6 @@
 use super::proof::SumcheckPolynomial;
 
 use ff_ext::ExtensionField;
-#[cfg(feature = "parallel")]
-use p3::maybe_rayon::prelude::join;
 use p3::{maybe_rayon::prelude::*, util::log2_strict_usize};
 
 pub struct SumcheckSingle<E: ExtensionField> {

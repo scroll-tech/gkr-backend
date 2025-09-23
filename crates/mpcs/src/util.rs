@@ -101,7 +101,7 @@ pub(crate) fn codeword_fold_with_challenge<E: ExtensionField>(
     lo + challenge * (hi - lo)
 }
 
-#[cfg(any(test))]
+#[cfg(test)]
 pub mod test {
     use ff_ext::FromUniformBytes;
     use rand::{

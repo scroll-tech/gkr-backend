@@ -42,7 +42,7 @@ nightly-features = [
   "whir/nightly-features",
   "witness/nightly-features",
 ]
-parallel = ["p3-maybe-rayon/parallel","dep:rayon"]
+parallel = ["p3-maybe-rayon/parallel", "dep:rayon"]
 print-trace = ["whir/print-trace"]
 sanity-check = []
 
