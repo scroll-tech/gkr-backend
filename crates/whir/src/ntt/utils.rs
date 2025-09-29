@@ -93,7 +93,7 @@ mod tests {
                 unsafe { sqrt_x.to_int_unchecked() }
             };
             for i in 1..=isqrt_of_x {
-                if x % i == 0 {
+                if x.is_multiple_of(i) {
                     result = i;
                 }
             }

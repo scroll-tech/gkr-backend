@@ -12,7 +12,7 @@ pub fn stack_evaluations<E: ExtensionField>(
     row_size: usize,
     buffer: &mut [E],
 ) -> Vec<E> {
-    assert!(evals.len() % row_size == 0);
+    assert!(evals.len().is_multiple_of(row_size));
     let size_of_new_domain = evals.len() / row_size;
 
     // interpret evals as (folding_factor_exp x size_of_new_domain)-matrix and transpose in-place
@@ -25,7 +25,7 @@ pub fn stack_evaluations<E: ExtensionField>(
 /// This function will mutate the function without return
 pub fn stack_evaluations_mut<E: ExtensionField>(evals: &mut [E], folding_factor: usize) {
     let folding_factor_exp = 1 << folding_factor;
-    assert!(evals.len() % folding_factor_exp == 0);
+    assert!(evals.len().is_multiple_of(folding_factor_exp));
     let size_of_new_domain = evals.len() / folding_factor_exp;
 
     // interpret evals as (folding_factor_exp x size_of_new_domain)-matrix and transpose in-place
