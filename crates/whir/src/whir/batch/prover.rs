@@ -540,7 +540,7 @@ where
         let mut result = self.simple_batch_prove(
             transcript,
             &[folded_point],
-            &[folded_evals.clone()],
+            std::slice::from_ref(&folded_evals),
             witness,
         )?;
         sumcheck_polys.extend(result.sumcheck_poly_evals);

@@ -150,16 +150,16 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + FieldAlgebra> RowMajorMat
         self.num_rows
     }
 
-    pub fn iter_rows(&self) -> Chunks<T> {
+    pub fn iter_rows(&self) -> Chunks<'_, T> {
         self.inner.values[..self.num_instances() * self.n_col()].chunks(self.inner.width)
     }
 
-    pub fn iter_mut(&mut self) -> ChunksMut<T> {
+    pub fn iter_mut(&mut self) -> ChunksMut<'_, T> {
         let max_range = self.num_instances() * self.n_col();
         self.inner.values[..max_range].chunks_mut(self.inner.width)
     }
 
-    pub fn par_batch_iter_mut(&mut self, num_rows: usize) -> rayon::slice::ChunksMut<T> {
+    pub fn par_batch_iter_mut(&mut self, num_rows: usize) -> rayon::slice::ChunksMut<'_, T> {
         let max_range = self.num_instances() * self.n_col();
         self.inner.values[..max_range].par_chunks_mut(num_rows * self.inner.width)
     }
