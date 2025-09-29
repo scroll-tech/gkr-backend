@@ -313,7 +313,7 @@ pub fn eq_eval<F: Field>(x: &[F], y: &[F]) -> F {
 ///      eq(x,y) = \prod_i=1^num_var (x_i * y_i + (1-x_i)*(1-y_i))
 /// over r, which is
 ///      eq(x,y) = \prod_i=1^num_var (x_i * r_i + (1-x_i)*(1-r_i))
-pub fn build_eq_x_r_sequential<E: ExtensionField>(r: &[E]) -> ArcMultilinearExtension<E> {
+pub fn build_eq_x_r_sequential<E: ExtensionField>(r: &[E]) -> ArcMultilinearExtension<'_, E> {
     let evals = build_eq_x_r_vec_sequential(r);
     let mle = MultilinearExtension::from_evaluations_ext_vec(r.len(), evals);
 
@@ -386,7 +386,7 @@ fn build_eq_x_r_helper_sequential<E: ExtensionField>(r: &[E], buf: &mut [MaybeUn
 ///      eq(x,y) = \prod_i=1^num_var (x_i * y_i + (1-x_i)*(1-y_i))
 /// over r, which is
 ///      eq(x,y) = \prod_i=1^num_var (x_i * r_i + (1-x_i)*(1-r_i))
-pub fn build_eq_x_r<E: ExtensionField>(r: &[E]) -> ArcMultilinearExtension<E> {
+pub fn build_eq_x_r<E: ExtensionField>(r: &[E]) -> ArcMultilinearExtension<'_, E> {
     let evals = build_eq_x_r_vec(r);
     let mle = MultilinearExtension::from_evaluations_ext_vec(r.len(), evals);
 

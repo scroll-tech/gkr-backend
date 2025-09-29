@@ -195,7 +195,10 @@ mod tests {
             combination_randomness[0],
             &folding_randomness_1,
         );
-        prover.add_new_equality(&[fold_point.clone()], &combination_randomness[1..]);
+        prover.add_new_equality(
+            std::slice::from_ref(&fold_point),
+            &combination_randomness[1..],
+        );
 
         let sumcheck_poly_2 = prover.compute_sumcheck_polynomial(folding_factor);
 
@@ -305,7 +308,10 @@ mod tests {
             combination_randomness_2[0],
             &folding_randomness_2,
         );
-        prover.add_new_equality(&[fold_point_2.clone()], &combination_randomness_2[1..]);
+        prover.add_new_equality(
+            std::slice::from_ref(&fold_point_2),
+            &combination_randomness_2[1..],
+        );
 
         let sumcheck_poly_3 = prover.compute_sumcheck_polynomial(folding_factor);
         let final_coeff = match folded_poly_2

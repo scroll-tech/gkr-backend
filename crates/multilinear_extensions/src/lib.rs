@@ -1,6 +1,5 @@
 #![deny(clippy::cargo)]
 #![feature(decl_macro)]
-#![feature(strict_overflow_ops)]
 pub mod expression;
 pub use expression::{utils::monomialize_expr_to_wit_terms, *};
 pub mod macros;

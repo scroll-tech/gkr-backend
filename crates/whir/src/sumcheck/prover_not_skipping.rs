@@ -230,7 +230,11 @@ mod tests {
             folded_poly_1,
         )
         .evaluate(&fold_point);
-        prover.add_new_equality(&[fold_point.clone()], &combination_randomness, &[fold_eval]);
+        prover.add_new_equality(
+            std::slice::from_ref(&fold_point),
+            &combination_randomness,
+            &[fold_eval],
+        );
 
         let folding_randomness_2 = prover.compute_sumcheck_polynomials::<T>(
             &mut transcript,
