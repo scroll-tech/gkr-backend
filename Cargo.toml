@@ -43,7 +43,6 @@ either = { version = "1.15.*", features = ["serde"] }
 generic-array = { version = "1.1.0", features = ["alloc", "serde"] }
 itertools = "0.13"
 num = "0.4.3"
-num-bigint = { version = "0.4.6" }
 p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
 p3-challenger = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
 p3-commit = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
