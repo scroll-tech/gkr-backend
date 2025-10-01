@@ -120,7 +120,7 @@ where
             transcript,
             num_polys,
             &[folded_points],
-            &[folded_evals.clone()],
+            std::slice::from_ref(&folded_evals),
             parsed_commitment,
             whir_proof,
             &mut sumcheck_poly_evals_iter,

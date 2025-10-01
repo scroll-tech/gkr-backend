@@ -82,7 +82,7 @@ pub fn dedup<T: Ord>(v: impl IntoIterator<Item = T>) -> Vec<T> {
 /// and folds them into a vector of such that folded_evals[i] = [f(omega^(i + k * j)) for j in 0..folding_factor]
 pub fn stack_evaluations<F: Field>(mut evals: Vec<F>, folding_factor: usize) -> Vec<F> {
     let folding_factor_exp = 1 << folding_factor;
-    assert!(evals.len() % folding_factor_exp == 0);
+    assert!(evals.len().is_multiple_of(folding_factor_exp));
     let size_of_new_domain = evals.len() / folding_factor_exp;
 
     // interpret evals as (folding_factor_exp x size_of_new_domain)-matrix and transpose in-place
@@ -92,7 +92,7 @@ pub fn stack_evaluations<F: Field>(mut evals: Vec<F>, folding_factor: usize) -> 
 
 pub fn stack_evaluations_mut<F: Field>(evals: &mut [F], folding_factor: usize) {
     let folding_factor_exp = 1 << folding_factor;
-    assert!(evals.len() % folding_factor_exp == 0);
+    assert!(evals.len().is_multiple_of(folding_factor_exp));
     let size_of_new_domain = evals.len() / folding_factor_exp;
 
     // interpret evals as (folding_factor_exp x size_of_new_domain)-matrix and transpose in-place
@@ -116,7 +116,7 @@ pub fn stack_evaluations_bench_allocate<F: Field>(
     folding_factor: usize,
 ) -> Vec<F> {
     let folding_factor_exp = 1 << folding_factor;
-    assert!(evals.len() % folding_factor_exp == 0);
+    assert!(evals.len().is_multiple_of(folding_factor_exp));
     let size_of_new_domain = evals.len() / folding_factor_exp;
 
     // interpret evals as (folding_factor_exp x size_of_new_domain)-matrix and transpose in-place

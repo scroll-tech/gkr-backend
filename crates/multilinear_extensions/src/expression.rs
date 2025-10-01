@@ -1006,6 +1006,56 @@ impl<E: ExtensionField> Mul for Expression<E> {
     }
 }
 
+impl<E: ExtensionField> Default for Expression<E> {
+    fn default() -> Self {
+        Expression::Constant(Either::Left(E::BaseField::ZERO))
+    }
+}
+
+impl<E: ExtensionField> FieldAlgebra for Expression<E> {
+    type F = E::BaseField;
+
+    const ZERO: Self = Expression::Constant(Either::Left(E::BaseField::ZERO));
+
+    const ONE: Self = Expression::Constant(Either::Left(E::BaseField::ONE));
+
+    const TWO: Self = Expression::Constant(Either::Left(E::BaseField::TWO));
+
+    const NEG_ONE: Self = Expression::Constant(Either::Left(E::BaseField::NEG_ONE));
+
+    fn from_f(f: Self::F) -> Self {
+        Expression::Constant(Either::Left(f))
+    }
+
+    fn from_canonical_u8(n: u8) -> Self {
+        Expression::Constant(Either::Left(E::BaseField::from_canonical_u8(n)))
+    }
+
+    fn from_canonical_u16(n: u16) -> Self {
+        Expression::Constant(Either::Left(E::BaseField::from_canonical_u16(n)))
+    }
+
+    fn from_canonical_u32(n: u32) -> Self {
+        Expression::Constant(Either::Left(E::BaseField::from_canonical_u32(n)))
+    }
+
+    fn from_canonical_u64(n: u64) -> Self {
+        Expression::Constant(Either::Left(E::BaseField::from_canonical_u64(n)))
+    }
+
+    fn from_canonical_usize(n: usize) -> Self {
+        Expression::Constant(Either::Left(E::BaseField::from_canonical_usize(n)))
+    }
+
+    fn from_wrapped_u32(n: u32) -> Self {
+        Expression::Constant(Either::Left(E::BaseField::from_wrapped_u32(n)))
+    }
+
+    fn from_wrapped_u64(n: u64) -> Self {
+        Expression::Constant(Either::Left(E::BaseField::from_wrapped_u64(n)))
+    }
+}
+
 #[derive(Clone, Debug, Copy)]
 #[repr(C)]
 pub struct WitIn {

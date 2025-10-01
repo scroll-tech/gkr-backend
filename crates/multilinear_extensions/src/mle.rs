@@ -465,7 +465,7 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
         nv: usize,
         degree: usize,
         rng: &mut R,
-    ) -> Vec<ArcMultilinearExtension<E>> {
+    ) -> Vec<ArcMultilinearExtension<'_, E>> {
         let start = entered_span!("sample random zero mle list");
 
         let mut multiplicands = Vec::with_capacity(degree);
@@ -678,11 +678,11 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
         self.num_vars = nv - partial_point.len();
     }
 
-    pub fn evaluations(&self) -> &FieldType<E> {
+    pub fn evaluations(&self) -> &FieldType<'_, E> {
         &self.evaluations
     }
 
-    pub fn as_evaluations_view(&self) -> FieldType<E> {
+    pub fn as_evaluations_view(&self) -> FieldType<'_, E> {
         self.evaluations.as_borrowed_view()
     }
 
@@ -734,7 +734,7 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
         let chunk_size = total_len / num_chunks;
         assert!(
             num_chunks > 0
-                && total_len % num_chunks == 0
+                && total_len.is_multiple_of(num_chunks)
                 && chunk_size > 0
                 && chunk_index < num_chunks,
             "invalid num_chunks: {num_chunks} total_len: {total_len}, chunk_index {chunk_index} parameter set"
@@ -771,7 +771,7 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
         let chunk_size = total_len / num_chunks;
         assert!(
             num_chunks > 0
-                && total_len % num_chunks == 0
+                && total_len.is_multiple_of(num_chunks)
                 && chunk_size > 0
                 && chunk_index < num_chunks,
             "invalid num_chunks: {num_chunks} total_len: {total_len}, chunk_index {chunk_index} parameter set"
@@ -821,7 +821,7 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
         let total_len = self.evaluations.len();
         let chunk_size = total_len / num_chunks;
         assert!(
-            num_chunks > 0 && total_len % num_chunks == 0 && chunk_size > 0,
+            num_chunks > 0 && total_len.is_multiple_of(num_chunks) && chunk_size > 0,
             "invalid num_chunks: {num_chunks} total_len: {total_len} parameter set"
         );
         let num_vars_per_chunk = self.num_vars - ceil_log2(num_chunks);
@@ -884,7 +884,7 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
         let total_len = self.evaluations.len();
         let chunk_size = total_len / num_chunks;
         assert!(
-            num_chunks > 0 && total_len % num_chunks == 0 && chunk_size > 0,
+            num_chunks > 0 && total_len.is_multiple_of(num_chunks) && chunk_size > 0,
             "invalid num_chunks: {num_chunks} total_len: {total_len} parameter set"
         );
         let num_vars_per_chunk = self.num_vars - ceil_log2(num_chunks);
@@ -954,6 +954,25 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
     pub fn index(&self, index: usize) -> Either<E::BaseField, E> {
         self.evaluations.index(index)
     }
+
+    /// encode evaluations vector into a position-sensitive extension field scalar
+    pub fn bh_signature(&self) -> E {
+        match &self.evaluations() {
+            FieldType::Base(slice) => E::from(
+                slice
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| E::BaseField::from_canonical_u32(i as u32 + 1) + *v)
+                    .product::<E::BaseField>(),
+            ),
+            FieldType::Ext(slice) => slice
+                .iter()
+                .enumerate()
+                .map(|(i, v)| E::from_canonical_u32(i as u32 + 1) + *v)
+                .product::<E>(),
+            _ => unreachable!(),
+        }
+    }
 }
 
 #[allow(clippy::wrong_self_convention)]
@@ -1018,7 +1037,7 @@ impl<'a, T> IntoInstanceIter<'a, T> for &'a [T] {
     type IntoIter = InstanceIntoIterator<'a, T>;
 
     fn into_instance_iter(&self, n_instances: usize) -> Self::IntoIter {
-        assert!(self.len() % n_instances == 0);
+        assert!(self.len().is_multiple_of(n_instances));
         let offset = self.len() / n_instances;
         InstanceIntoIterator {
             evaluations: self,
@@ -1033,7 +1052,7 @@ impl<'a, T: 'a> IntoInstanceIterMut<'a, T> for Vec<T> {
     type IntoIterMut = InstanceIntoIteratorMut<'a, T>;
 
     fn into_instance_iter_mut<'b>(&'a mut self, n_instances: usize) -> Self::IntoIterMut {
-        assert!(self.len() % n_instances == 0);
+        assert!(self.len().is_multiple_of(n_instances));
         let offset = self.len() / n_instances;
         let origin_len = self.len();
         InstanceIntoIteratorMut {
