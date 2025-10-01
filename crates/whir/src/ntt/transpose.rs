@@ -3,10 +3,10 @@ use crate::ntt::matrix_skip::MatrixMutSkip;
 use super::{super::utils::is_power_of_two, MatrixMut, utils::workload_size};
 use std::mem::swap;
 
-use p3::matrix::{Matrix, dense::RowMajorMatrix};
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
-#[cfg(feature = "parallel")]
-use rayon::join;
+use p3::{
+    matrix::{Matrix, dense::RowMajorMatrix},
+    maybe_rayon::prelude::*,
+};
 use sumcheck::macros::{entered_span, exit_span};
 
 // NOTE: The assumption that rows and cols are a power of two are actually only relevant for the square matrix case.

@@ -4,10 +4,7 @@ use multilinear_extensions::mle::FieldType;
 use p3::{
     field::Field,
     matrix::{Matrix, dense::RowMajorMatrix},
-};
-use rayon::{
-    iter::ParallelIterator,
-    slice::{ParallelSlice, ParallelSliceMut},
+    maybe_rayon::prelude::*,
 };
 use std::collections::BTreeSet;
 use sumcheck::macros::{entered_span, exit_span};
