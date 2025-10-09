@@ -65,7 +65,7 @@ rand_core = "0.6"
 rayon = "1.10"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
-thiserror = "1"                                                                                                       # do we need this?
+thiserror = "1"                                                                                                         # do we need this?
 tracing = { version = "0.1", features = ["attributes"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
