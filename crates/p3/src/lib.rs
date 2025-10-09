@@ -10,6 +10,7 @@ pub use p3_matrix as matrix;
 pub use p3_maybe_rayon as maybe_rayon;
 pub use p3_mds as mds;
 pub use p3_merkle_tree as merkle_tree;
+pub use p3_monty_31 as monty_31;
 pub use p3_poseidon as poseidon;
 pub use p3_poseidon2 as poseidon2;
 pub use p3_poseidon2_air as poseidon2_air;
