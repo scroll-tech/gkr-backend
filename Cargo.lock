@@ -1014,6 +1014,7 @@ dependencies = [
 name = "p3"
 version = "0.1.0"
 dependencies = [
+ "p3-air",
  "p3-baby-bear",
  "p3-challenger",
  "p3-commit",

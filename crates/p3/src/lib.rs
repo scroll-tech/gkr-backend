@@ -1,3 +1,4 @@
+pub use p3_air as air;
 pub use p3_baby_bear as babybear;
 pub use p3_challenger as challenger;
 pub use p3_commit as commit;
