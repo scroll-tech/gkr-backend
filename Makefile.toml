@@ -4,6 +4,7 @@ CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
 [tasks.tests]
 args = [
   "test",
+  "--all-features",
   # Run everything but 'benches'.
   "--lib",
   "--bins",
@@ -16,6 +17,14 @@ env = { RUST_MIN_STACK = "33554432" }
 workspace = false
 
 [tasks.clippy]
-args = ["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
+args = [
+  "clippy",
+  "--workspace",
+  "--all-targets",
+  "--all-features",
+  "--",
+  "-D",
+  "warnings",
+]
 command = "cargo"
 workspace = false

@@ -16,8 +16,4 @@ p3.workspace = true
 poseidon.workspace = true
 
 [features]
-nightly-features = [
-  "p3/nightly-features",
-  "ff_ext/nightly-features",
-  "poseidon/nightly-features",
-]
+nightly-features = ["ff_ext/nightly-features"]

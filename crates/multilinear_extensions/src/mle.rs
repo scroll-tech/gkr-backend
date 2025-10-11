@@ -9,6 +9,8 @@ use crate::{
 };
 use either::Either;
 use ff_ext::{ExtensionField, FromUniformBytes};
+#[cfg(not(feature = "parallel"))]
+use itertools::Itertools;
 use p3::{
     field::{Field, FieldAlgebra},
     maybe_rayon::prelude::*,
@@ -608,10 +610,8 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
                         Cow::Owned(MultilinearExtension::from_evaluations_ext_vec(
                             self.num_vars() - 1,
                             evaluations
-                                .par_iter()
-                                .chunks(2)
-                                .with_min_len(64)
-                                .map(|buf| *point * (*buf[1] - *buf[0]) + *buf[0])
+                                .par_chunks(2)
+                                .map(|buf| *point * (buf[1] - buf[0]) + buf[0])
                                 .collect(),
                         ))
                     });
@@ -641,10 +641,8 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
             match &mut self.evaluations {
                 FieldType::Base(slice) => {
                     let slice_ext = slice
-                        .par_iter()
-                        .chunks(2)
-                        .with_min_len(64)
-                        .map(|buf| *point * (*buf[1] - *buf[0]) + *buf[0])
+                        .par_chunks(2)
+                        .map(|buf| *point * (buf[1] - buf[0]) + buf[0])
                         .collect();
                     let _ = mem::replace(
                         &mut self.evaluations,
@@ -654,10 +652,8 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
                 FieldType::Ext(slice) => {
                     let slice_mut = slice.to_mut();
                     slice_mut
-                        .par_iter_mut()
-                        .chunks(2)
-                        .with_min_len(64)
-                        .for_each(|mut buf| *buf[0] = *buf[0] + (*buf[1] - *buf[0]) * *point);
+                        .par_chunks_mut(2)
+                        .for_each(|buf| buf[0] = buf[0] + (buf[1] - buf[0]) * *point);
 
                     // sequentially update buf[b1, b2,..bt] = buf[b1, b2,..bt, 0]
                     for index in 0..1 << (max_log2_size - 1) {

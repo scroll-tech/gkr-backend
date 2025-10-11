@@ -21,9 +21,9 @@ rand.workspace = true
 syn = { version = "2.0", features = ["full"] }
 
 [features]
-nightly-features = ["p3/nightly-features"]
+nightly-features = ["ff_ext/nightly-features"]
 
 [dev-dependencies]
 ff_ext.workspace = true
-multilinear_extensions = { path = "../multilinear_extensions" }
+multilinear_extensions.workspace = true
 sumcheck.workspace = true

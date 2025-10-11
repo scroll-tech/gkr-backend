@@ -14,11 +14,10 @@ bincode = "1.3.3"
 clap.workspace = true
 ff_ext.workspace = true
 itertools.workspace = true
-whir.workspace = true
+whir = { workspace = true, optional = true }
 multilinear_extensions.workspace = true
 num-integer = "0.1"
 p3.workspace = true
-p3-maybe-rayon.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
 rayon = { workspace = true, optional = true }
@@ -33,16 +32,9 @@ witness.workspace = true
 criterion.workspace = true
 
 [features]
-nightly-features = [
-  "p3/nightly-features",
-  "ff_ext/nightly-features",
-  "multilinear_extensions/nightly-features",
-  "sumcheck/nightly-features",
-  "transcript/nightly-features",
-  "whir/nightly-features",
-  "witness/nightly-features",
-]
-parallel = ["p3-maybe-rayon/parallel", "dep:rayon"]
+nightly-features = ["ff_ext/nightly-features"]
+parallel = ["p3/parallel", "dep:rayon"]
+whir = ["dep:whir"]
 print-trace = ["whir/print-trace"]
 sanity-check = []
 

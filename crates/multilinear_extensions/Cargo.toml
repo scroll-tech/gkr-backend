@@ -14,7 +14,6 @@ either.workspace = true
 ff_ext.workspace = true
 itertools.workspace = true
 p3.workspace = true
-p3-maybe-rayon.workspace = true
 rand.workspace = true
 rayon.workspace = true
 serde.workspace = true
@@ -27,8 +26,8 @@ log = "0.4"
 serde_json.workspace = true
 
 [features]
-nightly-features = ["p3/nightly-features", "ff_ext/nightly-features"]
-parallel = ["p3-maybe-rayon/parallel"]
+nightly-features = ["ff_ext/nightly-features"]
+parallel = ["p3/parallel"]
 
 [[bench]]
 harness = false
