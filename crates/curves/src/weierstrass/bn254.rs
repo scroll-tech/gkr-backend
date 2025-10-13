@@ -9,14 +9,14 @@ use crate::{
     params::{FieldParameters, NumLimbs},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 /// Bn254 curve parameter
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub struct Bn254Parameters;
 
 pub type Bn254 = SwCurve<Bn254Parameters>;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 /// Bn254 base field parameter
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Bn254BaseField;
 
 impl FieldParameters for Bn254BaseField {
