@@ -47,7 +47,7 @@ pub trait WeierstrassParameters: EllipticCurveParameters {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SwCurve<E>(pub E);
 
 impl<E: WeierstrassParameters> WeierstrassParameters for SwCurve<E> {
