@@ -46,3 +46,65 @@ cfg_if::cfg_if! {
         }
     }
 }
+
+#[inline]
+pub fn biguint_from_words(words: &[u32]) -> BigUint {
+    let mut bytes = Vec::with_capacity(words.len() * 4);
+    for word in words {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    BigUint::from_bytes_le(&bytes)
+}
+
+#[inline]
+pub fn biguint_to_words(integer: &BigUint, num_words: usize) -> Vec<u32> {
+    let mut bytes = integer.to_bytes_le();
+    bytes.resize(num_words * 4, 0u8);
+    let mut words = Vec::with_capacity(num_words);
+    for i in 0..num_words {
+        let word = u32::from_le_bytes([
+            bytes[4 * i],
+            bytes[4 * i + 1],
+            bytes[4 * i + 2],
+            bytes[4 * i + 3],
+        ]);
+        words.push(word);
+    }
+    words
+}
+
+#[inline]
+/// Converts a slice of words to a byte vector in little endian.
+pub fn words_to_bytes_le_vec(words: &[u32]) -> Vec<u8> {
+    words
+        .iter()
+        .flat_map(|word| word.to_le_bytes().into_iter())
+        .collect::<Vec<_>>()
+}
+
+#[inline]
+/// Converts a slice of words to a slice of bytes in little endian.
+pub fn words_to_bytes_le<const B: usize>(words: &[u32]) -> [u8; B] {
+    debug_assert_eq!(words.len() * 4, B);
+    let mut iter = words.iter().flat_map(|word| word.to_le_bytes().into_iter());
+    core::array::from_fn(|_| iter.next().unwrap())
+}
+
+#[inline]
+/// Converts a byte array in little endian to a slice of words.
+pub fn bytes_to_words_le<const W: usize>(bytes: &[u8]) -> [u32; W] {
+    debug_assert_eq!(bytes.len(), W * 4);
+    let mut iter = bytes
+        .chunks_exact(4)
+        .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()));
+    core::array::from_fn(|_| iter.next().unwrap())
+}
+
+#[inline]
+/// Converts a byte array in little endian to a vector of words.
+pub fn bytes_to_words_le_vec(bytes: &[u8]) -> Vec<u32> {
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+        .collect::<Vec<_>>()
+}
