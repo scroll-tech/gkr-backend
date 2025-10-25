@@ -115,13 +115,13 @@ pub fn eval_by_expr_with_instance<E: ExtensionField>(
 pub fn monomialize_expr_to_wit_terms<E: ExtensionField>(
     expr: &Expression<E>,
     num_witin: WitnessId,
-    num_structural_witin: WitnessId,
     num_fixed: WitnessId,
+    num_instance: usize,
 ) -> Vec<Term<Expression<E>, Expression<E>>> {
     let witid_offset = 0 as WitnessId;
-    let structural_witin_offset = witid_offset + num_witin;
-    let fixed_offset = structural_witin_offset + num_structural_witin;
+    let fixed_offset = witid_offset + num_witin;
     let instance_offset = fixed_offset + num_fixed;
+    let structural_witin_offset = instance_offset + num_instance as WitnessId;
 
     let monomial_terms_expr = expr.get_monomial_terms();
     monomial_terms_expr
@@ -133,14 +133,14 @@ pub fn monomialize_expr_to_wit_terms<E: ExtensionField>(
              }| {
                 product.iter_mut().for_each(|t| match t {
                     Expression::WitIn(_) => (),
-                    Expression::StructuralWitIn(structural_wit_id, _) => {
-                        *t = Expression::WitIn(structural_witin_offset + *structural_wit_id);
-                    }
                     Expression::Fixed(Fixed(fixed_id)) => {
                         *t = Expression::WitIn(fixed_offset + (*fixed_id as u16));
                     }
                     Expression::Instance(Instance(instance_id)) => {
                         *t = Expression::WitIn(instance_offset + (*instance_id as u16));
+                    }
+                    Expression::StructuralWitIn(structural_wit_id, _) => {
+                        *t = Expression::WitIn(structural_witin_offset + *structural_wit_id);
                     }
                     e => panic!("unknown monomial terms {:?}", e),
                 });
@@ -148,4 +148,41 @@ pub fn monomialize_expr_to_wit_terms<E: ExtensionField>(
             },
         )
         .collect_vec()
+}
+
+/// convert complex expression into monomial form to WitIn
+/// orders WitIn ++ StructuralWitIn ++ Fixed
+pub fn expr_convert_to_witins<E: ExtensionField>(
+    expr: &mut Expression<E>,
+    num_witin: WitnessId,
+    num_fixed: WitnessId,
+    num_instance: usize,
+) {
+    let witid_offset = 0 as WitnessId;
+    let fixed_offset = witid_offset + num_witin;
+    let instance_offset = fixed_offset + num_fixed;
+    let structural_witin_offset = instance_offset + num_instance as WitnessId;
+
+    match expr {
+        Expression::Fixed(fixed_id) => *expr = Expression::WitIn(fixed_offset + (fixed_id.0 as u16)),
+        Expression::WitIn(..) => (),
+        Expression::StructuralWitIn(structural_wit_id,..) => *expr = Expression::WitIn(structural_witin_offset + *structural_wit_id),
+        Expression::Instance(i) => *expr = Expression::WitIn(instance_offset + (i.0 as u16)),
+        Expression::InstanceScalar(..) => (),
+        Expression::Constant(..) => (),
+        Expression::Sum(a, b) => {
+            expr_convert_to_witins(a, num_witin, num_fixed, num_instance);
+            expr_convert_to_witins(b, num_witin, num_fixed, num_instance);
+        }
+        Expression::Product(a, b) => {
+            expr_convert_to_witins(a, num_witin, num_fixed, num_instance);
+            expr_convert_to_witins(b, num_witin, num_fixed, num_instance);
+        }
+        Expression::ScaledSum(x,a,b) => {
+            expr_convert_to_witins(x, num_witin, num_fixed, num_instance);
+            expr_convert_to_witins(a, num_witin, num_fixed, num_instance);
+            expr_convert_to_witins(b, num_witin, num_fixed, num_instance);
+        }
+        Expression::Challenge(..) => ()
+    }
 }
