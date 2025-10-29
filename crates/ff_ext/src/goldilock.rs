@@ -86,6 +86,16 @@ pub mod impl_goldilocks {
             ))
         }
 
+        fn get_default_perm_rc() -> Vec<Self> {
+            HL_GOLDILOCKS_8_EXTERNAL_ROUND_CONSTANTS[0]
+                .iter()
+                .flatten()
+                .chain(HL_GOLDILOCKS_8_INTERNAL_ROUND_CONSTANTS.iter())
+                .chain(HL_GOLDILOCKS_8_EXTERNAL_ROUND_CONSTANTS[1].iter().flatten())
+                .map(|v| Self::from_canonical_u64(*v))
+                .collect()
+        }
+
         fn get_default_sponge() -> Self::S {
             PaddingFreeSponge::new(Self::get_default_perm())
         }

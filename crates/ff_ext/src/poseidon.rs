@@ -20,7 +20,7 @@ pub trait FieldChallengerExt<F: PoseidonField>: FieldChallenger<F> {
 
 pub trait PoseidonField: PrimeField + SmallField {
     // permutation
-    type P: Clone + Permutation<Vec<Self>>;
+    type P: Clone + Permutation<Vec<Self>> + Send + Sync;
     // sponge
     type S: Clone + Sync;
     // compression
@@ -29,6 +29,7 @@ pub trait PoseidonField: PrimeField + SmallField {
     type T: FieldChallenger<Self> + Clone + GrindingChallenger<Witness = Self>;
     fn get_default_challenger() -> Self::T;
     fn get_default_perm() -> Self::P;
+    fn get_default_perm_rc() -> Vec<Self>;
     fn get_default_sponge() -> Self::S;
     fn get_default_compression() -> Self::C;
     fn get_default_mmcs() -> Self::MMCS;

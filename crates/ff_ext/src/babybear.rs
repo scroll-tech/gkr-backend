@@ -138,6 +138,16 @@ pub mod impl_babybear {
             ))
         }
 
+        fn get_default_perm_rc() -> Vec<Self> {
+            BABYBEAR_RC16_EXTERNAL_INITIAL
+                .iter()
+                .flatten()
+                .chain(BABYBEAR_RC16_INTERNAL.iter())
+                .chain(BABYBEAR_RC16_EXTERNAL_FINAL.iter().flatten())
+                .cloned()
+                .collect()
+        }
+
         fn get_default_sponge() -> Self::S {
             PaddingFreeSponge::new(Self::get_default_perm())
         }
