@@ -1,5 +1,5 @@
 pub mod impl_babybear {
-    use crate::array_try_from_uniform_bytes;
+    use crate::{array_try_from_uniform_bytes, wrapper::Wrapper};
     use p3::{
         self,
         babybear::{BabyBear, Poseidon2BabyBear},
@@ -94,20 +94,14 @@ pub mod impl_babybear {
 
     #[cfg(debug_assertions)]
     use crate::poseidon::impl_instruments::*;
-    #[cfg(debug_assertions)]
-    use p3::symmetric::CryptographicPermutation;
 
-    #[cfg(debug_assertions)]
-    impl CryptographicPermutation<[BabyBear; POSEIDON2_BABYBEAR_WIDTH]>
-        for Instrumented<Poseidon2BabyBear<POSEIDON2_BABYBEAR_WIDTH>>
-    {
-    }
+    type WP = Wrapper<Poseidon2BabyBear<POSEIDON2_BABYBEAR_WIDTH>, POSEIDON2_BABYBEAR_WIDTH>;
 
     impl PoseidonField for BabyBear {
         #[cfg(debug_assertions)]
-        type P = Instrumented<Poseidon2BabyBear<POSEIDON2_BABYBEAR_WIDTH>>;
+        type P = Instrumented<WP>;
         #[cfg(not(debug_assertions))]
-        type P = Poseidon2BabyBear<POSEIDON2_BABYBEAR_WIDTH>;
+        type P = WP;
 
         type T = DuplexChallenger<Self, Self::P, POSEIDON2_BABYBEAR_WIDTH, POSEIDON2_BABYBEAR_RATE>;
         type S = PaddingFreeSponge<Self::P, POSEIDON2_BABYBEAR_WIDTH, POSEIDON2_BABYBEAR_RATE, 8>;
@@ -124,24 +118,24 @@ pub mod impl_babybear {
 
         #[cfg(debug_assertions)]
         fn get_default_perm() -> Self::P {
-            Instrumented::new(Poseidon2BabyBear::new(
+            Instrumented::new(Wrapper::new(Poseidon2BabyBear::new(
+                ExternalLayerConstants::new(
+                    BABYBEAR_RC16_EXTERNAL_INITIAL.to_vec(),
+                    BABYBEAR_RC16_EXTERNAL_FINAL.to_vec(),
+                ),
+                BABYBEAR_RC16_INTERNAL.to_vec(),
+            )))
+        }
+
+        #[cfg(not(debug_assertions))]
+        fn get_default_perm() -> Self::P {
+            Wrapper::new(Poseidon2BabyBear::new(
                 ExternalLayerConstants::new(
                     BABYBEAR_RC16_EXTERNAL_INITIAL.to_vec(),
                     BABYBEAR_RC16_EXTERNAL_FINAL.to_vec(),
                 ),
                 BABYBEAR_RC16_INTERNAL.to_vec(),
             ))
-        }
-
-        #[cfg(not(debug_assertions))]
-        fn get_default_perm() -> Self::P {
-            Poseidon2BabyBear::new(
-                ExternalLayerConstants::new(
-                    BABYBEAR_RC16_EXTERNAL_INITIAL.to_vec(),
-                    BABYBEAR_RC16_EXTERNAL_FINAL.to_vec(),
-                ),
-                BABYBEAR_RC16_INTERNAL.to_vec(),
-            )
         }
 
         fn get_default_sponge() -> Self::S {
