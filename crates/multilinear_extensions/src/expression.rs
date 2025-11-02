@@ -465,7 +465,8 @@ impl<E: ExtensionField> Neg for Expression<E> {
             Expression::Fixed(_)
             | Expression::WitIn(_)
             | Expression::StructuralWitIn(..)
-            | Expression::Instance(_) => Expression::ScaledSum(
+            | Expression::Instance(_)
+            | Expression::InstanceScalar(_) => Expression::ScaledSum(
                 Box::new(self),
                 Box::new(Expression::Constant(Either::Left(-E::BaseField::ONE))),
                 Box::new(Expression::Constant(Either::Left(E::BaseField::ZERO))),
@@ -477,9 +478,6 @@ impl<E: ExtensionField> Neg for Expression<E> {
             Expression::ScaledSum(x, a, b) => Expression::ScaledSum(x, -a, -b),
             Expression::Challenge(challenge_id, pow, scalar, offset) => {
                 Expression::Challenge(challenge_id, pow, scalar.neg(), offset.neg())
-            }
-            Expression::InstanceScalar(_) => {
-                unimplemented!("figure out how to support InstanceScalar")
             }
         }
     }
