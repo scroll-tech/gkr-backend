@@ -1234,7 +1234,7 @@ pub fn wit_infer_by_monomial_expr<'a, E: ExtensionField>(
     let scalar_evals = flat_expr
         .par_iter()
         .map(|Term { scalar, .. }| {
-            eval_by_expr_constant(&pub_io_evals, challenges, scalar)
+            eval_by_expr_constant(pub_io_evals, challenges, scalar)
         })
         .collect::<Vec<_>>();
 
