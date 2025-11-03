@@ -19,8 +19,8 @@ use crate::{
     params::{FieldParameters, NumLimbs},
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 /// Secp256k1 curve parameter
-#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Secp256k1Parameters;
 
 pub type Secp256k1 = SwCurve<Secp256k1Parameters>;
