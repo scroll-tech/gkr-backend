@@ -27,9 +27,9 @@ impl<const N: usize, T: Clone, P: Permutation<[T; N]> + Clone> Permutation<Vec<T
         assert_eq!(input.len(), N, "Input vector must be of length {}", N);
         let mut array = from_fn(|i| input[i].clone());
         self.inner.permute_mut(&mut array);
-        for i in 0..N {
-            input[i] = array[i].clone();
-        }
+        input.iter_mut().zip(array).for_each(|(i, a)| {
+            *i = a;
+        });
     }
 }
 impl<const N: usize, T: Clone, P: Permutation<[T; N]> + Clone> Permutation<[T; N]>
