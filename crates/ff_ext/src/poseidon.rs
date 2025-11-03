@@ -2,6 +2,7 @@ use p3::{
     challenger::{FieldChallenger, GrindingChallenger},
     commit::Mmcs,
     field::PrimeField,
+    symmetric::Permutation,
 };
 
 use crate::{ExtensionField, SmallField};
@@ -19,7 +20,7 @@ pub trait FieldChallengerExt<F: PoseidonField>: FieldChallenger<F> {
 
 pub trait PoseidonField: PrimeField + SmallField {
     // permutation
-    type P: Clone;
+    type P: Clone + Permutation<Vec<Self>> + Send + Sync;
     // sponge
     type S: Clone + Sync;
     // compression
@@ -28,6 +29,7 @@ pub trait PoseidonField: PrimeField + SmallField {
     type T: FieldChallenger<Self> + Clone + GrindingChallenger<Witness = Self>;
     fn get_default_challenger() -> Self::T;
     fn get_default_perm() -> Self::P;
+    fn get_default_perm_rc() -> Vec<Self>;
     fn get_default_sponge() -> Self::S;
     fn get_default_compression() -> Self::C;
     fn get_default_mmcs() -> Self::MMCS;
@@ -51,7 +53,7 @@ pub mod impl_instruments {
     };
 
     use once_cell::sync::Lazy;
-    use p3::symmetric::Permutation;
+    use p3::symmetric::{CryptographicPermutation, Permutation};
 
     pub type PermCount = Arc<Mutex<usize>>;
     pub type LabelCounts = Arc<Mutex<HashMap<&'static str, usize>>>;
@@ -136,4 +138,6 @@ pub mod impl_instruments {
             self.inner_perm.permute(input)
         }
     }
+
+    impl<T: Clone, P: Permutation<T>> CryptographicPermutation<T> for Instrumented<P> {}
 }
