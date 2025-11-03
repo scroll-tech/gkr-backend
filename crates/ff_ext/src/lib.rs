@@ -10,6 +10,7 @@ use std::{
     iter::{self, repeat_with},
 };
 mod babybear;
+mod wrapper;
 pub use babybear::impl_babybear::*;
 mod goldilock;
 pub use goldilock::impl_goldilocks::*;
