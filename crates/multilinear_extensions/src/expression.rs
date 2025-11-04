@@ -1079,18 +1079,28 @@ pub enum StructuralWitInType {
     },
     /// The corresponding evaluation vector is the sequence: [0, 0, 0, 1, 0, 1, 2, 3, 0, 1, 2, 3, 4, 5, 6, 7, ..., 0, 1, 2, 3, ..., 2^max_bits-1]
     /// The length of the vectors is 2^(max_bits + 1)
-    StackedIncrementalSequence { max_bits: usize },
+    StackedIncrementalSequence {
+        max_bits: usize,
+    },
     /// The corresponding evaluation vector is the sequence: [0, 0] + [1, 1] + [2] * 4 + [3] * 8 + ... + [max_value] * (2^max_value)
     /// The length of the vectors is 2^(max_value + 1)
-    StackedConstantSequence { max_value: usize },
+    StackedConstantSequence {
+        max_value: usize,
+    },
     /// The corresponding evaluation vector is the sequence: [0, ..., 0, 1, ..., 1, ..., 2^(n-k-1)-1, ..., 2^(n-k-1)-1]
     /// where each element is repeated by 2^k times
     /// The total length of the vector is 2^n
-    InnerRepeatingIncrementalSequence { k: usize, n: usize },
+    InnerRepeatingIncrementalSequence {
+        k: usize,
+        n: usize,
+    },
     /// The corresponding evaluation vector is the sequence: [0, ..., 2^k-1]
     /// repeated by 2^(n-k) times
     /// The total length of the vector is 2^n
-    OuterRepeatingIncrementalSequence { k: usize, n: usize },
+    OuterRepeatingIncrementalSequence {
+        k: usize,
+        n: usize,
+    },
 }
 
 impl StructuralWitInType {
@@ -1233,9 +1243,7 @@ pub fn wit_infer_by_monomial_expr<'a, E: ExtensionField>(
 
     let scalar_evals = flat_expr
         .par_iter()
-        .map(|Term { scalar, .. }| {
-            eval_by_expr_constant(pub_io_evals, challenges, scalar)
-        })
+        .map(|Term { scalar, .. }| eval_by_expr_constant(pub_io_evals, challenges, scalar))
         .collect::<Vec<_>>();
 
     let evaluations = (0..eval_leng)

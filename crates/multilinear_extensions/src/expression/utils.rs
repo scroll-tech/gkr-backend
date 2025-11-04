@@ -164,9 +164,13 @@ pub fn expr_convert_to_witins<E: ExtensionField>(
     let structural_witin_offset = instance_offset + num_instance as WitnessId;
 
     match expr {
-        Expression::Fixed(fixed_id) => *expr = Expression::WitIn(fixed_offset + (fixed_id.0 as u16)),
+        Expression::Fixed(fixed_id) => {
+            *expr = Expression::WitIn(fixed_offset + (fixed_id.0 as u16))
+        }
         Expression::WitIn(..) => (),
-        Expression::StructuralWitIn(structural_wit_id,..) => *expr = Expression::WitIn(structural_witin_offset + *structural_wit_id),
+        Expression::StructuralWitIn(structural_wit_id, ..) => {
+            *expr = Expression::WitIn(structural_witin_offset + *structural_wit_id)
+        }
         Expression::Instance(i) => *expr = Expression::WitIn(instance_offset + (i.0 as u16)),
         Expression::InstanceScalar(..) => (),
         Expression::Constant(..) => (),
@@ -178,11 +182,11 @@ pub fn expr_convert_to_witins<E: ExtensionField>(
             expr_convert_to_witins(a, num_witin, num_fixed, num_instance);
             expr_convert_to_witins(b, num_witin, num_fixed, num_instance);
         }
-        Expression::ScaledSum(x,a,b) => {
+        Expression::ScaledSum(x, a, b) => {
             expr_convert_to_witins(x, num_witin, num_fixed, num_instance);
             expr_convert_to_witins(a, num_witin, num_fixed, num_instance);
             expr_convert_to_witins(b, num_witin, num_fixed, num_instance);
         }
-        Expression::Challenge(..) => ()
+        Expression::Challenge(..) => (),
     }
 }
