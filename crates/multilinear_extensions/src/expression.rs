@@ -1068,6 +1068,7 @@ pub struct WitIn {
 )]
 #[repr(C)]
 pub enum StructuralWitInType {
+    Empty,
     /// The correspeonding evaluation vector is the sequence: M = M' * multi_factor * descending + offset
     /// where M' = [0, 1, 2, ..., max_len - 1] and descending = if descending { -1 } else { 1 }
     EqualDistanceSequence {
@@ -1078,23 +1079,34 @@ pub enum StructuralWitInType {
     },
     /// The corresponding evaluation vector is the sequence: [0, 0, 0, 1, 0, 1, 2, 3, 0, 1, 2, 3, 4, 5, 6, 7, ..., 0, 1, 2, 3, ..., 2^max_bits-1]
     /// The length of the vectors is 2^(max_bits + 1)
-    StackedIncrementalSequence { max_bits: usize },
+    StackedIncrementalSequence {
+        max_bits: usize,
+    },
     /// The corresponding evaluation vector is the sequence: [0, 0] + [1, 1] + [2] * 4 + [3] * 8 + ... + [max_value] * (2^max_value)
     /// The length of the vectors is 2^(max_value + 1)
-    StackedConstantSequence { max_value: usize },
+    StackedConstantSequence {
+        max_value: usize,
+    },
     /// The corresponding evaluation vector is the sequence: [0, ..., 0, 1, ..., 1, ..., 2^(n-k-1)-1, ..., 2^(n-k-1)-1]
     /// where each element is repeated by 2^k times
     /// The total length of the vector is 2^n
-    InnerRepeatingIncrementalSequence { k: usize, n: usize },
+    InnerRepeatingIncrementalSequence {
+        k: usize,
+        n: usize,
+    },
     /// The corresponding evaluation vector is the sequence: [0, ..., 2^k-1]
     /// repeated by 2^(n-k) times
     /// The total length of the vector is 2^n
-    OuterRepeatingIncrementalSequence { k: usize, n: usize },
+    OuterRepeatingIncrementalSequence {
+        k: usize,
+        n: usize,
+    },
 }
 
 impl StructuralWitInType {
     pub fn max_len(&self) -> usize {
         match self {
+            StructuralWitInType::Empty => 0,
             StructuralWitInType::EqualDistanceSequence { max_len, .. } => *max_len,
             StructuralWitInType::StackedIncrementalSequence { max_bits } => 1 << (max_bits + 1),
             StructuralWitInType::StackedConstantSequence { max_value } => 1 << (max_value + 1),
@@ -1224,25 +1236,14 @@ fn eval_expr_at_index<E: ExtensionField>(
 pub fn wit_infer_by_monomial_expr<'a, E: ExtensionField>(
     flat_expr: &[Term<Expression<E>, Expression<E>>],
     witness: &[ArcMultilinearExtension<'a, E>],
-    instance: &[ArcMultilinearExtension<'a, E>],
+    pub_io_evals: &[Either<E::BaseField, E>],
     challenges: &[E],
 ) -> ArcMultilinearExtension<'a, E> {
     let eval_leng = witness[0].evaluations().len();
 
-    let witness = chain!(witness, instance).cloned().collect_vec();
-
-    // evaluate all scalar terms first
-    // when instance was access in scalar, we only take its first item
-    // this operation is sound
-    let instance_first_element = instance
-        .iter()
-        .map(|instance| instance.evaluations.index(0))
-        .collect_vec();
     let scalar_evals = flat_expr
         .par_iter()
-        .map(|Term { scalar, .. }| {
-            eval_by_expr_constant(&instance_first_element, challenges, scalar)
-        })
+        .map(|Term { scalar, .. }| eval_by_expr_constant(pub_io_evals, challenges, scalar))
         .collect::<Vec<_>>();
 
     let evaluations = (0..eval_leng)
@@ -1257,7 +1258,7 @@ pub fn wit_infer_by_monomial_expr<'a, E: ExtensionField>(
                         product
                             .iter()
                             .fold(Either::Left(E::BaseField::ONE), |acc, e| {
-                                let v = eval_expr_at_index(e, i, &witness, challenges);
+                                let v = eval_expr_at_index(e, i, witness, challenges);
                                 combine_cumulative_either!(v, acc, |v, acc| v * acc)
                             });
 
@@ -1282,21 +1283,22 @@ pub fn wit_infer_by_monomial_expr<'a, E: ExtensionField>(
 pub fn wit_infer_by_expr<'a, E: ExtensionField>(
     expr: &Expression<E>,
     n_witin: WitnessId,
-    n_structural_witin: WitnessId,
     n_fixed: WitnessId,
+    n_instance: usize,
     fixed: &[ArcMultilinearExtension<'a, E>],
     witnesses: &[ArcMultilinearExtension<'a, E>],
     structual_witnesses: &[ArcMultilinearExtension<'a, E>],
-    instance: &[ArcMultilinearExtension<'a, E>],
+    pub_io_mles: &[ArcMultilinearExtension<'a, E>],
+    pub_io_evals: &[Either<E::BaseField, E>],
     challenges: &[E],
 ) -> ArcMultilinearExtension<'a, E> {
-    let witin = chain!(witnesses, structual_witnesses, fixed)
+    let witin = chain!(witnesses, fixed, pub_io_mles, structual_witnesses)
         .cloned()
         .collect_vec();
     wit_infer_by_monomial_expr(
-        &monomialize_expr_to_wit_terms(expr, n_witin, n_structural_witin, n_fixed),
+        &monomialize_expr_to_wit_terms(expr, n_witin, n_fixed, n_instance),
         &witin,
-        instance,
+        pub_io_evals,
         challenges,
     )
 }
@@ -1698,6 +1700,7 @@ mod tests {
                 vec![B::from_canonical_u64(2)].into_mle().into(),
                 vec![B::from_canonical_u64(3)].into_mle().into(),
             ],
+            &[],
             &[],
             &[],
             &[E::ONE],
