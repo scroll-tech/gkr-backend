@@ -6,9 +6,8 @@ use crate::{
 use p3::{
     field::{Field, TwoAdicField},
     matrix::Matrix,
+    maybe_rayon::prelude::*,
 };
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
 
 /// Given the evaluation of f on the coset specified by coset_offset * <coset_gen>
 /// Compute the fold on that point
