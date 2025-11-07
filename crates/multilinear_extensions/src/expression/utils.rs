@@ -205,12 +205,13 @@ pub fn expr_compression_to_dag<E: ExtensionField>(
     Vec<Instance>,
     Vec<Expression<E>>,
     Vec<Either<E::BaseField, E>>,
+    (usize, usize)
 ) {
     let mut dag = vec![];
     let mut constant = vec![];
     let mut instance_scalar = vec![];
     let mut challenges = vec![];
-    expr_compression_to_dag_helper(
+    let (max_degree, max_depth) = expr_compression_to_dag_helper(
         &mut dag,
         &mut instance_scalar,
         challenges_offset,
@@ -219,7 +220,7 @@ pub fn expr_compression_to_dag<E: ExtensionField>(
         &mut constant,
         expr,
     );
-    (dag, instance_scalar, challenges, constant)
+    (dag, instance_scalar, challenges, constant, (max_degree, max_depth))
 }
 
 fn expr_compression_to_dag_helper<E: ExtensionField>(
@@ -275,7 +276,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
             dag.extend(vec![DagAdd as u32]);
             (
                 max_degree_a.max(max_degree_b),
-                (max_depth_a + 1).max(max_depth_b),
+                max_depth_a.max(max_depth_b + 1),
             ) // 1 comes from store result of `a`
         }
         Expression::Product(a, b) => {
@@ -300,11 +301,11 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
             dag.extend(vec![DagMul as u32]);
             (
                 max_degree_a + max_degree_b,
-                (max_depth_a + 1).max(max_depth_b),
+                max_depth_a.max(max_depth_b + 1),
             ) // 1 comes from store result of `a`
         }
         Expression::ScaledSum(x, a, b) => {
-            expr_compression_to_dag_helper(
+            let (max_degree_x, max_depth_x) = expr_compression_to_dag_helper(
                 dag,
                 instance_scalar,
                 challenges_offset,
@@ -313,7 +314,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 constant,
                 x,
             );
-            expr_compression_to_dag_helper(
+            let (max_degree_a, max_depth_a) = expr_compression_to_dag_helper(
                 dag,
                 instance_scalar,
                 challenges_offset,
@@ -322,8 +323,10 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 constant,
                 a,
             );
+            let xa_degree = max_degree_x + max_degree_a;
+            let ax_max_depth = max_depth_x.max(max_depth_a + 1);
             dag.extend(vec![DagMul as u32]);
-            expr_compression_to_dag_helper(
+            let (max_degree_b, max_depth_b) = expr_compression_to_dag_helper(
                 dag,
                 instance_scalar,
                 challenges_offset,
@@ -333,13 +336,18 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 b,
             );
             dag.extend(vec![DagAdd as u32]);
+            (
+                xa_degree.max(max_degree_b),
+                (ax_max_depth).max(max_depth_b + 1),
+            ) // 1 comes from store result of `ax`
         }
         c @ Expression::Challenge(..) => {
             challenges.push(c.clone());
             dag.extend(vec![
                 DagLoadScalar as u32,
                 (challenges_offset + challenges.len()) as u32 - 1,
-            ])
+            ]);
+            (0, 1)
         }
     }
 }
