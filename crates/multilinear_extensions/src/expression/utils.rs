@@ -198,8 +198,6 @@ pub const DagMul: usize = 3;
 
 pub fn expr_compression_to_dag<E: ExtensionField>(
     expr: &Expression<E>,
-    challenges_offset: usize,
-    constant_offset: usize,
 ) -> (
     Vec<u32>,
     Vec<Instance>,
@@ -211,10 +209,28 @@ pub fn expr_compression_to_dag<E: ExtensionField>(
     let mut constant = vec![];
     let mut instance_scalar = vec![];
     let mut challenges = vec![];
+    // traverse first time to collect offset
+    let _ = expr_compression_to_dag_helper(
+        &mut dag,
+        &mut instance_scalar,
+        0,
+        &mut challenges,
+        0,
+        &mut constant,
+        expr,
+    );
+
+    let challenge_offset = instance_scalar.len();
+    let constant_offset = instance_scalar.len() + challenges.len();
+
+    dag.truncate(0);
+    constant.truncate(0);
+    instance_scalar.truncate(0);
+    challenges.truncate(0);
     let (max_degree, max_depth) = expr_compression_to_dag_helper(
         &mut dag,
         &mut instance_scalar,
-        challenges_offset,
+        challenge_offset,
         &mut challenges,
         constant_offset,
         &mut constant,
