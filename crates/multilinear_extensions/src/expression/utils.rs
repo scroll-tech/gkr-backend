@@ -1,3 +1,5 @@
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use super::{Expression, StructuralWitIn, WitIn};
 use crate::{Fixed, Instance, WitnessId, combine_cumulative_either, monomial::Term};
 use either::Either;
@@ -205,6 +207,8 @@ pub fn expr_compression_to_dag<E: ExtensionField>(
     Vec<Either<E::BaseField, E>>,
     (usize, usize)
 ) {
+    let mut constant_dedup = HashMap::new();
+    let mut challenges_dedup = HashMap::new();
     let mut dag = vec![];
     let mut constant = vec![];
     let mut instance_scalar = vec![];
@@ -217,6 +221,8 @@ pub fn expr_compression_to_dag<E: ExtensionField>(
         &mut challenges,
         0,
         &mut constant,
+        &mut challenges_dedup,
+        &mut constant_dedup,
         expr,
     );
 
@@ -227,6 +233,8 @@ pub fn expr_compression_to_dag<E: ExtensionField>(
     constant.truncate(0);
     instance_scalar.truncate(0);
     challenges.truncate(0);
+    challenges_dedup.clear();
+    constant_dedup.clear();
     let (max_degree, max_depth) = expr_compression_to_dag_helper(
         &mut dag,
         &mut instance_scalar,
@@ -234,6 +242,8 @@ pub fn expr_compression_to_dag<E: ExtensionField>(
         &mut challenges,
         constant_offset,
         &mut constant,
+        &mut challenges_dedup,
+        &mut constant_dedup,
         expr,
     );
     (dag, instance_scalar, challenges, constant, (max_degree, max_depth))
@@ -246,6 +256,8 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
     challenges: &mut Vec<Expression<E>>,
     constant_offset: usize,
     constant: &mut Vec<Either<E::BaseField, E>>,
+    challenges_dedup: &mut HashMap<Expression<E>, u32>,
+    constant_dedup: &mut HashMap<Either<E::BaseField, E>, u32>,
     expr: &Expression<E>,
 ) -> (usize, usize) {
     // (max_degree, max_depth)
@@ -263,11 +275,17 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
             (0, 1)
         }
         Expression::Constant(value) => {
-            constant.push(value.clone());
-            dag.extend(vec![
-                DagLoadScalar as u32,
-                (constant_offset + constant.len()) as u32 - 1,
-            ]);
+            let constant_id = match constant_dedup.entry(value.clone()) {
+                Entry::Occupied(entry) => *entry.get(),
+                Entry::Vacant(entry) => {
+                    constant.push(value.clone());
+                    let id = (constant_offset + constant.len()) as u32 - 1;
+                    entry.insert(id);
+                    id
+                }
+            };
+
+            dag.extend([DagLoadScalar as u32, constant_id]);
             (0, 1)
         }
         Expression::Sum(a, b) => {
@@ -278,6 +296,8 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 challenges,
                 constant_offset,
                 constant,
+                challenges_dedup,
+                constant_dedup,
                 a,
             );
             let (max_degree_b, max_depth_b) = expr_compression_to_dag_helper(
@@ -287,6 +307,8 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 challenges,
                 constant_offset,
                 constant,
+                challenges_dedup,
+                constant_dedup,
                 b,
             );
             dag.extend(vec![DagAdd as u32]);
@@ -303,6 +325,8 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 challenges,
                 constant_offset,
                 constant,
+                challenges_dedup,
+                constant_dedup,
                 a,
             );
             let (max_degree_b, max_depth_b) = expr_compression_to_dag_helper(
@@ -312,6 +336,8 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 challenges,
                 constant_offset,
                 constant,
+                challenges_dedup,
+                constant_dedup,
                 b,
             );
             dag.extend(vec![DagMul as u32]);
@@ -328,6 +354,8 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 challenges,
                 constant_offset,
                 constant,
+                challenges_dedup,
+                constant_dedup,
                 x,
             );
             let (max_degree_a, max_depth_a) = expr_compression_to_dag_helper(
@@ -337,6 +365,8 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 challenges,
                 constant_offset,
                 constant,
+                challenges_dedup,
+                constant_dedup,
                 a,
             );
             let xa_degree = max_degree_x + max_degree_a;
@@ -349,6 +379,8 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 challenges,
                 constant_offset,
                 constant,
+                challenges_dedup,
+                constant_dedup,
                 b,
             );
             dag.extend(vec![DagAdd as u32]);
@@ -358,11 +390,17 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
             ) // 1 comes from store result of `ax`
         }
         c @ Expression::Challenge(..) => {
-            challenges.push(c.clone());
-            dag.extend(vec![
-                DagLoadScalar as u32,
-                (challenges_offset + challenges.len()) as u32 - 1,
-            ]);
+            let challenge_id = match challenges_dedup.entry(c.clone()) {
+                Entry::Occupied(entry) => *entry.get(),
+                Entry::Vacant(entry) => {
+                    challenges.push(c.clone());
+                    let id = (challenges_offset + challenges.len()) as u32 - 1;
+                    entry.insert(id);
+                    id
+                }
+            };
+
+            dag.extend([DagLoadScalar as u32, challenge_id]);
             (0, 1)
         }
     }
