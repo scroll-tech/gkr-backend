@@ -5,6 +5,7 @@ use crate::{Fixed, Instance, WitnessId, combine_cumulative_either, monomial::Ter
 use either::Either;
 use ff_ext::ExtensionField;
 use itertools::Itertools;
+use serde::{Deserialize, Serialize};
 
 impl WitIn {
     pub fn assign<E: ExtensionField>(&self, instance: &mut [E::BaseField], value: E::BaseField) {
@@ -198,13 +199,23 @@ pub const DagLoadScalar: usize = 1;
 pub const DagAdd: usize = 2;
 pub const DagMul: usize = 3;
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[repr(C)]
+pub struct Node {
+    pub op: u32,
+    pub left_id: u32,
+    pub right_id: u32,
+    pub out: u32,
+}
+
 pub fn expr_compression_to_dag<E: ExtensionField>(
     expr: &Expression<E>,
 ) -> (
-    Vec<u32>,
+    Vec<Node>,
     Vec<Instance>,
     Vec<Expression<E>>,
     Vec<Either<E::BaseField, E>>,
+    u32,
     (usize, usize)
 ) {
     let mut constant_dedup = HashMap::new();
@@ -213,6 +224,7 @@ pub fn expr_compression_to_dag<E: ExtensionField>(
     let mut constant = vec![];
     let mut instance_scalar = vec![];
     let mut challenges = vec![];
+    let mut stack_pos: u32 = 0;
     // traverse first time to collect offset
     let _ = expr_compression_to_dag_helper(
         &mut dag,
@@ -223,6 +235,7 @@ pub fn expr_compression_to_dag<E: ExtensionField>(
         &mut constant,
         &mut challenges_dedup,
         &mut constant_dedup,
+        &mut stack_pos,
         expr,
     );
 
@@ -235,6 +248,7 @@ pub fn expr_compression_to_dag<E: ExtensionField>(
     challenges.truncate(0);
     challenges_dedup.clear();
     constant_dedup.clear();
+    stack_pos = 0;
     let (max_degree, max_depth) = expr_compression_to_dag_helper(
         &mut dag,
         &mut instance_scalar,
@@ -244,13 +258,14 @@ pub fn expr_compression_to_dag<E: ExtensionField>(
         &mut constant,
         &mut challenges_dedup,
         &mut constant_dedup,
+        &mut stack_pos,
         expr,
     );
-    (dag, instance_scalar, challenges, constant, (max_degree, max_depth))
+    (dag, instance_scalar, challenges, constant, stack_pos, (max_degree, max_depth))
 }
 
 fn expr_compression_to_dag_helper<E: ExtensionField>(
-    dag: &mut Vec<u32>,
+    dag: &mut Vec<Node>,
     instance_scalar: &mut Vec<Instance>,
     challenges_offset: usize,
     challenges: &mut Vec<Expression<E>>,
@@ -258,20 +273,33 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
     constant: &mut Vec<Either<E::BaseField, E>>,
     challenges_dedup: &mut HashMap<Expression<E>, u32>,
     constant_dedup: &mut HashMap<Either<E::BaseField, E>, u32>,
+    stack_pos: &mut u32,
     expr: &Expression<E>,
 ) -> (usize, usize) {
     // (max_degree, max_depth)
     match expr {
         Expression::Fixed(_) => unimplemented!(),
         Expression::WitIn(wit_id) => {
-            dag.extend(vec![DagLoadWit as u32, *wit_id as u32]);
+            dag.push(Node {
+                op: DagLoadWit as u32,
+                left_id: *wit_id as u32,
+                right_id: 0,
+                out: *stack_pos,
+            });
+            *stack_pos += 1;
             (1, 1)
         }
         Expression::StructuralWitIn(_, ..) => unimplemented!(),
         Expression::Instance(_) => unimplemented!(),
         Expression::InstanceScalar(inst) => {
             instance_scalar.push(inst.clone());
-            dag.extend(vec![DagLoadScalar as u32, instance_scalar.len() as u32 - 1]);
+            dag.push(Node {
+                op: DagLoadScalar as u32,
+                left_id: instance_scalar.len() as u32 - 1,
+                right_id: 0,
+                out: *stack_pos,
+            });
+            *stack_pos += 1;
             (0, 1)
         }
         Expression::Constant(value) => {
@@ -284,8 +312,13 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                     id
                 }
             };
-
-            dag.extend([DagLoadScalar as u32, constant_id]);
+            dag.push(Node {
+                op: DagLoadScalar as u32,
+                left_id: constant_id,
+                right_id: 0,
+                out: *stack_pos,
+            });
+            *stack_pos += 1;
             (0, 1)
         }
         Expression::Sum(a, b) => {
@@ -298,6 +331,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 constant,
                 challenges_dedup,
                 constant_dedup,
+                stack_pos,
                 a,
             );
             let (max_degree_b, max_depth_b) = expr_compression_to_dag_helper(
@@ -309,9 +343,16 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 constant,
                 challenges_dedup,
                 constant_dedup,
+                stack_pos,
                 b,
             );
-            dag.extend(vec![DagAdd as u32]);
+            dag.push(Node {
+                op: DagAdd as u32,
+                left_id: *stack_pos-2,
+                right_id: *stack_pos-1,
+                out: *stack_pos-2,
+            });
+            *stack_pos -= 1;
             (
                 max_degree_a.max(max_degree_b),
                 max_depth_a.max(max_depth_b + 1),
@@ -327,6 +368,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 constant,
                 challenges_dedup,
                 constant_dedup,
+                stack_pos,
                 a,
             );
             let (max_degree_b, max_depth_b) = expr_compression_to_dag_helper(
@@ -338,9 +380,16 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 constant,
                 challenges_dedup,
                 constant_dedup,
+                stack_pos,
                 b,
             );
-            dag.extend(vec![DagMul as u32]);
+            dag.push(Node {
+                op: DagMul as u32,
+                left_id: *stack_pos-2,
+                right_id: *stack_pos-1,
+                out: *stack_pos-2,
+            });
+            *stack_pos -= 1;
             (
                 max_degree_a + max_degree_b,
                 max_depth_a.max(max_depth_b + 1),
@@ -356,6 +405,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 constant,
                 challenges_dedup,
                 constant_dedup,
+                stack_pos,
                 x,
             );
             let (max_degree_a, max_depth_a) = expr_compression_to_dag_helper(
@@ -367,11 +417,18 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 constant,
                 challenges_dedup,
                 constant_dedup,
+                stack_pos,
                 a,
             );
             let xa_degree = max_degree_x + max_degree_a;
             let ax_max_depth = max_depth_x.max(max_depth_a + 1);
-            dag.extend(vec![DagMul as u32]);
+            dag.push(Node {
+                op: DagMul as u32,
+                left_id: *stack_pos-2,
+                right_id: *stack_pos-1,
+                out: *stack_pos-2,
+            });
+            *stack_pos -= 1;
             let (max_degree_b, max_depth_b) = expr_compression_to_dag_helper(
                 dag,
                 instance_scalar,
@@ -381,9 +438,16 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 constant,
                 challenges_dedup,
                 constant_dedup,
+                stack_pos,
                 b,
             );
-            dag.extend(vec![DagAdd as u32]);
+            dag.push(Node {
+                op: DagAdd as u32,
+                left_id: *stack_pos-2,
+                right_id: *stack_pos-1,
+                out: *stack_pos-2,
+            });
+            *stack_pos -= 1;
             (
                 xa_degree.max(max_degree_b),
                 (ax_max_depth).max(max_depth_b + 1),
@@ -399,8 +463,13 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                     id
                 }
             };
-
-            dag.extend([DagLoadScalar as u32, challenge_id]);
+            dag.push(Node {
+                op: DagLoadScalar as u32,
+                left_id: challenge_id,
+                right_id: 0,
+                out: *stack_pos,
+            });
+            *stack_pos += 1;
             (0, 1)
         }
     }
