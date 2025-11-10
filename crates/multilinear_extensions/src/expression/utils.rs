@@ -1,11 +1,11 @@
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
 use super::{Expression, StructuralWitIn, WitIn};
 use crate::{Fixed, Instance, WitnessId, combine_cumulative_either, monomial::Term};
 use either::Either;
 use ff_ext::ExtensionField;
 use itertools::Itertools;
+use p3::field::Field;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 impl WitIn {
     pub fn assign<E: ExtensionField>(&self, instance: &mut [E::BaseField], value: E::BaseField) {
@@ -208,6 +208,16 @@ pub struct Node {
     pub out: u32,
 }
 
+fn is_one<E: ExtensionField>(e: &Expression<E>) -> bool {
+    matches!(e, Expression::Constant(v)
+        if v.map_either(|b| b.is_one(), |x| x.is_one()).into_inner())
+}
+
+fn is_zero<E: ExtensionField>(e: &Expression<E>) -> bool {
+    matches!(e, Expression::Constant(v)
+        if v.map_either(|b| b.is_zero(), |x| x.is_zero()).into_inner())
+}
+
 pub fn expr_compression_to_dag<E: ExtensionField>(
     expr: &Expression<E>,
 ) -> (
@@ -216,7 +226,7 @@ pub fn expr_compression_to_dag<E: ExtensionField>(
     Vec<Expression<E>>,
     Vec<Either<E::BaseField, E>>,
     u32,
-    (usize, usize)
+    (usize, usize),
 ) {
     let mut constant_dedup = HashMap::new();
     let mut challenges_dedup = HashMap::new();
@@ -249,7 +259,7 @@ pub fn expr_compression_to_dag<E: ExtensionField>(
     challenges_dedup.clear();
     constant_dedup.clear();
     stack_pos = 0;
-    let (max_degree, max_depth) = expr_compression_to_dag_helper(
+    let Some((max_degree, max_depth)) = expr_compression_to_dag_helper(
         &mut dag,
         &mut instance_scalar,
         challenge_offset,
@@ -260,8 +270,17 @@ pub fn expr_compression_to_dag<E: ExtensionField>(
         &mut constant_dedup,
         &mut stack_pos,
         expr,
-    );
-    (dag, instance_scalar, challenges, constant, stack_pos, (max_degree, max_depth))
+    ) else {
+        panic!("zero expression expr {expr}")
+    };
+    (
+        dag,
+        instance_scalar,
+        challenges,
+        constant,
+        stack_pos,
+        (max_degree, max_depth),
+    )
 }
 
 fn expr_compression_to_dag_helper<E: ExtensionField>(
@@ -275,7 +294,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
     constant_dedup: &mut HashMap<Either<E::BaseField, E>, u32>,
     stack_pos: &mut u32,
     expr: &Expression<E>,
-) -> (usize, usize) {
+) -> Option<(usize, usize)> {
     // (max_degree, max_depth)
     match expr {
         Expression::Fixed(_) => unimplemented!(),
@@ -287,7 +306,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 out: *stack_pos,
             });
             *stack_pos += 1;
-            (1, 1)
+            Some((1, 1))
         }
         Expression::StructuralWitIn(_, ..) => unimplemented!(),
         Expression::Instance(_) => unimplemented!(),
@@ -300,18 +319,22 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 out: *stack_pos,
             });
             *stack_pos += 1;
-            (0, 1)
+            Some((0, 1))
         }
         Expression::Constant(value) => {
-            let constant_id = match constant_dedup.entry(value.clone()) {
-                Entry::Occupied(entry) => *entry.get(),
-                Entry::Vacant(entry) => {
-                    constant.push(value.clone());
-                    let id = (constant_offset + constant.len()) as u32 - 1;
-                    entry.insert(id);
-                    id
-                }
-            };
+            // if zero, skip entirely
+            let is_zero = value
+                .map_either(|b| b.is_zero(), |e| e.is_zero())
+                .into_inner();
+            if is_zero {
+                return None;
+            }
+
+            let constant_id = *constant_dedup.entry(value.clone()).or_insert_with(|| {
+                constant.push(value.clone());
+                (constant_offset + constant.len() - 1) as u32
+            });
+
             dag.push(Node {
                 op: DagLoadScalar as u32,
                 left_id: constant_id,
@@ -319,10 +342,10 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 out: *stack_pos,
             });
             *stack_pos += 1;
-            (0, 1)
+            Some((0, 1))
         }
         Expression::Sum(a, b) => {
-            let (max_degree_a, max_depth_a) = expr_compression_to_dag_helper(
+            let lhs = expr_compression_to_dag_helper(
                 dag,
                 instance_scalar,
                 challenges_offset,
@@ -334,7 +357,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 stack_pos,
                 a,
             );
-            let (max_degree_b, max_depth_b) = expr_compression_to_dag_helper(
+            let rhs = expr_compression_to_dag_helper(
                 dag,
                 instance_scalar,
                 challenges_offset,
@@ -346,123 +369,228 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 stack_pos,
                 b,
             );
-            dag.push(Node {
-                op: DagAdd as u32,
-                left_id: *stack_pos-2,
-                right_id: *stack_pos-1,
-                out: *stack_pos-2,
-            });
-            *stack_pos -= 1;
-            (
-                max_degree_a.max(max_degree_b),
-                max_depth_a.max(max_depth_b + 1),
-            ) // 1 comes from store result of `a`
+
+            match (lhs, rhs) {
+                (None, None) => None,                         // 0 + 0 = 0
+                (Some(x), None) | (None, Some(x)) => Some(x), // a + 0 = a
+                (Some((da, dep_a)), Some((db, dep_b))) => {
+                    dag.push(Node {
+                        op: DagAdd as u32,
+                        left_id: *stack_pos - 2,
+                        right_id: *stack_pos - 1,
+                        out: *stack_pos - 2,
+                    });
+                    *stack_pos -= 1;
+                    Some((da.max(db), dep_a.max(dep_b + 1))) // 1 comes from store result of `a`
+                }
+            }
         }
         Expression::Product(a, b) => {
-            let (max_degree_a, max_depth_a) = expr_compression_to_dag_helper(
-                dag,
-                instance_scalar,
-                challenges_offset,
-                challenges,
-                constant_offset,
-                constant,
-                challenges_dedup,
-                constant_dedup,
-                stack_pos,
-                a,
-            );
-            let (max_degree_b, max_depth_b) = expr_compression_to_dag_helper(
-                dag,
-                instance_scalar,
-                challenges_offset,
-                challenges,
-                constant_offset,
-                constant,
-                challenges_dedup,
-                constant_dedup,
-                stack_pos,
-                b,
-            );
-            dag.push(Node {
-                op: DagMul as u32,
-                left_id: *stack_pos-2,
-                right_id: *stack_pos-1,
-                out: *stack_pos-2,
-            });
-            *stack_pos -= 1;
-            (
-                max_degree_a + max_degree_b,
-                max_depth_a.max(max_depth_b + 1),
-            ) // 1 comes from store result of `a`
+            // ---- identity short-circuits BEFORE recursion (so we don't push junk) ----
+            if is_zero(a) || is_zero(b) {
+                // nothing pushed, caller treats None as 0
+                None
+            } else if is_one(a) {
+                // 1 * b = b  (evaluate only b; it will land at the current top)
+                expr_compression_to_dag_helper(
+                    dag, instance_scalar, challenges_offset, challenges,
+                    constant_offset, constant, challenges_dedup, constant_dedup,
+                    stack_pos, b,
+                )
+            } else if is_one(b) {
+                // a * 1 = a  (evaluate only a)
+                expr_compression_to_dag_helper(
+                    dag, instance_scalar, challenges_offset, challenges,
+                    constant_offset, constant, challenges_dedup, constant_dedup,
+                    stack_pos, a,
+                )
+            } else {
+                // ---- general case: evaluate a, then b, emit MUL into (top-2), pop 1 ----
+                let lhs = expr_compression_to_dag_helper(
+                    dag, instance_scalar, challenges_offset, challenges,
+                    constant_offset, constant, challenges_dedup, constant_dedup,
+                    stack_pos, a,
+                );
+                let rhs = expr_compression_to_dag_helper(
+                    dag, instance_scalar, challenges_offset, challenges,
+                    constant_offset, constant, challenges_dedup, constant_dedup,
+                    stack_pos, b,
+                );
+
+                match (lhs, rhs) {
+                    (None, _) | (_, None) => None, // defensive (shouldn’t reach due to early zero)
+                    (Some((da, dep_a)), Some((db, dep_b))) => {
+                        dag.push(Node {
+                            op: DagMul as u32,
+                            left_id: *stack_pos - 2,
+                            right_id: *stack_pos - 1,
+                            out: *stack_pos - 2,       // overwrite lhs slot
+                        });
+                        *stack_pos -= 1;                // consume rhs
+                        Some((da + db, dep_a.max(dep_b + 1)))
+                    }
+                }
+            }
         }
         Expression::ScaledSum(x, a, b) => {
-            let (max_degree_x, max_depth_x) = expr_compression_to_dag_helper(
-                dag,
-                instance_scalar,
-                challenges_offset,
-                challenges,
-                constant_offset,
-                constant,
-                challenges_dedup,
-                constant_dedup,
-                stack_pos,
-                x,
+            // algebraic simplifications BEFORE recursion:
+            // x*a + b =>
+            //   if x==0 or a==0 -> 0 + b = b
+            //   if x==1         -> a + b
+            //   if a==1         -> x + b
+            //   if b==0         -> x*a
+            //
+            // We’ll implement these in order, so we only evaluate what's needed.
+
+            if is_zero(x) || is_zero(a) {
+                // becomes b
+                return expr_compression_to_dag_helper(
+                    dag, instance_scalar, challenges_offset, challenges,
+                    constant_offset, constant, challenges_dedup, constant_dedup,
+                    stack_pos, b,
+                );
+            }
+
+            if is_one(x) {
+                // 1*a + b = a + b
+                let lhs_a = expr_compression_to_dag_helper(
+                    dag, instance_scalar, challenges_offset, challenges,
+                    constant_offset, constant, challenges_dedup, constant_dedup,
+                    stack_pos, a,
+                );
+                let rhs_b = expr_compression_to_dag_helper(
+                    dag, instance_scalar, challenges_offset, challenges,
+                    constant_offset, constant, challenges_dedup, constant_dedup,
+                    stack_pos, b,
+                );
+
+                return match (lhs_a, rhs_b) {
+                    (None, None) => None,
+                    (Some(x), None) | (None, Some(x)) => Some(x),
+                    (Some((da, dep_a)), Some((db, dep_b))) => {
+                        dag.push(Node {
+                            op: DagAdd as u32,
+                            left_id: *stack_pos - 2,
+                            right_id: *stack_pos - 1,
+                            out: *stack_pos - 2,
+                        });
+                        *stack_pos -= 1;
+                        Some((da.max(db), dep_a.max(dep_b + 1)))
+                    }
+                };
+            }
+
+            if is_one(a) {
+                // x*1 + b = x + b
+                let lhs_x = expr_compression_to_dag_helper(
+                    dag, instance_scalar, challenges_offset, challenges,
+                    constant_offset, constant, challenges_dedup, constant_dedup,
+                    stack_pos, x,
+                );
+                let rhs_b = expr_compression_to_dag_helper(
+                    dag, instance_scalar, challenges_offset, challenges,
+                    constant_offset, constant, challenges_dedup, constant_dedup,
+                    stack_pos, b,
+                );
+
+                return match (lhs_x, rhs_b) {
+                    (None, None) => None,
+                    (Some(x), None) | (None, Some(x)) => Some(x),
+                    (Some((dx, dep_x)), Some((db, dep_b))) => {
+                        dag.push(Node {
+                            op: DagAdd as u32,
+                            left_id: *stack_pos - 2,
+                            right_id: *stack_pos - 1,
+                            out: *stack_pos - 2,
+                        });
+                        *stack_pos -= 1;
+                        Some((dx.max(db), dep_x.max(dep_b + 1)))
+                    }
+                };
+            }
+
+            if is_zero(b) {
+                // general product without identities since x!=0, a!=0 here
+                // x*a + 0 = x*a
+                let lhs_x = expr_compression_to_dag_helper(
+                    dag, instance_scalar, challenges_offset, challenges,
+                    constant_offset, constant, challenges_dedup, constant_dedup,
+                    stack_pos, x,
+                );
+                let lhs_a = expr_compression_to_dag_helper(
+                    dag, instance_scalar, challenges_offset, challenges,
+                    constant_offset, constant, challenges_dedup, constant_dedup,
+                    stack_pos, a,
+                );
+
+                return match (lhs_x, lhs_a) {
+                    (None, _) | (_, None) => None, // defensive
+                    (Some((dx, dep_x)), Some((da, dep_a))) => {
+                        dag.push(Node {
+                            op: DagMul as u32,
+                            left_id: *stack_pos - 2,
+                            right_id: *stack_pos - 1,
+                            out: *stack_pos - 2,
+                        });
+                        *stack_pos -= 1;
+                        Some((dx + da, dep_x.max(dep_a + 1)))
+                    }
+                };
+            }
+
+            // General case: compute (x*a) then + b
+            let lhs_x = expr_compression_to_dag_helper(
+                dag, instance_scalar, challenges_offset, challenges,
+                constant_offset, constant, challenges_dedup, constant_dedup,
+                stack_pos, x,
             );
-            let (max_degree_a, max_depth_a) = expr_compression_to_dag_helper(
-                dag,
-                instance_scalar,
-                challenges_offset,
-                challenges,
-                constant_offset,
-                constant,
-                challenges_dedup,
-                constant_dedup,
-                stack_pos,
-                a,
+            let lhs_a = expr_compression_to_dag_helper(
+                dag, instance_scalar, challenges_offset, challenges,
+                constant_offset, constant, challenges_dedup, constant_dedup,
+                stack_pos, a,
             );
-            let xa_degree = max_degree_x + max_degree_a;
-            let ax_max_depth = max_depth_x.max(max_depth_a + 1);
-            dag.push(Node {
-                op: DagMul as u32,
-                left_id: *stack_pos-2,
-                right_id: *stack_pos-1,
-                out: *stack_pos-2,
-            });
-            *stack_pos -= 1;
-            let (max_degree_b, max_depth_b) = expr_compression_to_dag_helper(
-                dag,
-                instance_scalar,
-                challenges_offset,
-                challenges,
-                constant_offset,
-                constant,
-                challenges_dedup,
-                constant_dedup,
-                stack_pos,
-                b,
-            );
-            dag.push(Node {
-                op: DagAdd as u32,
-                left_id: *stack_pos-2,
-                right_id: *stack_pos-1,
-                out: *stack_pos-2,
-            });
-            *stack_pos -= 1;
-            (
-                xa_degree.max(max_degree_b),
-                (ax_max_depth).max(max_depth_b + 1),
-            ) // 1 comes from store result of `ax`
-        }
-        c @ Expression::Challenge(..) => {
-            let challenge_id = match challenges_dedup.entry(c.clone()) {
-                Entry::Occupied(entry) => *entry.get(),
-                Entry::Vacant(entry) => {
-                    challenges.push(c.clone());
-                    let id = (challenges_offset + challenges.len()) as u32 - 1;
-                    entry.insert(id);
-                    id
+
+            let mul = match (lhs_x, lhs_a) {
+                (None, _) | (_, None) => None, // x or a simplified to 0 above; defensive
+                (Some((dx, dep_x)), Some((da, dep_a))) => {
+                    dag.push(Node {
+                        op: DagMul as u32,
+                        left_id: *stack_pos - 2,
+                        right_id: *stack_pos - 1,
+                        out: *stack_pos - 2,
+                    });
+                    *stack_pos -= 1;
+                    Some((dx + da, dep_x.max(dep_a + 1)))
                 }
             };
+
+            let rhs_b = expr_compression_to_dag_helper(
+                dag, instance_scalar, challenges_offset, challenges,
+                constant_offset, constant, challenges_dedup, constant_dedup,
+                stack_pos, b,
+            );
+
+            match (mul, rhs_b) {
+                (None, None) => None,
+                (Some(xa), None) | (None, Some(xa)) => Some(xa),
+                (Some((dm, dep_m)), Some((db, dep_b))) => {
+                    dag.push(Node {
+                        op: DagAdd as u32,
+                        left_id: *stack_pos - 2,
+                        right_id: *stack_pos - 1,
+                        out: *stack_pos - 2,
+                    });
+                    *stack_pos -= 1;
+                    Some((dm.max(db), dep_m.max(dep_b + 1)))
+                }
+            }
+        }
+        c @ Expression::Challenge(..) => {
+            let challenge_id = *challenges_dedup.entry(c.clone()).or_insert_with(|| {
+                challenges.push(c.clone());
+                (challenges_offset + challenges.len() - 1) as u32
+            });
+
             dag.push(Node {
                 op: DagLoadScalar as u32,
                 left_id: challenge_id,
@@ -470,7 +598,116 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 out: *stack_pos,
             });
             *stack_pos += 1;
-            (0, 1)
+            Some((0, 1))
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use either::Either;
+    use itertools::Itertools;
+    use ff_ext::{BabyBearExt4, ExtensionField};
+    use p3::babybear::BabyBear;
+    use p3::field::FieldAlgebra;
+    use crate::{power_sequence, Expression, Instance, ToExpr};
+    use crate::utils::{expr_compression_to_dag, Node};
+
+    type E = BabyBearExt4;
+    type B = BabyBear;
+
+    fn extract_num_add_mul<E: ExtensionField>(expr: &Expression<E>) -> (Vec<Node>, Vec<Instance>, Vec<Expression<E>>, Vec<Either<<E as ExtensionField>::BaseField, E>>, u32, (i32, i32), (usize, usize)) {
+        let (
+            dag,
+            instance_scalar_expr,
+            challenges_expr,
+            constant_expr,
+            stack_top,
+            (max_degree, max_dag_depth),
+        ) = expr_compression_to_dag(&expr);
+
+        let mut num_add = 0;
+        let mut num_mul = 0;
+
+        for node in &dag {
+            match node.op {
+                0 => (), // skip wit index
+                1 => (), // skip scalar index
+                2 => {
+                    num_add += 1;
+                }
+                3 => {
+                    num_mul += 1;
+                }
+                op => panic!("unknown op {op}"),
+            }
+        }
+
+        (
+            dag,
+            instance_scalar_expr,
+            challenges_expr,
+            constant_expr,
+            stack_top,
+            (num_add, num_mul),
+            (max_degree, max_dag_depth),
+        )
+    }
+    #[test]
+    fn test_normal_expr_compression_to_dag_helper() {
+        let a = Expression::<E>::WitIn(0);
+        let b = Expression::<E>::WitIn(1);
+        let s2 = Expression::<E>::Constant(Either::Left(B::from_canonical_u32(2)));
+        let s3 = Expression::<E>::Constant(Either::Left(B::from_canonical_u32(3)));
+        let s4 = Expression::<E>::Constant(Either::Left(B::from_canonical_u32(4)));
+
+        let e: Expression<E> = s3.expr() * (s2.expr() * a.expr() * b.expr() + s4.expr());
+        let (
+            dag,
+            instance_scalar_expr,
+            challenges_expr,
+            constant_expr,
+            stack_top,
+            (num_add, num_mul),
+            (max_degree, max_dag_depth),
+        ) = extract_num_add_mul(&e);
+
+        assert_eq!(constant_expr.len(), 3);
+        assert!(challenges_expr.is_empty());
+        assert_eq!(num_add, 1);
+        assert_eq!(num_mul, 3);
+        assert_eq!(max_degree, 2);
+
+    }
+
+    #[test]
+    fn test_challenge_expr_compression_to_dag_helper() {
+        let a = Expression::<E>::WitIn(0);
+        let b = Expression::<E>::WitIn(1);
+        let c = Expression::<E>::Challenge(2, 1, E::ONE, E::ZERO);
+        let alpha = Expression::<E>::Challenge(0, 1, E::ONE, E::ZERO);
+        let pow_c = power_sequence(c);
+
+        // alpha * (1 * a + c * b)
+        // will be optimized as alpha * (a + c * b)
+        let e: Expression<E> = vec![a.expr(), b.expr()].into_iter().zip(pow_c).map(|(e1, e2)| e1.expr()*e2.expr()).sum::<Expression<E>>();
+        let e = e * alpha;
+        let (
+            dag,
+            instance_scalar_expr,
+            challenges_expr,
+            constant_expr,
+            stack_top,
+            (num_add, num_mul),
+            (max_degree, max_dag_depth),
+        ) = extract_num_add_mul(&e);
+
+        assert_eq!(constant_expr.len(), 0); // 1 was absorbed
+        assert_eq!(challenges_expr.len(), 2);
+        assert_eq!(num_add, 1);
+        assert_eq!(num_mul, 2);
+        assert_eq!(max_degree, 1);
+
     }
 }
