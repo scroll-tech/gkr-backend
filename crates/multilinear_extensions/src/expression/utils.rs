@@ -5,7 +5,7 @@ use ff_ext::ExtensionField;
 use itertools::Itertools;
 use p3::field::Field;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 impl WitIn {
     pub fn assign<E: ExtensionField>(&self, instance: &mut [E::BaseField], value: E::BaseField) {
@@ -585,7 +585,10 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 }
             }
         }
-        c @ Expression::Challenge(..) => {
+        c @ Expression::Challenge(challenge_id, _power, scalar, offset) => {
+            if *scalar == E::ZERO && *offset == E::ZERO {
+                return None
+            }
             let challenge_id = *challenges_dedup.entry(c.clone()).or_insert_with(|| {
                 challenges.push(c.clone());
                 (challenges_offset + challenges.len() - 1) as u32
@@ -603,16 +606,168 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
     }
 }
 
+// trie
+#[derive(Default)]
+struct TrieNode {
+    children: BTreeMap<u16, TrieNode>, // Sorted keys: commutative grouping
+    scalar_indices: Vec<usize>,
+}
+pub fn build_factored_dag_commutative<E: ExtensionField>(
+    terms: &[Term<Expression<E>, Expression<E>>],
+) -> (Vec<Node>, Vec<Expression<E>>, Option<u32>, u32) {
+    let mut root = TrieNode::default();
+    let mut scalars: Vec<Expression<E>> = Vec::new();
 
+    // ---- Step 1: canonicalize products (commutative) ----
+    for term in terms {
+        let mut ids: Vec<u16> = term
+            .product
+            .iter()
+            .filter_map(|e| match e {
+                Expression::WitIn(id) => Some(*id),
+                e => unimplemented!("unknown expression {e}"),
+            })
+            .collect();
+        ids.sort(); // ensure a*b == b*a
+        // we assume witiness being shared will be made with larger id
+        // so we build the prefix tree with larger id go first
+        ids.reverse();
+
+        let mut cur = &mut root;
+        for wid in ids {
+            cur = cur.children.entry(wid).or_default();
+        }
+
+        let idx = scalars.len();
+        scalars.push(term.scalar.clone());
+        cur.scalar_indices.push(idx);
+    }
+
+    // ---- Step 2: emit DAG (stack semantics) ----
+    let mut dag = Vec::new();
+    let mut stack_top: u32 = 0;
+    let mut max_stack_depth: u32 = 0;
+
+    fn push(stack_top: &mut u32, max_depth: &mut u32) -> u32 {
+        let out = *stack_top;
+        *stack_top += 1;
+        *max_depth = (*max_depth).max(*stack_top);
+        out
+    }
+
+    fn pop2_push1(stack_top: &mut u32) -> (u32, u32, u32) {
+        let left = *stack_top - 2;
+        let right = *stack_top - 1;
+        let out = left;
+        *stack_top -= 1;
+        (left, right, out)
+    }
+
+    fn emit<E: ExtensionField>(
+        node: &TrieNode,
+        dag: &mut Vec<Node>,
+        stack_top: &mut u32,
+        max_depth: &mut u32,
+    ) -> Option<u32> {
+        let mut acc_child: Option<u32> = None;
+
+        // Recurse into children (witness factors)
+        for (&wid, child) in &node.children {
+            let child_out = emit::<E>(child, dag, stack_top, max_depth);
+
+            // LOAD_WIT: push
+            let out = push(stack_top, max_depth);
+            dag.push(Node {
+                op: DagLoadWit as u32,
+                left_id: wid as u32,
+                right_id: 0,
+                out,
+            });
+
+            // If child exists, multiply with it
+            if let Some(rhs) = child_out {
+                let (left, right, out) = pop2_push1(stack_top);
+                dag.push(Node {
+                    op: DagMul as u32,
+                    left_id: left,
+                    right_id: right,
+                    out,
+                });
+                acc_child = Some(match acc_child {
+                    None => out,
+                    Some(_) => {
+                        let (l, r, out) = pop2_push1(stack_top);
+                        dag.push(Node {
+                            op: DagAdd as u32,
+                            left_id: l,
+                            right_id: r,
+                            out,
+                        });
+                        out
+                    }
+                });
+            } else {
+                acc_child = Some(out);
+            }
+        }
+
+        // Handle scalar accumulation at leaf
+        let mut acc_scalar: Option<u32> = None;
+        for &idx in &node.scalar_indices {
+            let out = push(stack_top, max_depth);
+            dag.push(Node {
+                op: DagLoadScalar as u32,
+                left_id: idx as u32,
+                right_id: 0,
+                out,
+            });
+
+            acc_scalar = Some(match acc_scalar {
+                None => out,
+                Some(_) => {
+                    let (l, r, out) = pop2_push1(stack_top);
+                    dag.push(Node {
+                        op: DagAdd as u32,
+                        left_id: l,
+                        right_id: r,
+                        out,
+                    });
+                    out
+                }
+            });
+        }
+
+        // Merge both child and scalar accumulations
+        match (acc_scalar, acc_child) {
+            (Some(_), Some(_)) => {
+                let (l, r, out) = pop2_push1(stack_top);
+                dag.push(Node {
+                    op: DagAdd as u32,
+                    left_id: l,
+                    right_id: r,
+                    out,
+                });
+                Some(out)
+            }
+            (Some(s), None) => Some(s),
+            (None, Some(c)) => Some(c),
+            (None, None) => None,
+        }
+    }
+
+    let final_out = emit::<E>(&root, &mut dag, &mut stack_top, &mut max_stack_depth);
+    (dag, scalars, final_out, max_stack_depth)
+}
 #[cfg(test)]
 mod tests {
+    use std::ops::Neg;
     use either::Either;
     use itertools::Itertools;
     use ff_ext::{BabyBearExt4, ExtensionField};
     use p3::babybear::BabyBear;
     use p3::field::FieldAlgebra;
     use crate::{power_sequence, Expression, Instance, ToExpr};
-    use crate::utils::{expr_compression_to_dag, Node};
+    use crate::utils::{build_factored_dag_commutative, expr_compression_to_dag, Node};
 
     type E = BabyBearExt4;
     type B = BabyBear;
@@ -709,5 +864,39 @@ mod tests {
         assert_eq!(num_mul, 2);
         assert_eq!(max_degree, 1);
 
+    }
+
+    #[test]
+    fn test_build_factored_dag_commutative() {
+        // w1 * (c2 * (2 + w0*c1 -1))
+        let w0 = Expression::<E>::WitIn(0);
+        let w1 = Expression::<E>::WitIn(1);
+        let c1 = Expression::<E>::Challenge(0, 1, E::ONE, E::ZERO);
+        let c2 = Expression::<E>::Challenge(2, 1, E::ONE, E::ZERO);
+        let constant_2 = Expression::<E>::Constant(Either::Left(B::from_canonical_u32(2)));
+        let constant_negative_1 = Expression::<E>::Constant(Either::Left(B::from_canonical_u32(1).neg()));
+
+        let e: Expression<E> = w1.expr() * (c2.expr() * (constant_2.expr() + w0.expr() * c1.expr() - constant_negative_1.expr()));
+        let e_monomials = e.get_monomial_terms();
+        let (dag, coeffs, final_out, _)= build_factored_dag_commutative(&e_monomials);
+
+        let mut num_add = 0;
+        let mut num_mul = 0;
+
+        for node in &dag {
+            match node.op {
+                0 => (), // skip wit index
+                1 => (), // skip scalar index
+                2 => {
+                    num_add += 1;
+                }
+                3 => {
+                    num_mul += 1;
+                }
+                op => panic!("unknown op {op}"),
+            }
+        }
+        assert_eq!(num_add, 1);
+        assert_eq!(num_mul, 3);
     }
 }
