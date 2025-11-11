@@ -585,7 +585,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 }
             }
         }
-        c @ Expression::Challenge(challenge_id, _power, scalar, offset) => {
+        c @ Expression::Challenge(_, _power, scalar, offset) => {
             if *scalar == E::ZERO && *offset == E::ZERO {
                 return None
             }
@@ -614,6 +614,7 @@ struct TrieNode {
 }
 pub fn build_factored_dag_commutative<E: ExtensionField>(
     terms: &[Term<Expression<E>, Expression<E>>],
+    hint_shared_witin_lower_id: bool,
 ) -> (Vec<Node>, Vec<Expression<E>>, Option<u32>, u32) {
     let mut root = TrieNode::default();
     let mut scalars: Vec<Expression<E>> = Vec::new();
@@ -629,9 +630,11 @@ pub fn build_factored_dag_commutative<E: ExtensionField>(
             })
             .collect();
         ids.sort(); // ensure a*b == b*a
-        // we assume witiness being shared will be made with larger id
-        // so we build the prefix tree with larger id go first
-        ids.reverse();
+        if !hint_shared_witin_lower_id {
+            // witiness being shared will be made with larger id
+            // so we build the prefix tree with larger id go first
+            ids.reverse();
+        }
 
         let mut cur = &mut root;
         for wid in ids {
@@ -685,7 +688,7 @@ pub fn build_factored_dag_commutative<E: ExtensionField>(
             });
 
             // If child exists, multiply with it
-            if let Some(rhs) = child_out {
+            if let Some(_) = child_out {
                 let (left, right, out) = pop2_push1(stack_top);
                 dag.push(Node {
                     op: DagMul as u32,
