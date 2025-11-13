@@ -194,10 +194,10 @@ pub fn expr_convert_to_witins<E: ExtensionField>(
     }
 }
 
-pub const DagLoadWit: usize = 0;
-pub const DagLoadScalar: usize = 1;
-pub const DagAdd: usize = 2;
-pub const DagMul: usize = 3;
+pub const DAG_LOAD_WIT: usize = 0;
+pub const DAG_LOAD_SCALAR: usize = 1;
+pub const DAG_ADD: usize = 2;
+pub const DAG_MUL: usize = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[repr(C)]
@@ -218,6 +218,7 @@ fn is_zero<E: ExtensionField>(e: &Expression<E>) -> bool {
         if v.map_either(|b| b.is_zero(), |x| x.is_zero()).into_inner())
 }
 
+#[allow(clippy::type_complexity)]
 pub fn expr_compression_to_dag<E: ExtensionField>(
     expr: &Expression<E>,
 ) -> (
@@ -283,6 +284,9 @@ pub fn expr_compression_to_dag<E: ExtensionField>(
     )
 }
 
+
+/// convert expression
+#[allow(clippy::too_many_arguments, dead_code)]
 fn expr_compression_to_dag_helper<E: ExtensionField>(
     dag: &mut Vec<Node>,
     instance_scalar: &mut Vec<Instance>,
@@ -300,7 +304,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
         Expression::Fixed(_) => unimplemented!(),
         Expression::WitIn(wit_id) => {
             dag.push(Node {
-                op: DagLoadWit as u32,
+                op: DAG_LOAD_WIT as u32,
                 left_id: *wit_id as u32,
                 right_id: 0,
                 out: *stack_pos,
@@ -308,12 +312,12 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
             *stack_pos += 1;
             Some((1, 1))
         }
-        Expression::StructuralWitIn(_, ..) => unimplemented!(),
+        Expression::StructuralWitIn(..) => unimplemented!(),
         Expression::Instance(_) => unimplemented!(),
         Expression::InstanceScalar(inst) => {
-            instance_scalar.push(inst.clone());
+            instance_scalar.push(*inst);
             dag.push(Node {
-                op: DagLoadScalar as u32,
+                op: DAG_LOAD_SCALAR as u32,
                 left_id: instance_scalar.len() as u32 - 1,
                 right_id: 0,
                 out: *stack_pos,
@@ -330,13 +334,13 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 return None;
             }
 
-            let constant_id = *constant_dedup.entry(value.clone()).or_insert_with(|| {
-                constant.push(value.clone());
+            let constant_id = *constant_dedup.entry(*value).or_insert_with(|| {
+                constant.push(*value);
                 (constant_offset + constant.len() - 1) as u32
             });
 
             dag.push(Node {
-                op: DagLoadScalar as u32,
+                op: DAG_LOAD_SCALAR as u32,
                 left_id: constant_id,
                 right_id: 0,
                 out: *stack_pos,
@@ -375,7 +379,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 (Some(x), None) | (None, Some(x)) => Some(x), // a + 0 = a
                 (Some((da, dep_a)), Some((db, dep_b))) => {
                     dag.push(Node {
-                        op: DagAdd as u32,
+                        op: DAG_ADD as u32,
                         left_id: *stack_pos - 2,
                         right_id: *stack_pos - 1,
                         out: *stack_pos - 2,
@@ -421,7 +425,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                     (None, _) | (_, None) => None, // defensive (shouldn’t reach due to early zero)
                     (Some((da, dep_a)), Some((db, dep_b))) => {
                         dag.push(Node {
-                            op: DagMul as u32,
+                            op: DAG_MUL as u32,
                             left_id: *stack_pos - 2,
                             right_id: *stack_pos - 1,
                             out: *stack_pos - 2,       // overwrite lhs slot
@@ -469,7 +473,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                     (Some(x), None) | (None, Some(x)) => Some(x),
                     (Some((da, dep_a)), Some((db, dep_b))) => {
                         dag.push(Node {
-                            op: DagAdd as u32,
+                            op: DAG_ADD as u32,
                             left_id: *stack_pos - 2,
                             right_id: *stack_pos - 1,
                             out: *stack_pos - 2,
@@ -498,7 +502,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                     (Some(x), None) | (None, Some(x)) => Some(x),
                     (Some((dx, dep_x)), Some((db, dep_b))) => {
                         dag.push(Node {
-                            op: DagAdd as u32,
+                            op: DAG_ADD as u32,
                             left_id: *stack_pos - 2,
                             right_id: *stack_pos - 1,
                             out: *stack_pos - 2,
@@ -527,7 +531,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                     (None, _) | (_, None) => None, // defensive
                     (Some((dx, dep_x)), Some((da, dep_a))) => {
                         dag.push(Node {
-                            op: DagMul as u32,
+                            op: DAG_MUL as u32,
                             left_id: *stack_pos - 2,
                             right_id: *stack_pos - 1,
                             out: *stack_pos - 2,
@@ -554,7 +558,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 (None, _) | (_, None) => None, // x or a simplified to 0 above; defensive
                 (Some((dx, dep_x)), Some((da, dep_a))) => {
                     dag.push(Node {
-                        op: DagMul as u32,
+                        op: DAG_MUL as u32,
                         left_id: *stack_pos - 2,
                         right_id: *stack_pos - 1,
                         out: *stack_pos - 2,
@@ -575,7 +579,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 (Some(xa), None) | (None, Some(xa)) => Some(xa),
                 (Some((dm, dep_m)), Some((db, dep_b))) => {
                     dag.push(Node {
-                        op: DagAdd as u32,
+                        op: DAG_ADD as u32,
                         left_id: *stack_pos - 2,
                         right_id: *stack_pos - 1,
                         out: *stack_pos - 2,
@@ -595,7 +599,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
             });
 
             dag.push(Node {
-                op: DagLoadScalar as u32,
+                op: DAG_LOAD_SCALAR as u32,
                 left_id: challenge_id,
                 right_id: 0,
                 out: *stack_pos,
@@ -624,8 +628,8 @@ pub fn build_factored_dag_commutative<E: ExtensionField>(
         let mut ids: Vec<u16> = term
             .product
             .iter()
-            .filter_map(|e| match e {
-                Expression::WitIn(id) => Some(*id),
+            .map(|e| match e {
+                Expression::WitIn(id) => *id,
                 e => unimplemented!("unknown expression {e}"),
             })
             .collect();
@@ -681,17 +685,17 @@ pub fn build_factored_dag_commutative<E: ExtensionField>(
             // LOAD_WIT: push
             let out = push(stack_top, max_depth);
             dag.push(Node {
-                op: DagLoadWit as u32,
+                op: DAG_LOAD_WIT as u32,
                 left_id: wid as u32,
                 right_id: 0,
                 out,
             });
 
             // If child exists, multiply with it
-            if let Some(_) = child_out {
+            if child_out.is_some() {
                 let (left, right, out) = pop2_push1(stack_top);
                 dag.push(Node {
-                    op: DagMul as u32,
+                    op: DAG_MUL as u32,
                     left_id: left,
                     right_id: right,
                     out,
@@ -701,7 +705,7 @@ pub fn build_factored_dag_commutative<E: ExtensionField>(
                     Some(_) => {
                         let (l, r, out) = pop2_push1(stack_top);
                         dag.push(Node {
-                            op: DagAdd as u32,
+                            op: DAG_ADD as u32,
                             left_id: l,
                             right_id: r,
                             out,
@@ -719,7 +723,7 @@ pub fn build_factored_dag_commutative<E: ExtensionField>(
         for &idx in &node.scalar_indices {
             let out = push(stack_top, max_depth);
             dag.push(Node {
-                op: DagLoadScalar as u32,
+                op: DAG_LOAD_SCALAR as u32,
                 left_id: idx as u32,
                 right_id: 0,
                 out,
@@ -730,7 +734,7 @@ pub fn build_factored_dag_commutative<E: ExtensionField>(
                 Some(_) => {
                     let (l, r, out) = pop2_push1(stack_top);
                     dag.push(Node {
-                        op: DagAdd as u32,
+                        op: DAG_ADD as u32,
                         left_id: l,
                         right_id: r,
                         out,
@@ -745,7 +749,7 @@ pub fn build_factored_dag_commutative<E: ExtensionField>(
             (Some(_), Some(_)) => {
                 let (l, r, out) = pop2_push1(stack_top);
                 dag.push(Node {
-                    op: DagAdd as u32,
+                    op: DAG_ADD as u32,
                     left_id: l,
                     right_id: r,
                     out,
@@ -761,21 +765,43 @@ pub fn build_factored_dag_commutative<E: ExtensionField>(
     let final_out = emit::<E>(&root, &mut dag, &mut stack_top, &mut max_stack_depth);
     (dag, scalars, final_out, max_stack_depth)
 }
+
+pub fn dag_stats(dag: &[Node]) -> (u32, u32) {
+
+    let mut num_add = 0;
+    let mut num_mul = 0;
+
+    for node in dag {
+        match node.op as usize {
+            DAG_LOAD_WIT => (), // skip wit index
+            DAG_LOAD_SCALAR => (), // skip scalar index
+            DAG_ADD => {
+                num_add += 1;
+            }
+            DAG_MUL => {
+                num_mul += 1;
+            }
+            op => panic!("unknown op {op}"),
+        }
+    }
+
+    (num_add, num_mul)
+}
 #[cfg(test)]
 mod tests {
     use std::ops::Neg;
     use either::Either;
-    use itertools::Itertools;
     use ff_ext::{BabyBearExt4, ExtensionField};
     use p3::babybear::BabyBear;
     use p3::field::FieldAlgebra;
     use crate::{power_sequence, Expression, Instance, ToExpr};
-    use crate::utils::{build_factored_dag_commutative, expr_compression_to_dag, Node};
+    use crate::utils::{build_factored_dag_commutative, dag_stats, expr_compression_to_dag, Node};
 
     type E = BabyBearExt4;
     type B = BabyBear;
 
-    fn extract_num_add_mul<E: ExtensionField>(expr: &Expression<E>) -> (Vec<Node>, Vec<Instance>, Vec<Expression<E>>, Vec<Either<<E as ExtensionField>::BaseField, E>>, u32, (i32, i32), (usize, usize)) {
+    #[allow(clippy::type_complexity)]
+    fn extract_num_add_mul<E: ExtensionField>(expr: &Expression<E>) -> (Vec<Node>, Vec<Instance>, Vec<Expression<E>>, Vec<Either<<E as ExtensionField>::BaseField, E>>, u32, (u32, u32), (usize, usize)) {
         let (
             dag,
             instance_scalar_expr,
@@ -783,24 +809,9 @@ mod tests {
             constant_expr,
             stack_top,
             (max_degree, max_dag_depth),
-        ) = expr_compression_to_dag(&expr);
+        ) = expr_compression_to_dag(expr);
 
-        let mut num_add = 0;
-        let mut num_mul = 0;
-
-        for node in &dag {
-            match node.op {
-                0 => (), // skip wit index
-                1 => (), // skip scalar index
-                2 => {
-                    num_add += 1;
-                }
-                3 => {
-                    num_mul += 1;
-                }
-                op => panic!("unknown op {op}"),
-            }
-        }
+        let stats = dag_stats(&dag);
 
         (
             dag,
@@ -808,7 +819,7 @@ mod tests {
             challenges_expr,
             constant_expr,
             stack_top,
-            (num_add, num_mul),
+            stats,
             (max_degree, max_dag_depth),
         )
     }
@@ -822,13 +833,13 @@ mod tests {
 
         let e: Expression<E> = s3.expr() * (s2.expr() * a.expr() * b.expr() + s4.expr());
         let (
-            dag,
-            instance_scalar_expr,
+            _dag,
+            _instance_scalar_expr,
             challenges_expr,
             constant_expr,
-            stack_top,
+            _stack_top,
             (num_add, num_mul),
-            (max_degree, max_dag_depth),
+            (max_degree, _max_dag_depth),
         ) = extract_num_add_mul(&e);
 
         assert_eq!(constant_expr.len(), 3);
@@ -852,13 +863,13 @@ mod tests {
         let e: Expression<E> = vec![a.expr(), b.expr()].into_iter().zip(pow_c).map(|(e1, e2)| e1.expr()*e2.expr()).sum::<Expression<E>>();
         let e = e * alpha;
         let (
-            dag,
-            instance_scalar_expr,
+            _dag,
+            _instance_scalar_expr,
             challenges_expr,
             constant_expr,
-            stack_top,
+            _stack_top,
             (num_add, num_mul),
-            (max_degree, max_dag_depth),
+            (max_degree, _max_dag_depth),
         ) = extract_num_add_mul(&e);
 
         assert_eq!(constant_expr.len(), 0); // 1 was absorbed
@@ -871,35 +882,22 @@ mod tests {
 
     #[test]
     fn test_build_factored_dag_commutative() {
-        // w1 * (c2 * (2 + w0*c1 -1))
+        // w1 * (c1 * (2 + w0*c0 -1))
         let w0 = Expression::<E>::WitIn(0);
         let w1 = Expression::<E>::WitIn(1);
-        let c1 = Expression::<E>::Challenge(0, 1, E::ONE, E::ZERO);
-        let c2 = Expression::<E>::Challenge(2, 1, E::ONE, E::ZERO);
+        let c0 = Expression::<E>::Challenge(0, 1, E::ONE, E::ZERO);
+        let c1 = Expression::<E>::Challenge(1, 1, E::ONE, E::ZERO);
         let constant_2 = Expression::<E>::Constant(Either::Left(B::from_canonical_u32(2)));
         let constant_negative_1 = Expression::<E>::Constant(Either::Left(B::from_canonical_u32(1).neg()));
 
-        let e: Expression<E> = w1.expr() * (c2.expr() * (constant_2.expr() + w0.expr() * c1.expr() - constant_negative_1.expr()));
+        let e: Expression<E> = w1.expr() * (c1.expr() * (constant_2.expr() + w0.expr() * c0.expr() - constant_negative_1.expr()));
+        // it will be converted to w1 * (w0 * c0' + c1'), where c0' = c0 * c1, c1' = c1 
         let e_monomials = e.get_monomial_terms();
-        let (dag, coeffs, final_out, _)= build_factored_dag_commutative(&e_monomials);
+        
+        let (dag, _coeffs, _final_out, _)= build_factored_dag_commutative(&e_monomials, false);
 
-        let mut num_add = 0;
-        let mut num_mul = 0;
-
-        for node in &dag {
-            match node.op {
-                0 => (), // skip wit index
-                1 => (), // skip scalar index
-                2 => {
-                    num_add += 1;
-                }
-                3 => {
-                    num_mul += 1;
-                }
-                op => panic!("unknown op {op}"),
-            }
-        }
+        let (num_add, num_mul) = dag_stats(&dag);
         assert_eq!(num_add, 1);
-        assert_eq!(num_mul, 3);
+        assert_eq!(num_mul, 2);
     }
 }
