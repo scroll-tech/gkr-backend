@@ -284,7 +284,6 @@ pub fn expr_compression_to_dag<E: ExtensionField>(
     )
 }
 
-
 /// convert expression
 #[allow(clippy::too_many_arguments, dead_code)]
 fn expr_compression_to_dag_helper<E: ExtensionField>(
@@ -397,28 +396,56 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
             } else if is_one(a) {
                 // 1 * b = b  (evaluate only b; it will land at the current top)
                 expr_compression_to_dag_helper(
-                    dag, instance_scalar, challenges_offset, challenges,
-                    constant_offset, constant, challenges_dedup, constant_dedup,
-                    stack_pos, b,
+                    dag,
+                    instance_scalar,
+                    challenges_offset,
+                    challenges,
+                    constant_offset,
+                    constant,
+                    challenges_dedup,
+                    constant_dedup,
+                    stack_pos,
+                    b,
                 )
             } else if is_one(b) {
                 // a * 1 = a  (evaluate only a)
                 expr_compression_to_dag_helper(
-                    dag, instance_scalar, challenges_offset, challenges,
-                    constant_offset, constant, challenges_dedup, constant_dedup,
-                    stack_pos, a,
+                    dag,
+                    instance_scalar,
+                    challenges_offset,
+                    challenges,
+                    constant_offset,
+                    constant,
+                    challenges_dedup,
+                    constant_dedup,
+                    stack_pos,
+                    a,
                 )
             } else {
                 // ---- general case: evaluate a, then b, emit MUL into (top-2), pop 1 ----
                 let lhs = expr_compression_to_dag_helper(
-                    dag, instance_scalar, challenges_offset, challenges,
-                    constant_offset, constant, challenges_dedup, constant_dedup,
-                    stack_pos, a,
+                    dag,
+                    instance_scalar,
+                    challenges_offset,
+                    challenges,
+                    constant_offset,
+                    constant,
+                    challenges_dedup,
+                    constant_dedup,
+                    stack_pos,
+                    a,
                 );
                 let rhs = expr_compression_to_dag_helper(
-                    dag, instance_scalar, challenges_offset, challenges,
-                    constant_offset, constant, challenges_dedup, constant_dedup,
-                    stack_pos, b,
+                    dag,
+                    instance_scalar,
+                    challenges_offset,
+                    challenges,
+                    constant_offset,
+                    constant,
+                    challenges_dedup,
+                    constant_dedup,
+                    stack_pos,
+                    b,
                 );
 
                 match (lhs, rhs) {
@@ -428,9 +455,9 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                             op: DAG_MUL as u32,
                             left_id: *stack_pos - 2,
                             right_id: *stack_pos - 1,
-                            out: *stack_pos - 2,       // overwrite lhs slot
+                            out: *stack_pos - 2, // overwrite lhs slot
                         });
-                        *stack_pos -= 1;                // consume rhs
+                        *stack_pos -= 1; // consume rhs
                         Some((da + db, dep_a.max(dep_b + 1)))
                     }
                 }
@@ -449,23 +476,44 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
             if is_zero(x) || is_zero(a) {
                 // becomes b
                 return expr_compression_to_dag_helper(
-                    dag, instance_scalar, challenges_offset, challenges,
-                    constant_offset, constant, challenges_dedup, constant_dedup,
-                    stack_pos, b,
+                    dag,
+                    instance_scalar,
+                    challenges_offset,
+                    challenges,
+                    constant_offset,
+                    constant,
+                    challenges_dedup,
+                    constant_dedup,
+                    stack_pos,
+                    b,
                 );
             }
 
             if is_one(x) {
                 // 1*a + b = a + b
                 let lhs_a = expr_compression_to_dag_helper(
-                    dag, instance_scalar, challenges_offset, challenges,
-                    constant_offset, constant, challenges_dedup, constant_dedup,
-                    stack_pos, a,
+                    dag,
+                    instance_scalar,
+                    challenges_offset,
+                    challenges,
+                    constant_offset,
+                    constant,
+                    challenges_dedup,
+                    constant_dedup,
+                    stack_pos,
+                    a,
                 );
                 let rhs_b = expr_compression_to_dag_helper(
-                    dag, instance_scalar, challenges_offset, challenges,
-                    constant_offset, constant, challenges_dedup, constant_dedup,
-                    stack_pos, b,
+                    dag,
+                    instance_scalar,
+                    challenges_offset,
+                    challenges,
+                    constant_offset,
+                    constant,
+                    challenges_dedup,
+                    constant_dedup,
+                    stack_pos,
+                    b,
                 );
 
                 return match (lhs_a, rhs_b) {
@@ -487,14 +535,28 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
             if is_one(a) {
                 // x*1 + b = x + b
                 let lhs_x = expr_compression_to_dag_helper(
-                    dag, instance_scalar, challenges_offset, challenges,
-                    constant_offset, constant, challenges_dedup, constant_dedup,
-                    stack_pos, x,
+                    dag,
+                    instance_scalar,
+                    challenges_offset,
+                    challenges,
+                    constant_offset,
+                    constant,
+                    challenges_dedup,
+                    constant_dedup,
+                    stack_pos,
+                    x,
                 );
                 let rhs_b = expr_compression_to_dag_helper(
-                    dag, instance_scalar, challenges_offset, challenges,
-                    constant_offset, constant, challenges_dedup, constant_dedup,
-                    stack_pos, b,
+                    dag,
+                    instance_scalar,
+                    challenges_offset,
+                    challenges,
+                    constant_offset,
+                    constant,
+                    challenges_dedup,
+                    constant_dedup,
+                    stack_pos,
+                    b,
                 );
 
                 return match (lhs_x, rhs_b) {
@@ -517,14 +579,28 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
                 // general product without identities since x!=0, a!=0 here
                 // x*a + 0 = x*a
                 let lhs_x = expr_compression_to_dag_helper(
-                    dag, instance_scalar, challenges_offset, challenges,
-                    constant_offset, constant, challenges_dedup, constant_dedup,
-                    stack_pos, x,
+                    dag,
+                    instance_scalar,
+                    challenges_offset,
+                    challenges,
+                    constant_offset,
+                    constant,
+                    challenges_dedup,
+                    constant_dedup,
+                    stack_pos,
+                    x,
                 );
                 let lhs_a = expr_compression_to_dag_helper(
-                    dag, instance_scalar, challenges_offset, challenges,
-                    constant_offset, constant, challenges_dedup, constant_dedup,
-                    stack_pos, a,
+                    dag,
+                    instance_scalar,
+                    challenges_offset,
+                    challenges,
+                    constant_offset,
+                    constant,
+                    challenges_dedup,
+                    constant_dedup,
+                    stack_pos,
+                    a,
                 );
 
                 return match (lhs_x, lhs_a) {
@@ -544,14 +620,28 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
 
             // General case: compute (x*a) then + b
             let lhs_x = expr_compression_to_dag_helper(
-                dag, instance_scalar, challenges_offset, challenges,
-                constant_offset, constant, challenges_dedup, constant_dedup,
-                stack_pos, x,
+                dag,
+                instance_scalar,
+                challenges_offset,
+                challenges,
+                constant_offset,
+                constant,
+                challenges_dedup,
+                constant_dedup,
+                stack_pos,
+                x,
             );
             let lhs_a = expr_compression_to_dag_helper(
-                dag, instance_scalar, challenges_offset, challenges,
-                constant_offset, constant, challenges_dedup, constant_dedup,
-                stack_pos, a,
+                dag,
+                instance_scalar,
+                challenges_offset,
+                challenges,
+                constant_offset,
+                constant,
+                challenges_dedup,
+                constant_dedup,
+                stack_pos,
+                a,
             );
 
             let mul = match (lhs_x, lhs_a) {
@@ -569,9 +659,16 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
             };
 
             let rhs_b = expr_compression_to_dag_helper(
-                dag, instance_scalar, challenges_offset, challenges,
-                constant_offset, constant, challenges_dedup, constant_dedup,
-                stack_pos, b,
+                dag,
+                instance_scalar,
+                challenges_offset,
+                challenges,
+                constant_offset,
+                constant,
+                challenges_dedup,
+                constant_dedup,
+                stack_pos,
+                b,
             );
 
             match (mul, rhs_b) {
@@ -591,7 +688,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
         }
         c @ Expression::Challenge(_, _power, scalar, offset) => {
             if *scalar == E::ZERO && *offset == E::ZERO {
-                return None
+                return None;
             }
             let challenge_id = *challenges_dedup.entry(c.clone()).or_insert_with(|| {
                 challenges.push(c.clone());
@@ -767,13 +864,12 @@ pub fn build_factored_dag_commutative<E: ExtensionField>(
 }
 
 pub fn dag_stats(dag: &[Node]) -> (u32, u32) {
-
     let mut num_add = 0;
     let mut num_mul = 0;
 
     for node in dag {
         match node.op as usize {
-            DAG_LOAD_WIT => (), // skip wit index
+            DAG_LOAD_WIT => (),    // skip wit index
             DAG_LOAD_SCALAR => (), // skip scalar index
             DAG_ADD => {
                 num_add += 1;
@@ -789,19 +885,30 @@ pub fn dag_stats(dag: &[Node]) -> (u32, u32) {
 }
 #[cfg(test)]
 mod tests {
-    use std::ops::Neg;
+    use crate::{
+        Expression, Instance, ToExpr, power_sequence,
+        utils::{Node, build_factored_dag_commutative, dag_stats, expr_compression_to_dag},
+    };
     use either::Either;
     use ff_ext::{BabyBearExt4, ExtensionField};
-    use p3::babybear::BabyBear;
-    use p3::field::FieldAlgebra;
-    use crate::{power_sequence, Expression, Instance, ToExpr};
-    use crate::utils::{build_factored_dag_commutative, dag_stats, expr_compression_to_dag, Node};
+    use p3::{babybear::BabyBear, field::FieldAlgebra};
+    use std::ops::Neg;
 
     type E = BabyBearExt4;
     type B = BabyBear;
 
     #[allow(clippy::type_complexity)]
-    fn extract_num_add_mul<E: ExtensionField>(expr: &Expression<E>) -> (Vec<Node>, Vec<Instance>, Vec<Expression<E>>, Vec<Either<<E as ExtensionField>::BaseField, E>>, u32, (u32, u32), (usize, usize)) {
+    fn extract_num_add_mul<E: ExtensionField>(
+        expr: &Expression<E>,
+    ) -> (
+        Vec<Node>,
+        Vec<Instance>,
+        Vec<Expression<E>>,
+        Vec<Either<<E as ExtensionField>::BaseField, E>>,
+        u32,
+        (u32, u32),
+        (usize, usize),
+    ) {
         let (
             dag,
             instance_scalar_expr,
@@ -847,7 +954,6 @@ mod tests {
         assert_eq!(num_add, 1);
         assert_eq!(num_mul, 3);
         assert_eq!(max_degree, 2);
-
     }
 
     #[test]
@@ -860,7 +966,11 @@ mod tests {
 
         // alpha * (1 * a + c * b)
         // will be optimized as alpha * (a + c * b)
-        let e: Expression<E> = vec![a.expr(), b.expr()].into_iter().zip(pow_c).map(|(e1, e2)| e1.expr()*e2.expr()).sum::<Expression<E>>();
+        let e: Expression<E> = vec![a.expr(), b.expr()]
+            .into_iter()
+            .zip(pow_c)
+            .map(|(e1, e2)| e1.expr() * e2.expr())
+            .sum::<Expression<E>>();
         let e = e * alpha;
         let (
             _dag,
@@ -877,7 +987,6 @@ mod tests {
         assert_eq!(num_add, 1);
         assert_eq!(num_mul, 2);
         assert_eq!(max_degree, 1);
-
     }
 
     #[test]
@@ -888,13 +997,16 @@ mod tests {
         let c0 = Expression::<E>::Challenge(0, 1, E::ONE, E::ZERO);
         let c1 = Expression::<E>::Challenge(1, 1, E::ONE, E::ZERO);
         let constant_2 = Expression::<E>::Constant(Either::Left(B::from_canonical_u32(2)));
-        let constant_negative_1 = Expression::<E>::Constant(Either::Left(B::from_canonical_u32(1).neg()));
+        let constant_negative_1 =
+            Expression::<E>::Constant(Either::Left(B::from_canonical_u32(1).neg()));
 
-        let e: Expression<E> = w1.expr() * (c1.expr() * (constant_2.expr() + w0.expr() * c0.expr() - constant_negative_1.expr()));
-        // it will be converted to w1 * (w0 * c0' + c1'), where c0' = c0 * c1, c1' = c1 
+        let e: Expression<E> = w1.expr()
+            * (c1.expr()
+                * (constant_2.expr() + w0.expr() * c0.expr() - constant_negative_1.expr()));
+        // it will be converted to w1 * (w0 * c0' + c1'), where c0' = c0 * c1, c1' = c1
         let e_monomials = e.get_monomial_terms();
-        
-        let (dag, _coeffs, _final_out, _)= build_factored_dag_commutative(&e_monomials, false);
+
+        let (dag, _coeffs, _final_out, _) = build_factored_dag_commutative(&e_monomials, false);
 
         let (num_add, num_mul) = dag_stats(&dag);
         assert_eq!(num_add, 1);
