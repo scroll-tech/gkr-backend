@@ -10,10 +10,7 @@ use multilinear_extensions::{
     virtual_poly::{MonomialTerms, VirtualPolynomial},
     virtual_polys::{PolyMeta, VirtualPolynomials},
 };
-use rayon::{
-    iter::{IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator},
-    prelude::{IntoParallelIterator, ParallelIterator},
-};
+use p3::maybe_rayon::prelude::*;
 use sumcheck_macro::sumcheck_code_gen;
 use transcript::{Challenge, Transcript};
 
@@ -41,12 +38,14 @@ impl<'a, E: ExtensionField> Phase1Workers<'a, E> {
     ) -> (Vec<IOPProverState<'a, E>>, Vec<IOPProverMessage<E>>) {
         let mut prover_msgs = Vec::with_capacity(num_variables);
         for _ in 0..num_variables {
-            let evaluations = self
-                .workers_states
-                .par_iter_mut()
-                .map(|state| state.run_round())
-                .reduce(|| AdditiveVec::new(max_degree + 1), |a, b| a + b);
-
+            let evaluations: AdditiveVec<E> = self.workers_states.par_iter_mut().par_fold_reduce(
+                || AdditiveVec::new(max_degree + 1),
+                |mut acc, state| {
+                    acc += state.run_round();
+                    acc
+                },
+                |a, b| a + b,
+            );
             transcript.append_field_element_exts(&evaluations.0);
 
             let challenge = transcript.sample_and_append_challenge(b"Internal round");
@@ -166,8 +165,8 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                 max_thread_id,
                 num_variables,
                 poly_meta,
-                polys,
                 max_degree,
+                polys,
                 transcript,
             );
             exit_span!(span);
@@ -234,8 +233,8 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         max_thread_id: usize,
         num_variables: usize,
         poly_meta: Vec<PolyMeta>,
-        mut polys: Vec<VirtualPolynomial<'a, E>>,
         max_degree: usize,
+        mut polys: Vec<VirtualPolynomial<'a, E>>,
         transcript: &mut impl Transcript<E>,
     ) -> (Vec<IOPProverState<'a, E>>, Vec<IOPProverMessage<E>>) {
         let log2_max_thread_id = ceil_log2(max_thread_id); // do not support SIZE not power of 2
@@ -599,8 +598,8 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             .poly
             .products
             .par_iter()
-            .fold_with(
-                AdditiveVec::new(self.poly.aux_info.max_degree + 1),
+            .par_fold_reduce(
+                || AdditiveVec::new(self.poly.aux_info.max_degree + 1),
                 |mut uni_polys, MonomialTerms { terms }| {
                     for Term {
                         scalar,
@@ -642,9 +641,9 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                     }
                     uni_polys
                 },
-            )
-            .reduce_with(|acc, item| acc + item)
-            .unwrap();
+                |acc, item| acc + item,
+            );
+
         exit_span!(span);
 
         exit_span!(start);

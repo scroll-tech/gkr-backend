@@ -7,8 +7,8 @@ use multilinear_extensions::{mle::MultilinearExtension, virtual_poly::eq_eval};
 use p3::{
     commit::Mmcs,
     field::{Field, FieldAlgebra},
+    maybe_rayon::prelude::*,
 };
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::iter;
 use sumcheck::macros::{entered_span, exit_span};

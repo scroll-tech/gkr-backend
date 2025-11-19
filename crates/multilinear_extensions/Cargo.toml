@@ -26,9 +26,8 @@ log = "0.4"
 serde_json.workspace = true
 
 [features]
-default = ["parallel"]
-nightly-features = ["p3/nightly-features", "ff_ext/nightly-features"]
-parallel = []
+nightly-features = ["ff_ext/nightly-features"]
+parallel = ["p3/parallel"]
 
 [[bench]]
 harness = false
