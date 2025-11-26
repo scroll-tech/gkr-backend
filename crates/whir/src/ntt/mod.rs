@@ -13,9 +13,8 @@ use p3::{
     dft::{Radix2DitParallel, TwoAdicSubgroupDft},
     field::TwoAdicField,
     matrix::Matrix,
+    maybe_rayon::prelude::*,
 };
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
 use tracing::instrument;
 use witness::{InstancePaddingStrategy, RowMajorMatrix};
 

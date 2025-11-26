@@ -17,8 +17,7 @@ use crate::{
 use ff_ext::{ExtensionField, PoseidonField};
 use itertools::zip_eq;
 use multilinear_extensions::{mle::MultilinearExtension, virtual_poly::eq_eval};
-use p3::{commit::Mmcs, util::log2_strict_usize};
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use p3::{commit::Mmcs, maybe_rayon::prelude::*, util::log2_strict_usize};
 use sumcheck::macros::{entered_span, exit_span};
 use transcript::Transcript;
 

@@ -13,16 +13,14 @@ version.workspace = true
 either.workspace = true
 ff_ext.workspace = true
 itertools.workspace = true
-multilinear_extensions = { path = "../multilinear_extensions", features = [
-  "parallel",
-] }
+multilinear_extensions.workspace = true
 p3.workspace = true
 rayon.workspace = true
 serde.workspace = true
-sumcheck_macro = { path = "../sumcheck_macro" }
+sumcheck_macro.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-transcript = { path = "../transcript" }
+transcript.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
@@ -31,13 +29,9 @@ poseidon.workspace = true
 rand.workspace = true
 
 [features]
-nightly-features = [
-  "p3/nightly-features",
-  "ff_ext/nightly-features",
-  "multilinear_extensions/nightly-features",
-  "sumcheck_macro/nightly-features",
-  "transcript/nightly-features",
-]
+nightly-features = ["ff_ext/nightly-features"]
+parallel = ["p3/parallel", "multilinear_extensions/parallel"]
+
 
 [[bench]]
 harness = false
