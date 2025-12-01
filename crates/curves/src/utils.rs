@@ -66,6 +66,23 @@ pub fn biguint_from_le_words(le_words: &[u32]) -> BigUint {
 }
 
 #[inline]
+pub fn biguint_to_words(integer: &BigUint, num_words: usize) -> Vec<u32> {
+    let mut bytes = integer.to_bytes_le();
+    bytes.resize(num_words * 4, 0u8);
+    let mut words = Vec::with_capacity(num_words);
+    for i in 0..num_words {
+        let word = u32::from_le_bytes([
+            bytes[4 * i],
+            bytes[4 * i + 1],
+            bytes[4 * i + 2],
+            bytes[4 * i + 3],
+        ]);
+        words.push(word);
+    }
+    words
+}
+
+#[inline]
 /// Converts a slice of words to a byte vector in little endian.
 pub fn words_to_bytes_le_vec(words: &[u32]) -> Vec<u8> {
     words
