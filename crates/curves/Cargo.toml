@@ -24,9 +24,9 @@ serde = { workspace = true, features = ["derive"] }
 typenum = "1.17.0"
 
 cfg-if.workspace = true
-ff_ext = { version = "0.1.0", path = "../ff_ext" }
-itertools = { workspace = true }
-multilinear_extensions = { version = "0.1.0", path = "../multilinear_extensions" }
+ff_ext.workspace = true
+itertools.workspace = true
+multilinear_extensions.workspace = true
 rug = { version = "1.26.1", optional = true }
 
 [dev-dependencies]

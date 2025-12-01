@@ -11,15 +11,11 @@ version.workspace = true
 
 [dependencies]
 ff_ext.workspace = true
-multilinear_extensions = { version = "0", path = "../multilinear_extensions" }
+multilinear_extensions.workspace = true
 p3.workspace = true
 rand.workspace = true
 rayon.workspace = true
 tracing.workspace = true
 
 [features]
-nightly-features = [
-  "p3/nightly-features",
-  "ff_ext/nightly-features",
-  "multilinear_extensions/nightly-features",
-]
+nightly-features = ["ff_ext/nightly-features"]

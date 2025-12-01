@@ -237,7 +237,7 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
         };
 
         let iter = if parallalize {
-            quote! {.into_par_iter().step_by(2).rev().with_min_len(64)}
+            quote! {.into_par_iter().step_by(2).rev()}
         } else {
             quote! {.step_by(2).rev()}
         };

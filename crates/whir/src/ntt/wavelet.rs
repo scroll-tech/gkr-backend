@@ -2,8 +2,7 @@ use super::{transpose, utils::workload_size};
 use p3::field::Field;
 use std::cmp::max;
 
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
+use p3::maybe_rayon::prelude::*;
 
 /// Fast Wavelet Transform.
 ///

@@ -14,7 +14,7 @@ bincode = "1.3.3"
 clap.workspace = true
 ff_ext.workspace = true
 itertools.workspace = true
-whir.workspace = true
+whir = { workspace = true, optional = true }
 multilinear_extensions.workspace = true
 num-integer = "0.1"
 p3.workspace = true
@@ -32,18 +32,9 @@ witness.workspace = true
 criterion.workspace = true
 
 [features]
-benchmark = ["parallel"]
-default = ["parallel"] # Add "sanity-check" to debug
-nightly-features = [
-  "p3/nightly-features",
-  "ff_ext/nightly-features",
-  "multilinear_extensions/nightly-features",
-  "sumcheck/nightly-features",
-  "transcript/nightly-features",
-  "whir/nightly-features",
-  "witness/nightly-features",
-]
-parallel = ["dep:rayon"]
+nightly-features = ["ff_ext/nightly-features"]
+parallel = ["p3/parallel", "dep:rayon"]
+whir = ["dep:whir"]
 print-trace = ["whir/print-trace"]
 sanity-check = []
 

@@ -6,7 +6,7 @@ use p3::{
 use rand::{Rng, distributions::Standard, prelude::Distribution};
 use rayon::{
     iter::{IndexedParallelIterator, IntoParallelIterator, ParallelExtend, ParallelIterator},
-    slice::ParallelSliceMut,
+    prelude::ParallelSliceMut,
 };
 use std::{
     ops::{Deref, DerefMut, Index},
