@@ -48,29 +48,21 @@ cfg_if::cfg_if! {
 }
 
 #[inline]
-pub fn biguint_from_words(words: &[u32]) -> BigUint {
-    let mut bytes = Vec::with_capacity(words.len() * 4);
-    for word in words {
+pub fn biguint_from_be_words(be_words: &[u32]) -> BigUint {
+    let mut bytes = Vec::with_capacity(be_words.len() * 4);
+    for word in be_words {
         bytes.extend_from_slice(&word.to_le_bytes());
     }
-    BigUint::from_bytes_le(&bytes)
+    BigUint::from_bytes_be(&bytes)
 }
 
 #[inline]
-pub fn biguint_to_words(integer: &BigUint, num_words: usize) -> Vec<u32> {
-    let mut bytes = integer.to_bytes_le();
-    bytes.resize(num_words * 4, 0u8);
-    let mut words = Vec::with_capacity(num_words);
-    for i in 0..num_words {
-        let word = u32::from_le_bytes([
-            bytes[4 * i],
-            bytes[4 * i + 1],
-            bytes[4 * i + 2],
-            bytes[4 * i + 3],
-        ]);
-        words.push(word);
+pub fn biguint_from_le_words(le_words: &[u32]) -> BigUint {
+    let mut bytes = Vec::with_capacity(le_words.len() * 4);
+    for word in le_words {
+        bytes.extend_from_slice(&word.to_le_bytes());
     }
-    words
+    BigUint::from_bytes_le(&bytes)
 }
 
 #[inline]
