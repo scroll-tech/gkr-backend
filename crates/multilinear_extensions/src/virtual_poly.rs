@@ -329,7 +329,8 @@ pub fn build_eq_x_r_sequential<E: ExtensionField>(r: &[E]) -> ArcMultilinearExte
 
 #[tracing::instrument(
     skip_all,
-    name = "multilinear_extensions::build_eq_x_r_vec_sequential_with_scalar"
+    name = "multilinear_extensions::build_eq_x_r_vec_sequential_with_scalar",
+    level = "trace"
 )]
 pub fn build_eq_x_r_vec_sequential_with_scalar<E: ExtensionField>(r: &[E], scalar: E) -> Vec<E> {
     // avoid unnecessary allocation
@@ -354,7 +355,11 @@ pub fn build_eq_x_r_vec_sequential_with_scalar<E: ExtensionField>(r: &[E], scala
 }
 
 #[inline]
-#[tracing::instrument(skip_all, name = "multilinear_extensions::build_eq_x_r_vec_sequential")]
+#[tracing::instrument(
+    skip_all,
+    name = "multilinear_extensions::build_eq_x_r_vec_sequential",
+    level = "trace"
+)]
 pub fn build_eq_x_r_vec_sequential<E: ExtensionField>(r: &[E]) -> Vec<E> {
     build_eq_x_r_vec_sequential_with_scalar(r, E::ONE)
 }
@@ -400,7 +405,11 @@ pub fn build_eq_x_r<E: ExtensionField>(r: &[E]) -> ArcMultilinearExtension<'_, E
 /// over r, which is
 ///      eq(x,y) = \prod_i=1^num_var (x_i * r_i + (1-x_i)*(1-r_i))
 
-#[tracing::instrument(skip_all, name = "multilinear_extensions::build_eq_x_r_vec")]
+#[tracing::instrument(
+    skip_all,
+    name = "multilinear_extensions::build_eq_x_r_vec",
+    level = "trace"
+)]
 pub fn build_eq_x_r_vec<E: ExtensionField>(r: &[E]) -> Vec<E> {
     // avoid unnecessary allocation
     if r.is_empty() {
@@ -444,7 +453,8 @@ pub fn build_eq_x_r_vec<E: ExtensionField>(r: &[E]) -> Vec<E> {
 
 #[tracing::instrument(
     skip_all,
-    name = "multilinear_extensions::build_eq_x_r_vec_with_scalar"
+    name = "multilinear_extensions::build_eq_x_r_vec_with_scalar",
+    level = "trace"
 )]
 pub fn build_eq_x_r_vec_with_scalar<E: ExtensionField>(r: &[E], scalar: E) -> Vec<E> {
     // avoid unnecessary allocation
