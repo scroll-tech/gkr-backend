@@ -1077,6 +1077,14 @@ pub enum StructuralWitInType {
         multi_factor: usize,
         descending: bool,
     },
+    /// this corresponding to `EqualDistanceSequence`. Different is the offset/length are set via instance
+    EqualDistanceDynamicSequence {
+        max_len: usize,
+        offset_instance_id: WitnessId,
+        length_instance_id: WitnessId,
+        multi_factor: usize,
+        descending: bool,
+    },
     /// The corresponding evaluation vector is the sequence: [0, 0, 0, 1, 0, 1, 2, 3, 0, 1, 2, 3, 4, 5, 6, 7, ..., 0, 1, 2, 3, ..., 2^max_bits-1]
     /// The length of the vectors is 2^(max_bits + 1)
     StackedIncrementalSequence {
@@ -1108,6 +1116,7 @@ impl StructuralWitInType {
         match self {
             StructuralWitInType::Empty => 0,
             StructuralWitInType::EqualDistanceSequence { max_len, .. } => *max_len,
+            StructuralWitInType::EqualDistanceDynamicSequence { max_len, .. } => *max_len,
             StructuralWitInType::StackedIncrementalSequence { max_bits } => 1 << (max_bits + 1),
             StructuralWitInType::StackedConstantSequence { max_value } => 1 << (max_value + 1),
             StructuralWitInType::InnerRepeatingIncrementalSequence { n, .. } => 1 << n,
