@@ -1077,7 +1077,8 @@ pub enum StructuralWitInType {
         multi_factor: usize,
         descending: bool,
     },
-    /// this corresponding to `EqualDistanceSequence`. Different is the offset set via instance
+    /// This is similar to `EqualDistanceSequence`; the key difference is that the offset
+    /// is provided dynamically by the instance rather than being fixed.
     EqualDistanceDynamicSequence {
         max_len: usize,
         offset_instance_id: WitnessId,
