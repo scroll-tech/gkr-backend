@@ -212,9 +212,7 @@ where
             .bit_reverse_rows()
             .to_row_major_matrix()
             .values;
-        // to make 2 consecutive position to be open together, we trickily "concat" 2 consecutive leafs
-        // so both can be open under same row index
-        let codeword = DenseMatrix::new(codeword, num_polys * 2);
+        let codeword = DenseMatrix::new(codeword, num_polys);
         Ok(codeword)
     }
 

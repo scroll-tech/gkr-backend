@@ -107,11 +107,10 @@ where
         polys: Vec<Vec<ArcMultilinearExtension<'static, E>>>,
     ) -> Self {
         let mmcs = poseidon2_merkle_tree::<E>();
-        // size = height * 2 because we split codeword leafs into left/right, concat and commit under same row index
         let log2_max_codeword_size = log2_strict_usize(
             mmcs.get_matrices(&codeword)
                 .iter()
-                .map(|m| m.height() * 2)
+                .map(|m| m.height())
                 .max()
                 .unwrap(),
         );

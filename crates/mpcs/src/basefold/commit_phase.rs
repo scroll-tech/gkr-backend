@@ -69,6 +69,7 @@ where
     let mmcs_ext = ExtensionMmcs::<E::BaseField, E, _>::new(poseidon2_merkle_tree::<E>());
     let mmcs = poseidon2_merkle_tree::<E>();
     let mut trees: Vec<MerkleTreeExt<E>> = Vec::with_capacity(max_num_vars);
+    let mut commits = Vec::with_capacity(max_num_vars);
 
     let total_num_polys = rounds
         .iter()
@@ -96,9 +97,8 @@ where
         for (i, mat) in mats.into_iter().enumerate() {
             let (point, _) = &point_and_evals[i];
             let polys = &pcs_data.polys[i];
-            // the actual ith row and (i+n/2)th row are packed in same row
-            let num_rows = mat.height() * 2;
-            let num_polys = mat.width() / 2;
+            let num_rows = mat.height();
+            let num_polys = mat.width();
             let coeffs = batch_coeffs_iter
                 .by_ref()
                 .take(num_polys)
@@ -118,6 +118,7 @@ where
                 2,
             );
             let num_vars = polys[0].num_vars();
+            assert_eq!(1 << (num_vars + Spec::get_rate_log()), num_rows);
             let mle_base_vec = polys
                 .iter()
                 .map(|mle| mle.get_base_field_vec())
@@ -149,6 +150,29 @@ where
             .collect_vec(),
     );
     exit_span!(batch_codeword_span);
+
+    // commit to codewords with max height using mmcs_ext
+    let max_height = batched_codewords
+        .front()
+        .expect("empty batched_codewords")
+        .height();
+    let mut highest_codeword = batched_codewords.pop_front().unwrap();
+    while let Some(new_codeword) = batched_codewords.front() {
+        if new_codeword.height() == max_height {
+            let new_codeword = batched_codewords.pop_front().unwrap();
+            // sum up the rows in each codeword
+            highest_codeword
+                .par_rows_mut()
+                .zip(new_codeword.par_rows())
+                .for_each(|(row_acc, row)| {
+                    row_acc.iter_mut().zip(row).for_each(|(acc, v)| *acc += v);
+                });
+        }
+    }
+    let (commit, mmcs) = mmcs_ext.commit_matrix(highest_codeword);
+    write_digest_to_transcript(&commit, transcript);
+    trees.push(mmcs);
+    commits.push(commit);
 
     exit_span!(prepare_span);
 
@@ -193,7 +217,6 @@ where
         })
         .collect::<Vec<_>>();
     let mut sumcheck_messages = Vec::with_capacity(num_rounds);
-    let mut commits = Vec::with_capacity(num_rounds - 1);
 
     let mut challenge = None;
     let sumcheck_phase1 = entered_span!("sumcheck_phase1");
