@@ -223,7 +223,9 @@ pub fn batch_verifier_query_phase<E: ExtensionField, S: EncodingScheme<E>>(
                     let folded_idx = idx & 0x01;
                     let mut leafs = vec![*sibling_value; 2];
                     leafs[folded_idx] = folded;
-                    if let Some(eval) = reduced_openings_by_height[log2_height] {
+
+                    let ro = std::mem::take(&mut reduced_openings_by_height[log2_height]);
+                    if let Some(eval) = ro {
                         leafs[folded_idx] += eval;
                     }
 
@@ -247,6 +249,10 @@ pub fn batch_verifier_query_phase<E: ExtensionField, S: EncodingScheme<E>>(
                     log2_height -= 1;
                     idx >>= 1;
                 }
+                assert!(
+                    reduced_openings_by_height.iter().all(|v| v.is_none()),
+                    "there are unused openings remain",
+                );
                 assert!(
                     final_codeword.values[idx] == folded,
                     "final_codeword.values[idx] value {:?} != folded {:?}",
