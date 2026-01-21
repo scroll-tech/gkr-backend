@@ -60,11 +60,8 @@ where
                     // the oracle values are committed in a row-bit-reversed format.
                     // rounding `idx` to an even value is equivalent to retrieving the "left-hand" side `j` index
                     // in the original (non-row-bit-reversed) format.
-                    //
-                    // however, since `p_d[j]` and `p_d[j + n_{d-1}]` are already concatenated in the same merkle leaf,
-                    // we can simply mask out the least significant bit (lsb) by performing a right shift by 1.
                     let idx_shift = log2_max_codeword_size - pcs_data.log2_max_codeword_size;
-                    let idx = idx >> (idx_shift + 1);
+                    let idx = idx >> idx_shift;
                     let (opened_values, opening_proof) = mmcs.open_batch(idx, &pcs_data.codeword);
                     BatchOpening {
                         opened_values,
@@ -73,12 +70,11 @@ where
                 })
                 .collect_vec();
 
-            // this is equivalent with "idx = idx % n_{d-1}" operation in non row bit reverse format
-            let idx = idx >> 1;
             let (_, commit_phase_openings) =
                 trees
                     .iter()
-                    .fold((idx, vec![]), |(idx, mut commit_phase_openings), tree| {
+                    .fold((*idx, vec![]), |(idx, mut commit_phase_openings), tree| {
+                        let leaf_idx = idx >> 1;
                         // differentiate interpolate to left or right position at next layer
                         let is_interpolate_to_right_index = (idx & 1) == 1;
                         // mask the least significant bit (LSB) for the same reason as above:
@@ -86,7 +82,7 @@ where
                         // 2. since even and odd parts are concatenated in the same leaf,
                         //    the overall merkle tree height is effectively halved,
                         //    so we divide by 2.
-                        let (mut values, opening_proof) = mmcs_ext.open_batch(idx >> 1, tree);
+                        let (mut values, opening_proof) = mmcs_ext.open_batch(leaf_idx, tree);
                         let leafs = values.pop().unwrap();
                         debug_assert_eq!(leafs.len(), 2);
                         let sibling_value = leafs[(!is_interpolate_to_right_index) as usize];
@@ -149,11 +145,10 @@ pub fn batch_verifier_query_phase<E: ExtensionField, S: EncodingScheme<E>>(
                 },
             )| {
                 // verify base oracle query proof
-                // refer to prover documentation for the reason of right shift by 1
-                let mut idx = idx >> 1;
+                let mut idx = *idx;
 
-                let mut reduced_openings_by_height: Vec<Option<(E, E)>> =
-                    vec![None; log2_max_codeword_size];
+                let mut reduced_openings_by_height: Vec<Option<E>> =
+                    vec![None; log2_max_codeword_size + 1];
                 let mut batch_coeffs_iter = batch_coeffs.iter();
 
                 for ((commit, batch_opening), input_proof) in
@@ -161,11 +156,9 @@ pub fn batch_verifier_query_phase<E: ExtensionField, S: EncodingScheme<E>>(
                 {
                     let dimensions = batch_opening
                         .iter()
-                        .map(|(num_var, (_, evals))| {
-                            Dimensions {
-                                width: evals.len() * 2, // we pack two rows into one in the mmcs
-                                height: 1 << (num_var + log2_blowup - 1),
-                            }
+                        .map(|(num_var, (_, evals))| Dimensions {
+                            width: evals.len(),
+                            height: 1 << (num_var + log2_blowup),
                         })
                         .collect_vec();
                     let bits_reduced = log2_max_codeword_size - commit.log2_max_codeword_size;
@@ -184,53 +177,37 @@ pub fn batch_verifier_query_phase<E: ExtensionField, S: EncodingScheme<E>>(
                     for (mat, dimension) in
                         input_proof.opened_values.iter().zip_eq(dimensions.iter())
                     {
-                        let width = mat.len() / 2;
+                        let width = mat.len();
                         assert_eq!(dimension.width, mat.len());
-                        assert_eq!(width * 2, mat.len());
                         let batch_coeffs = batch_coeffs_iter
                             .by_ref()
                             .take(width)
                             .copied()
                             .collect_vec();
-                        let (lo, hi): (&[E::BaseField], &[E::BaseField]) = mat.split_at(width);
-                        let low = dot_product::<E, _, _>(
+                        let eval = dot_product::<E, _, _>(
                             batch_coeffs.iter().copied(),
-                            lo.iter().copied(),
-                        );
-                        let high = dot_product::<E, _, _>(
-                            batch_coeffs.iter().copied(),
-                            hi.iter().copied(),
+                            mat.iter().copied(),
                         );
                         let log2_height = log2_strict_usize(dimension.height);
 
-                        if let Some((low_acc, high_acc)) =
-                            reduced_openings_by_height[log2_height].as_mut()
-                        {
+                        if let Some(eval_acc) = reduced_openings_by_height[log2_height].as_mut() {
                             // accumulate low and high values for the same log2_height
-                            *low_acc += low;
-                            *high_acc += high;
+                            *eval_acc += eval;
                         } else {
-                            reduced_openings_by_height[log2_height] = Some((low, high));
+                            reduced_openings_by_height[log2_height] = Some(eval);
                         }
                     }
                 }
 
                 // fold and query
-                let mut cur_num_var = max_num_var;
-                let mut log2_height = cur_num_var + log2_blowup - 1;
-                // -1 because for there are only #max_num_var-1 openings proof
-                let rounds = cur_num_var - S::get_basecode_msg_size_log() - 1;
+                let mut log2_height = max_num_var + log2_blowup;
+                let rounds = max_num_var - S::get_basecode_msg_size_log();
 
-                assert_eq!(rounds, fold_challenges.len() - 1);
+                assert_eq!(rounds, fold_challenges.len());
                 assert_eq!(rounds, proof.commits.len(),);
                 assert_eq!(rounds, opening_ext.len(),);
 
-                // first folding challenge
-                let r = fold_challenges.first().unwrap();
-                let coeff = S::verifier_folding_coeffs(vp, log2_height, idx);
-                let (lo, hi) = reduced_openings_by_height[log2_height].unwrap();
-                let mut folded = codeword_fold_with_challenge(&[lo, hi], *r, coeff, inv_2);
-
+                let mut folded = E::ZERO;
                 for (
                     (pi_comm, r),
                     CommitPhaseProofStep {
@@ -240,36 +217,42 @@ pub fn batch_verifier_query_phase<E: ExtensionField, S: EncodingScheme<E>>(
                 ) in proof
                     .commits
                     .iter()
-                    .zip_eq(fold_challenges.iter().skip(1))
+                    .zip_eq(fold_challenges.iter())
                     .zip_eq(opening_ext)
                 {
-                    cur_num_var -= 1;
-                    log2_height -= 1;
-
-                    let idx_sibling = idx & 0x01;
+                    let folded_idx = idx & 0x01;
                     let mut leafs = vec![*sibling_value; 2];
-                    leafs[idx_sibling] = folded;
-                    if let Some((lo, hi)) = reduced_openings_by_height[log2_height].as_mut() {
-                        leafs[idx_sibling] += if idx_sibling == 1 { *hi } else { *lo };
+                    leafs[folded_idx] = folded;
+
+                    let ro = std::mem::take(&mut reduced_openings_by_height[log2_height]);
+                    if let Some(eval) = ro {
+                        leafs[folded_idx] += eval;
                     }
 
-                    idx >>= 1;
+                    let leaf_idx = idx >> 1;
                     mmcs_ext
                         .verify_batch(
                             pi_comm,
                             &[Dimensions {
                                 width: 2,
                                 // width is 2, thus height divide by 2 via right shift
-                                height: 1 << log2_height,
+                                height: 1 << (log2_height - 1),
                             }],
-                            idx,
+                            leaf_idx,
                             slice::from_ref(&leafs),
                             proof,
                         )
                         .expect("verify failed");
-                    let coeff = S::verifier_folding_coeffs(vp, log2_height, idx);
+
+                    let coeff = S::verifier_folding_coeffs(vp, log2_height, leaf_idx);
                     folded = codeword_fold_with_challenge(&[leafs[0], leafs[1]], *r, coeff, inv_2);
+                    log2_height -= 1;
+                    idx >>= 1;
                 }
+                assert!(
+                    reduced_openings_by_height.iter().all(|v| v.is_none()),
+                    "there are unused openings remain",
+                );
                 assert!(
                     final_codeword.values[idx] == folded,
                     "final_codeword.values[idx] value {:?} != folded {:?}",

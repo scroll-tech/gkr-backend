@@ -96,9 +96,8 @@ where
         for (i, mat) in mats.into_iter().enumerate() {
             let (point, _) = &point_and_evals[i];
             let polys = &pcs_data.polys[i];
-            // the actual ith row and (i+n/2)th row are packed in same row
-            let num_rows = mat.height() * 2;
-            let num_polys = mat.width() / 2;
+            let num_rows = mat.height();
+            let num_polys = mat.width();
             let coeffs = batch_coeffs_iter
                 .by_ref()
                 .take(num_polys)
@@ -118,6 +117,7 @@ where
                 2,
             );
             let num_vars = polys[0].num_vars();
+            assert_eq!(1 << (num_vars + Spec::get_rate_log()), num_rows);
             let mle_base_vec = polys
                 .iter()
                 .map(|mle| mle.get_base_field_vec())
@@ -149,7 +149,6 @@ where
             .collect_vec(),
     );
     exit_span!(batch_codeword_span);
-
     exit_span!(prepare_span);
 
     // eq is the evaluation representation of the eq(X,r) polynomial over the hypercube
@@ -193,9 +192,10 @@ where
         })
         .collect::<Vec<_>>();
     let mut sumcheck_messages = Vec::with_capacity(num_rounds);
-    let mut commits = Vec::with_capacity(num_rounds - 1);
+    let mut commits = Vec::with_capacity(max_num_vars);
 
     let mut challenge = None;
+    let mut running_codeword_opt: Option<RowMajorMatrix<E>> = None;
     let sumcheck_phase1 = entered_span!("sumcheck_phase1");
     let phase1_rounds = num_rounds.min(max_num_vars - log2_num_threads);
 
@@ -205,6 +205,7 @@ where
             &mut prover_states,
             challenge,
             &mut sumcheck_messages,
+            &mut running_codeword_opt,
             &mut batched_codewords,
             transcript,
             &mut trees,
@@ -241,6 +242,7 @@ where
             &mut prover_states,
             challenge,
             &mut sumcheck_messages,
+            &mut running_codeword_opt,
             &mut batched_codewords,
             transcript,
             &mut trees,
@@ -303,6 +305,7 @@ where
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn basefold_fri_round<E: ExtensionField, Spec: BasefoldSpec<E>>(
     pp: &<Spec::EncodingScheme as EncodingScheme<E>>::ProverParameters,
+    running_codeword_opt: &mut Option<RowMajorMatrix<E>>,
     codewords: &mut VecDeque<RowMajorMatrix<E>>,
     trees: &mut Vec<MerkleTreeExt<E>>,
     commits: &mut Vec<<Poseidon2ExtMerkleMmcs<E> as Mmcs<E>>::Commitment>,
@@ -319,11 +322,8 @@ pub(crate) fn basefold_fri_round<E: ExtensionField, Spec: BasefoldSpec<E>>(
     <Poseidon2ExtMerkleMmcs<E> as Mmcs<E>>::Commitment:
         IntoIterator<Item = E::BaseField> + PartialEq,
 {
-    let running_codeword_opt = trees
-        .last()
-        .and_then(|mktree| mmcs_ext.get_matrices(mktree).pop())
-        .map(|m| m.as_view());
     let target_len = running_codeword_opt
+        .as_ref()
         .map(|running_codeword| running_codeword.values.len())
         .unwrap_or_else(|| {
             codewords
@@ -332,7 +332,6 @@ pub(crate) fn basefold_fri_round<E: ExtensionField, Spec: BasefoldSpec<E>>(
                 .max()
                 .expect("empty codeword")
         });
-    let next_level_target_len = target_len >> 1;
     let level = log2_strict_usize(target_len) - 1;
     let folding_coeffs =
         <Spec::EncodingScheme as EncodingScheme<E>>::prover_folding_coeffs_level(pp, level);
@@ -342,76 +341,42 @@ pub(crate) fn basefold_fri_round<E: ExtensionField, Spec: BasefoldSpec<E>>(
     // take codewords match with target length then fold
     let codewords_matched =
         pop_front_while(codewords, |codeword| codeword.values.len() == target_len);
-    // take codewords match next target length in preparation of being committed together
-    let codewords_next_level_matched = pop_front_while(codewords, |codeword| {
-        codeword.values.len() == next_level_target_len
-    });
 
-    // optimize for single codeword match
-    let folded_codeword = if (usize::from(running_codeword_opt.is_some()) + codewords_matched.len())
-        == 1
-        && codewords_next_level_matched.is_empty()
-    {
-        RowMajorMatrix::new(
+    // aggregate codeword with same length
+    let codeword_to_fold = (0..target_len)
+        .into_par_iter()
+        .map(|index| {
             running_codeword_opt
-                .or_else(|| codewords_matched.first().map(|m| m.as_view()))
-                .unwrap()
-                .values
-                .par_chunks_exact(2)
-                .zip(folding_coeffs)
-                .map(|(ys, coeff)| codeword_fold_with_challenge(ys, challenge, *coeff, inv_2))
-                .collect::<Vec<_>>(),
-            2,
-        )
-    } else {
-        // aggregate codeword with same length
-        let codeword_to_fold = (0..target_len)
-            .into_par_iter()
-            .map(|index| {
-                running_codeword_opt
-                    .into_iter()
-                    .chain(codewords_matched.iter().map(|m| m.as_view()))
-                    .map(|codeword| codeword.values[index])
-                    .sum::<E>()
-            })
-            .collect::<Vec<E>>();
+                .iter()
+                .chain(codewords_matched.iter())
+                .map(|codeword| codeword.values[index])
+                .sum::<E>()
+        })
+        .collect::<Vec<E>>();
 
-        RowMajorMatrix::new(
-            (0..target_len)
-                .into_par_iter()
-                .step_by(2)
-                .map(|index| {
-                    let coeff = &folding_coeffs[index >> 1];
+    // commit
+    let codeword_as_matrix = RowMajorMatrix::new(codeword_to_fold.clone(), 2);
+    let (commitment, merkle_tree) = mmcs_ext.commit_matrix(codeword_as_matrix);
+    write_digest_to_transcript(&commitment, transcript);
+    commits.push(commitment);
 
-                    // 1st part folded with challenge then sum
-                    let cur_same_pos_sum = codeword_fold_with_challenge(
-                        &codeword_to_fold[index..index + 2],
-                        challenge,
-                        *coeff,
-                        inv_2,
-                    );
-                    // 2nd part: retrieve respective index then sum
-                    let next_same_pos_sum = codewords_next_level_matched
-                        .iter()
-                        .map(|codeword| codeword.values[index >> 1])
-                        .sum::<E>();
-                    cur_same_pos_sum + next_same_pos_sum
-                })
-                .collect::<Vec<_>>(),
-            2,
-        )
-    };
+    // codeword_to_fold is owned by merkle_tree in previous step and we can get a reference to it here
+    let codeword_to_fold = mmcs_ext.get_matrices(&merkle_tree).pop().unwrap();
+    *running_codeword_opt = Some(RowMajorMatrix::new(
+        // fri fold
+        codeword_to_fold
+            .values
+            .par_chunks_exact(2)
+            .zip(folding_coeffs)
+            .map(|(ys, coeff)| codeword_fold_with_challenge(ys, challenge, *coeff, inv_2))
+            .collect::<Vec<_>>(),
+        2,
+    ));
+    trees.push(merkle_tree);
 
     if cfg!(feature = "sanity-check") && is_last_round {
-        let (commitment, merkle_tree) = mmcs_ext.commit_matrix(folded_codeword.clone());
-        commits.push(commitment);
-        trees.push(merkle_tree);
-    }
-
-    // skip last round commitment as verifer need to derive encode(final_message) = final_codeword itself
-    if !is_last_round {
-        let (commitment, merkle_tree) = mmcs_ext.commit_matrix(folded_codeword);
-        write_digest_to_transcript(&commitment, transcript);
+        let (commitment, merkle_tree) =
+            mmcs_ext.commit_matrix(running_codeword_opt.as_ref().map(|c| c.clone()).unwrap());
         commits.push(commitment);
         trees.push(merkle_tree);
     }
@@ -424,6 +389,7 @@ fn basefold_one_round<E: ExtensionField, Spec: BasefoldSpec<E>>(
     prover_states: &mut Vec<IOPProverState<'_, E>>,
     challenge: Option<Challenge<E>>,
     sumcheck_messages: &mut Vec<IOPProverMessage<E>>,
+    running_codeword_opt: &mut Option<RowMajorMatrix<E>>,
     codewords: &mut VecDeque<RowMajorMatrix<E>>,
     transcript: &mut impl Transcript<E>,
     trees: &mut Vec<MerkleTreeExt<E>>,
@@ -467,6 +433,7 @@ where
     let fri_round_span = entered_span!("basefold::fri_one_round");
     basefold_fri_round::<E, Spec>(
         pp,
+        running_codeword_opt,
         codewords,
         trees,
         commits,
