@@ -292,10 +292,7 @@ mod tests {
 
     use ff_ext::GoldilocksExt2;
     use itertools::izip;
-    use p3::{
-        commit::{ExtensionMmcs, Mmcs},
-        goldilocks::Goldilocks,
-    };
+    use p3::{commit::ExtensionMmcs, goldilocks::Goldilocks};
 
     use rand::rngs::OsRng;
     use transcript::BasicTranscript;
@@ -365,7 +362,7 @@ mod tests {
             ),
         );
         assert_eq!(
-            &mmcs_ext.get_matrices(&prove_data[0])[0].values,
+            &running_codeword_opt.as_ref().unwrap().values,
             &codeword_from_folded_rmm.values
         );
     }
