@@ -359,17 +359,20 @@ pub(crate) fn basefold_fri_round<E: ExtensionField, Spec: BasefoldSpec<E>>(
     let (commitment, merkle_tree) = mmcs_ext.commit_matrix(codeword_as_matrix);
     write_digest_to_transcript(&commitment, transcript);
     commits.push(commitment);
-    trees.push(merkle_tree);
 
-    // fri fold and add codewords with next target length
+    // codeword_to_fold is owned by merkle_tree in previous step and we can get a reference to it here
+    let codeword_to_fold = mmcs_ext.get_matrices(&merkle_tree).pop().unwrap();
     *running_codeword_opt = Some(RowMajorMatrix::new(
+        // fri fold
         codeword_to_fold
+            .values
             .par_chunks_exact(2)
             .zip(folding_coeffs)
             .map(|(ys, coeff)| codeword_fold_with_challenge(ys, challenge, *coeff, inv_2))
             .collect::<Vec<_>>(),
         2,
     ));
+    trees.push(merkle_tree);
 
     if cfg!(feature = "sanity-check") && is_last_round {
         let (commitment, merkle_tree) =
