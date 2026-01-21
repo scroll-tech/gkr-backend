@@ -49,7 +49,6 @@ where
         log2_max_codeword_size,
     );
 
-    println!("log2_max_codeword_size: {}", log2_max_codeword_size);
     queries
         .iter()
         .map(|idx| {

@@ -334,6 +334,7 @@ mod tests {
             izip!(&codeword.values, &codeword_ext.values).all(|(base, ext)| E::from(*base) == *ext)
         );
 
+        let mut running_codeword_opt = None;
         let mut codeword_ext = VecDeque::from(vec![codeword_ext]);
         let mut transcript = BasicTranscript::new(b"test");
 
@@ -342,6 +343,7 @@ mod tests {
         let r = E::from_canonical_u64(97);
         basefold_fri_round::<E, BasefoldRSParams>(
             &pp,
+            &mut running_codeword_opt,
             &mut codeword_ext,
             &mut prove_data,
             &mut vec![],

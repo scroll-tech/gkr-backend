@@ -406,13 +406,13 @@ where
         assert_eq!(commits.len(), num_rounds);
         let sumcheck_messages = proof.sumcheck_proof.as_ref().unwrap();
         for i in 0..num_rounds {
-            write_digest_to_transcript(&commits[i], transcript);
             transcript.append_field_element_exts(sumcheck_messages[i].evaluations.as_slice());
             fold_challenges.push(
                 transcript
                     .sample_and_append_challenge(b"commit round")
                     .elements,
             );
+            write_digest_to_transcript(&commits[i], transcript);
         }
         #[cfg(debug_assertions)]
         {
