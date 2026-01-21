@@ -69,7 +69,6 @@ where
     let mmcs_ext = ExtensionMmcs::<E::BaseField, E, _>::new(poseidon2_merkle_tree::<E>());
     let mmcs = poseidon2_merkle_tree::<E>();
     let mut trees: Vec<MerkleTreeExt<E>> = Vec::with_capacity(max_num_vars);
-    let mut commits = Vec::with_capacity(max_num_vars);
 
     let total_num_polys = rounds
         .iter()
@@ -193,6 +192,7 @@ where
         })
         .collect::<Vec<_>>();
     let mut sumcheck_messages = Vec::with_capacity(num_rounds);
+    let mut commits = Vec::with_capacity(max_num_vars);
 
     let mut challenge = None;
     let mut running_codeword_opt: Option<RowMajorMatrix<E>> = None;
