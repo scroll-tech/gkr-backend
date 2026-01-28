@@ -190,21 +190,6 @@ fn test_normal_polynomial_helper<E: ExtensionField>() {
     test_sumcheck_internal::<E>(nv, num_multiplicands_range, num_products);
 }
 
-#[test]
-fn test_extract_sum() {
-    test_extract_sum_helper::<GoldilocksExt2>();
-    test_extract_sum_helper::<BabyBearExt4>();
-}
-
-fn test_extract_sum_helper<E: ExtensionField>() {
-    let mut rng = thread_rng();
-    let mut transcript = BasicTranscript::new(b"test");
-    let (poly, asserted_sum) = VirtualPolynomial::<E>::random(&[8], (2, 3), 3, &mut rng);
-    #[allow(deprecated)]
-    let (proof, _) = IOPProverState::<E>::prove_parallel(poly, &mut transcript);
-    assert_eq!(proof.extract_sum(), asserted_sum);
-}
-
 struct DensePolynomial(Vec<GoldilocksExt2>);
 
 impl DensePolynomial {

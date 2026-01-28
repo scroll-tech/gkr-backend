@@ -136,7 +136,7 @@ impl<E: ExtensionField> IOPVerifierState<E> {
                     );
                 }
                 // https://eprint.iacr.org/2024/108.pdf sec 3.1 derive eval_0 = claim - eval_1
-                let eval_0 = last_claim - evaluations.get(0).copied().unwrap();
+                let eval_0 = last_claim - evaluations.first().copied().unwrap();
                 evals_0.push(eval_0);
                 let augmented_evals =std::iter::once(eval_0).chain(evaluations.iter().copied()).collect::<Vec<_>>();
                 claims.push(extrapolate_uni_poly::<E>(&augmented_evals, challenge.elements));

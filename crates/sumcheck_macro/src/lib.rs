@@ -227,7 +227,6 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
 
             if i == 1 {
                 additive_array_first_item = item.clone();
-                continue;
             }
             additive_array_items = acc_list(additive_array_items, item);
         }
@@ -256,7 +255,7 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
                 .collect(),
         );
 
-        let degree = degree as usize;
+        let degree_plus_one = (degree + 1) as usize;
         quote! {
             // To deal with different num_vars, we exploit a fact that for each product which num_vars < max_num_vars
             // we actually need to have a full sum, times 2^(bh_num_vars - num_vars) to accumulate into univariate computation
@@ -294,10 +293,10 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
                         if num_vars_multiplicity > 0 {
                             sum *= E::BaseField::from_canonical_u64(1 << num_vars_multiplicity);
                         }
-                        AdditiveArray::<_, #degree>([sum; #degree])
+                        AdditiveArray::<_, #degree_plus_one>([sum; #degree_plus_one])
                     } else {
                         // other just skip and return 0 array
-                        AdditiveArray::<_, #degree>([Default::default(); #degree])
+                        AdditiveArray::<_, #degree_plus_one>([Default::default(); #degree_plus_one])
                     }
                 },
                 PolyMeta::Normal => {
@@ -318,18 +317,18 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
                         if num_vars_multiplicity > 0 {
                             sum *= E::BaseField::from_canonical_u64(1 << num_vars_multiplicity);
                         }
-                        AdditiveArray::<_, #degree>([sum; #degree])
+                        AdditiveArray::<_, #degree_plus_one>([sum; #degree_plus_one])
                     } else {
                         if v1.len() == 1 {
                             let b = 0;
-                            AdditiveArray::<_, #degree>([#additive_array_first_item ; #degree])
+                            AdditiveArray::<_, #degree_plus_one>([#additive_array_first_item ; #degree_plus_one])
                         } else {
                             (0..largest_even_below(v1.len()))
                                 #iter
                                 .map(|b| {
                                     #additive_array_items
                                 })
-                                .sum::<AdditiveArray<_, #degree >>()
+                                .sum::<AdditiveArray<_, #degree_plus_one>>()
                         }
                     }
                 },

@@ -353,8 +353,8 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         // Step 2: generate sum for the partial evaluated polynomial:
         // f(r_1, ... r_m,, x_{m+1}... x_n)
         let span = entered_span!("build_uni_poly");
-        let AdditiveVec(uni_polys) = self.poly.products.iter().fold(
-            AdditiveVec::new(self.poly.aux_info.max_degree),
+        let AdditiveVec(mut uni_polys) = self.poly.products.iter().fold(
+            AdditiveVec::new(self.poly.aux_info.max_degree + 1),
             |mut uni_polys, MonomialTerms { terms }| {
                 for Term {
                     scalar,
@@ -364,7 +364,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                     let f = &self.poly.flattened_ml_extensions;
                     let f_type = &self.poly_meta;
                     let get_poly_meta = || f_type[prod[0]];
-                    let mut uni_variate: Vec<E> = vec![E::ZERO; self.poly.aux_info.max_degree];
+                    let mut uni_variate: Vec<E> = vec![E::ZERO; self.poly.aux_info.max_degree + 1];
                     let uni_variate_monomial: Vec<E> = match prod.len() {
                         1 => sumcheck_code_gen!(1, false, |i| &f[prod[i]], || get_poly_meta())
                             .to_vec(),
@@ -392,7 +392,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                         // Perform extrapolation using the precomputed extrapolation table
                         extrapolate_from_table(
                             &mut uni_variate,
-                            prod.len(),
+                            prod.len() + 1,
                         );
                     }
 
@@ -404,6 +404,11 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         exit_span!(span);
 
         exit_span!(start);
+
+        assert!(uni_polys.len() > 1);
+        // NOTE remove uni_polys.eval(0) from lagrange domain
+        // as verifier can derive via claim - uni_polys.eval(1)
+        uni_polys.remove(0);
 
         IOPProverMessage {
             evaluations: uni_polys,
@@ -603,12 +608,12 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         // Step 2: generate sum for the partial evaluated polynomial:
         // f(r_1, ... r_m,, x_{m+1}... x_n)
         let span = entered_span!("build_uni_poly");
-        let AdditiveVec(uni_polys) = self
+        let AdditiveVec(mut uni_polys) = self
             .poly
             .products
             .par_iter()
             .fold_with(
-                AdditiveVec::new(self.poly.aux_info.max_degree),
+                AdditiveVec::new(self.poly.aux_info.max_degree + 1),
                 |mut uni_polys, MonomialTerms { terms }| {
                     for Term {
                         scalar,
@@ -619,7 +624,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                         let f_type = &self.poly_meta;
                         let get_poly_meta = || f_type[prod[0]];
                         let mut uni_variate: Vec<E> =
-                            vec![E::ZERO; self.poly.aux_info.max_degree];
+                            vec![E::ZERO; self.poly.aux_info.max_degree + 1];
                         let uni_variate_monomial: Vec<E> = match prod.len() {
                             1 => sumcheck_code_gen!(1, true, |i| &f[prod[i]], || get_poly_meta())
                                 .to_vec(),
@@ -644,7 +649,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
 
                         if prod.len() < self.poly.aux_info.max_degree {
                             // Perform extrapolation using the precomputed extrapolation table
-                            extrapolate_from_table(&mut uni_variate, prod.len());
+                            extrapolate_from_table(&mut uni_variate, prod.len() + 1);
                         }
                         uni_polys += AdditiveVec(uni_variate);
                     }
@@ -654,8 +659,12 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             .reduce_with(|acc, item| acc + item)
             .unwrap();
         exit_span!(span);
-
         exit_span!(start);
+
+        assert!(uni_polys.len() > 1);
+        // NOTE remove uni_polys.eval(0) from lagrange domain
+        // as verifier can derive via claim - uni_polys.eval(1)
+        uni_polys.remove(0);
 
         IOPProverMessage {
             evaluations: uni_polys,
