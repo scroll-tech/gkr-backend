@@ -45,7 +45,7 @@ impl<'a, E: ExtensionField> Phase1Workers<'a, E> {
                 .workers_states
                 .par_iter_mut()
                 .map(|state| state.run_round())
-                .reduce(|| AdditiveVec::new(max_degree + 1), |a, b| a + b);
+                .reduce(|| AdditiveVec::new(max_degree), |a, b| a + b);
 
             transcript.append_field_element_exts(&evaluations.0);
 
@@ -354,7 +354,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         // f(r_1, ... r_m,, x_{m+1}... x_n)
         let span = entered_span!("build_uni_poly");
         let AdditiveVec(uni_polys) = self.poly.products.iter().fold(
-            AdditiveVec::new(self.poly.aux_info.max_degree + 1),
+            AdditiveVec::new(self.poly.aux_info.max_degree),
             |mut uni_polys, MonomialTerms { terms }| {
                 for Term {
                     scalar,
@@ -364,7 +364,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                     let f = &self.poly.flattened_ml_extensions;
                     let f_type = &self.poly_meta;
                     let get_poly_meta = || f_type[prod[0]];
-                    let mut uni_variate: Vec<E> = vec![E::ZERO; self.poly.aux_info.max_degree + 1];
+                    let mut uni_variate: Vec<E> = vec![E::ZERO; self.poly.aux_info.max_degree];
                     let uni_variate_monomial: Vec<E> = match prod.len() {
                         1 => sumcheck_code_gen!(1, false, |i| &f[prod[i]], || get_poly_meta())
                             .to_vec(),
@@ -392,7 +392,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                         // Perform extrapolation using the precomputed extrapolation table
                         extrapolate_from_table(
                             &mut uni_variate,
-                            prod.len() + 1,
+                            prod.len(),
                         );
                     }
 
@@ -608,7 +608,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             .products
             .par_iter()
             .fold_with(
-                AdditiveVec::new(self.poly.aux_info.max_degree + 1),
+                AdditiveVec::new(self.poly.aux_info.max_degree),
                 |mut uni_polys, MonomialTerms { terms }| {
                     for Term {
                         scalar,
@@ -619,7 +619,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                         let f_type = &self.poly_meta;
                         let get_poly_meta = || f_type[prod[0]];
                         let mut uni_variate: Vec<E> =
-                            vec![E::ZERO; self.poly.aux_info.max_degree + 1];
+                            vec![E::ZERO; self.poly.aux_info.max_degree];
                         let uni_variate_monomial: Vec<E> = match prod.len() {
                             1 => sumcheck_code_gen!(1, true, |i| &f[prod[i]], || get_poly_meta())
                                 .to_vec(),
@@ -644,7 +644,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
 
                         if prod.len() < self.poly.aux_info.max_degree {
                             // Perform extrapolation using the precomputed extrapolation table
-                            extrapolate_from_table(&mut uni_variate, prod.len() + 1);
+                            extrapolate_from_table(&mut uni_variate, prod.len());
                         }
                         uni_polys += AdditiveVec(uni_variate);
                     }

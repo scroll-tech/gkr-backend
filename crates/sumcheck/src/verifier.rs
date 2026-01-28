@@ -122,39 +122,42 @@ impl<E: ExtensionField> IOPVerifierState<E> {
 
         // the deferred check during the interactive phase:
         // 2. set `expected` to P(r)`
-        let mut expected_vec = self
+        let (expected_vec, evals_0) = self
             .polynomials_received
             .iter()
             .zip(self.challenges.iter())
-            .map(|(evaluations, challenge)| {
-                if evaluations.len() != self.max_degree + 1 {
+            .fold((vec![*asserted_sum], vec![]), |(mut claims, mut evals_0), (evaluations, challenge)| {
+                let last_claim = claims.last().copied().unwrap();
+                if evaluations.len() != self.max_degree {
                     panic!(
                         "incorrect number of evaluations: {} vs {}",
                         evaluations.len(),
-                        self.max_degree + 1
+                        self.max_degree
                     );
                 }
-                extrapolate_uni_poly::<E>(evaluations, challenge.elements)
-            })
-            .collect::<Vec<_>>();
+                // https://eprint.iacr.org/2024/108.pdf sec 3.1 derive eval_0 = claim - eval_1
+                let eval_0 = last_claim - evaluations.get(0).copied().unwrap();
+                evals_0.push(eval_0);
+                let augmented_evals =std::iter::once(eval_0).chain(evaluations.iter().copied()).collect::<Vec<_>>();
+                claims.push(extrapolate_uni_poly::<E>(&augmented_evals, challenge.elements));
+                (claims, evals_0)
+            });
 
-        // l-append asserted_sum to the first position of the expected vector
-        expected_vec.insert(0, *asserted_sum);
-
-        for (i, (evaluations, &expected)) in self
+        for (i, ((evaluations, &expected), eval_0)) in self
             .polynomials_received
             .iter()
-            .zip(expected_vec.iter())
+            .zip(&expected_vec)
+            .zip(&evals_0)
             .enumerate()
             .take(self.num_vars)
         {
             // the deferred check during the interactive phase:
             // 1. check if the received 'P(0) + P(1) = expected`.
-            if evaluations[0] + evaluations[1] != expected {
+            if *eval_0 + evaluations[0] != expected {
                 panic!(
                     "{}th round's prover message is not consistent with the claim. {:?} {:?}",
                     i,
-                    evaluations[0] + evaluations[1],
+                     *eval_0 + evaluations[0],
                     expected
                 );
             }
