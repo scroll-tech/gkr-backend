@@ -291,33 +291,19 @@ pub fn batch_verifier_query_phase<E: ExtensionField, S: EncodingScheme<E>>(
 
     // Reconstruct the implicit P(0) evaluation for each round and update the claim in place.
     let mut current_claim = expected_sum;
-    let mut evals_at_zero = Vec::with_capacity(sumcheck_messages.len());
-    let mut augmented_evals = Vec::with_capacity(sumcheck_messages.len());
     for (msg, challenge) in sumcheck_messages.iter().zip(fold_challenges.iter()) {
-        let eval_0 = current_claim - msg.evaluations[0];
-        evals_at_zero.push(eval_0);
-        let mut evals = Vec::with_capacity(msg.evaluations.len() + 1);
-        evals.push(eval_0);
-        evals.extend(msg.evaluations.iter().copied());
-        current_claim = extrapolate_uni_poly(&evals, *challenge);
-        augmented_evals.push(evals);
+        let eval_1 = msg
+            .evaluations
+            .first()
+            .copied()
+            .expect("sumcheck prover message missing evaluations");
+        let eval_0 = current_claim - eval_1;
+        current_claim = extrapolate_uni_poly(eval_0, &msg.evaluations, *challenge);
     }
 
+    // check final evaluation are correct
     assert_eq!(
-        expected_sum,
-        evals_at_zero[0] + sumcheck_messages[0].evaluations[0]
-    );
-    // 2. check every round of sumcheck match with prev claims
-    for i in 0..fold_challenges.len() - 1 {
-        assert_eq!(
-            extrapolate_uni_poly(&augmented_evals[i], fold_challenges[i]),
-            evals_at_zero[i + 1] + sumcheck_messages[i + 1].evaluations[0]
-        );
-    }
-    // 3. check final evaluation are correct
-    let last_round = fold_challenges.len() - 1;
-    assert_eq!(
-        extrapolate_uni_poly(&augmented_evals[last_round], fold_challenges[last_round]),
+        current_claim,
         // \sum_i eq(p,[r,i]) * f(r,i)
         izip!(
             final_message,

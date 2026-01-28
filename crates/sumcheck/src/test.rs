@@ -221,7 +221,10 @@ fn test_extrapolation() {
             .map(|i| poly.evaluate(&GoldilocksExt2::from_canonical_u64(i as u64)))
             .collect::<Vec<_>>();
         let query = GoldilocksExt2::random(&mut prng);
-        assert_eq!(poly.evaluate(&query), extrapolate_uni_poly(&evals, query));
+        assert_eq!(
+            poly.evaluate(&query),
+            extrapolate_uni_poly(evals[0], &evals[1..], query)
+        );
     }
 
     run_extrapolation_test(1);
