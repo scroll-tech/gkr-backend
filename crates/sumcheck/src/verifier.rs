@@ -126,22 +126,30 @@ impl<E: ExtensionField> IOPVerifierState<E> {
             .polynomials_received
             .iter()
             .zip(self.challenges.iter())
-            .fold((vec![*asserted_sum], vec![]), |(mut claims, mut evals_0), (evaluations, challenge)| {
-                let last_claim = claims.last().copied().unwrap();
-                if evaluations.len() != self.max_degree {
-                    panic!(
-                        "incorrect number of evaluations: {} vs {}",
-                        evaluations.len(),
-                        self.max_degree
-                    );
-                }
-                // https://eprint.iacr.org/2024/108.pdf sec 3.1 derive eval_0 = claim - eval_1
-                let eval_0 = last_claim - evaluations.first().copied().unwrap();
-                evals_0.push(eval_0);
-                let augmented_evals =std::iter::once(eval_0).chain(evaluations.iter().copied()).collect::<Vec<_>>();
-                claims.push(extrapolate_uni_poly::<E>(&augmented_evals, challenge.elements));
-                (claims, evals_0)
-            });
+            .fold(
+                (vec![*asserted_sum], vec![]),
+                |(mut claims, mut evals_0), (evaluations, challenge)| {
+                    let last_claim = claims.last().copied().unwrap();
+                    if evaluations.len() != self.max_degree {
+                        panic!(
+                            "incorrect number of evaluations: {} vs {}",
+                            evaluations.len(),
+                            self.max_degree
+                        );
+                    }
+                    // https://eprint.iacr.org/2024/108.pdf sec 3.1 derive eval_0 = claim - eval_1
+                    let eval_0 = last_claim - evaluations.first().copied().unwrap();
+                    evals_0.push(eval_0);
+                    let augmented_evals = std::iter::once(eval_0)
+                        .chain(evaluations.iter().copied())
+                        .collect::<Vec<_>>();
+                    claims.push(extrapolate_uni_poly::<E>(
+                        &augmented_evals,
+                        challenge.elements,
+                    ));
+                    (claims, evals_0)
+                },
+            );
 
         for (i, ((evaluations, &expected), eval_0)) in self
             .polynomials_received
@@ -157,7 +165,7 @@ impl<E: ExtensionField> IOPVerifierState<E> {
                 panic!(
                     "{}th round's prover message is not consistent with the claim. {:?} {:?}",
                     i,
-                     *eval_0 + evaluations[0],
+                    *eval_0 + evaluations[0],
                     expected
                 );
             }

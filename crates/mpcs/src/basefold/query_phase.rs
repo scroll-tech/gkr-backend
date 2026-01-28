@@ -303,7 +303,10 @@ pub fn batch_verifier_query_phase<E: ExtensionField, S: EncodingScheme<E>>(
         augmented_evals.push(evals);
     }
 
-    assert_eq!(expected_sum, evals_at_zero[0] + sumcheck_messages[0].evaluations[0]);
+    assert_eq!(
+        expected_sum,
+        evals_at_zero[0] + sumcheck_messages[0].evaluations[0]
+    );
     // 2. check every round of sumcheck match with prev claims
     for i in 0..fold_challenges.len() - 1 {
         assert_eq!(
