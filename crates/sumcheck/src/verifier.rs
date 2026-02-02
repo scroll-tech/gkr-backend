@@ -124,8 +124,7 @@ impl<E: ExtensionField> IOPVerifierState<E> {
         // the deferred check during the interactive phase:
         // NOTE: must iterate through challenges, source-of-truth for verifier
         for (i, challenge) in self.challenges.iter().enumerate() {
-            let evaluations = &self
-                .polynomials_received[i];
+            let evaluations = &self.polynomials_received[i];
             if evaluations.len() != self.max_degree {
                 panic!(
                     "incorrect number of evaluations: {} vs {}",
@@ -135,11 +134,7 @@ impl<E: ExtensionField> IOPVerifierState<E> {
             }
             // https://eprint.iacr.org/2024/108.pdf sec 3.1 derive eval_0 = claim - eval_1
             let eval_0 = expected_claim - evaluations.first().copied().unwrap();
-            expected_claim = extrapolate_uni_poly::<E>(
-                eval_0,
-                evaluations,
-                challenge.elements,
-            );
+            expected_claim = extrapolate_uni_poly::<E>(eval_0, evaluations, challenge.elements);
         }
         exit_span!(start);
         SumCheckSubClaim {
