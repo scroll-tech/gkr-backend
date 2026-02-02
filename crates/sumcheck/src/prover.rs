@@ -45,7 +45,7 @@ impl<'a, E: ExtensionField> Phase1Workers<'a, E> {
                 .workers_states
                 .par_iter_mut()
                 .map(|state| state.run_round())
-                .reduce(|| AdditiveVec::new(max_degree + 1), |a, b| a + b);
+                .reduce(|| AdditiveVec::new(max_degree), |a, b| a + b);
 
             transcript.append_field_element_exts(&evaluations.0);
 
@@ -353,7 +353,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         // Step 2: generate sum for the partial evaluated polynomial:
         // f(r_1, ... r_m,, x_{m+1}... x_n)
         let span = entered_span!("build_uni_poly");
-        let AdditiveVec(uni_polys) = self.poly.products.iter().fold(
+        let AdditiveVec(mut uni_polys) = self.poly.products.iter().fold(
             AdditiveVec::new(self.poly.aux_info.max_degree + 1),
             |mut uni_polys, MonomialTerms { terms }| {
                 for Term {
@@ -404,6 +404,11 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         exit_span!(span);
 
         exit_span!(start);
+
+        assert!(uni_polys.len() > 1);
+        // NOTE remove uni_polys.eval(0) from lagrange domain
+        // as verifier can derive via claim - uni_polys.eval(1)
+        uni_polys.remove(0);
 
         IOPProverMessage {
             evaluations: uni_polys,
@@ -603,7 +608,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         // Step 2: generate sum for the partial evaluated polynomial:
         // f(r_1, ... r_m,, x_{m+1}... x_n)
         let span = entered_span!("build_uni_poly");
-        let AdditiveVec(uni_polys) = self
+        let AdditiveVec(mut uni_polys) = self
             .poly
             .products
             .par_iter()
@@ -654,8 +659,12 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             .reduce_with(|acc, item| acc + item)
             .unwrap();
         exit_span!(span);
-
         exit_span!(start);
+
+        assert!(uni_polys.len() > 1);
+        // NOTE remove uni_polys.eval(0) from lagrange domain
+        // as verifier can derive via claim - uni_polys.eval(1)
+        uni_polys.remove(0);
 
         IOPProverMessage {
             evaluations: uni_polys,

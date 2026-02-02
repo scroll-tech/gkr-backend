@@ -417,7 +417,7 @@ where
     let evaluations: AdditiveVec<E> =
         prover_msgs
             .into_iter()
-            .fold(AdditiveVec::new(3), |mut acc, prover_msg| {
+            .fold(AdditiveVec::new(2), |mut acc, prover_msg| {
                 acc += AdditiveVec(prover_msg.evaluations);
                 acc
             });

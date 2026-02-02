@@ -15,11 +15,6 @@ use transcript::Challenge;
 pub struct IOPProof<E: ExtensionField> {
     pub proofs: Vec<IOPProverMessage<E>>,
 }
-impl<E: ExtensionField> IOPProof<E> {
-    pub fn extract_sum(&self) -> E {
-        self.proofs[0].evaluations[0] + self.proofs[0].evaluations[1]
-    }
-}
 
 /// A message from the prover to the verifier at a given round
 /// is a list of evaluations.

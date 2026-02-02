@@ -53,7 +53,7 @@ pub fn extrapolate_from_table<E: ExtensionField>(uni_variate: &mut [E], start: u
     }
 }
 
-fn extrapolate_uni_poly_deg_1<F: Field>(p_i: &[F; 2], eval_at: F) -> F {
+fn extrapolate_uni_poly_deg_1<F: Field>(p0: F, p1: F, eval_at: F) -> F {
     let x0 = F::ZERO;
     let x1 = F::ONE;
 
@@ -69,13 +69,13 @@ fn extrapolate_uni_poly_deg_1<F: Field>(p_i: &[F; 2], eval_at: F) -> F {
     let inv_d0 = d0.inverse();
     let inv_d1 = d1.inverse();
 
-    let t0 = w0 * p_i[0] * inv_d0;
-    let t1 = w1 * p_i[1] * inv_d1;
+    let t0 = w0 * p0 * inv_d0;
+    let t1 = w1 * p1 * inv_d1;
 
     l * (t0 + t1)
 }
 
-fn extrapolate_uni_poly_deg_2<F: Field>(p_i: &[F; 3], eval_at: F) -> F {
+fn extrapolate_uni_poly_deg_2<F: Field>(p0: F, p1: F, p2: F, eval_at: F) -> F {
     let x0 = F::from_canonical_u64(0);
     let x1 = F::from_canonical_u64(1);
     let x2 = F::from_canonical_u64(2);
@@ -97,14 +97,14 @@ fn extrapolate_uni_poly_deg_2<F: Field>(p_i: &[F; 3], eval_at: F) -> F {
     let inv_d1 = d1.inverse();
     let inv_d2 = d2.inverse();
 
-    let t0 = w0 * p_i[0] * inv_d0;
-    let t1 = w1 * p_i[1] * inv_d1;
-    let t2 = w2 * p_i[2] * inv_d2;
+    let t0 = w0 * p0 * inv_d0;
+    let t1 = w1 * p1 * inv_d1;
+    let t2 = w2 * p2 * inv_d2;
 
     l * (t0 + t1 + t2)
 }
 
-fn extrapolate_uni_poly_deg_3<F: Field>(p_i: &[F; 4], eval_at: F) -> F {
+fn extrapolate_uni_poly_deg_3<F: Field>(p0: F, p1: F, p2: F, p3: F, eval_at: F) -> F {
     let x0 = F::from_canonical_u64(0);
     let x1 = F::from_canonical_u64(1);
     let x2 = F::from_canonical_u64(2);
@@ -131,15 +131,15 @@ fn extrapolate_uni_poly_deg_3<F: Field>(p_i: &[F; 4], eval_at: F) -> F {
     let inv_d2 = d2.inverse();
     let inv_d3 = d3.inverse();
 
-    let t0 = w0 * p_i[0] * inv_d0;
-    let t1 = w1 * p_i[1] * inv_d1;
-    let t2 = w2 * p_i[2] * inv_d2;
-    let t3 = w3 * p_i[3] * inv_d3;
+    let t0 = w0 * p0 * inv_d0;
+    let t1 = w1 * p1 * inv_d1;
+    let t2 = w2 * p2 * inv_d2;
+    let t3 = w3 * p3 * inv_d3;
 
     l * (t0 + t1 + t2 + t3)
 }
 
-fn extrapolate_uni_poly_deg_4<F: Field>(p_i: &[F; 5], eval_at: F) -> F {
+fn extrapolate_uni_poly_deg_4<F: Field>(p0: F, p1: F, p2: F, p3: F, p4: F, eval_at: F) -> F {
     let x0 = F::from_canonical_u64(0);
     let x1 = F::from_canonical_u64(1);
     let x2 = F::from_canonical_u64(2);
@@ -171,11 +171,11 @@ fn extrapolate_uni_poly_deg_4<F: Field>(p_i: &[F; 5], eval_at: F) -> F {
     let inv_d3 = d3.inverse();
     let inv_d4 = d4.inverse();
 
-    let t0 = w0 * p_i[0] * inv_d0;
-    let t1 = w1 * p_i[1] * inv_d1;
-    let t2 = w2 * p_i[2] * inv_d2;
-    let t3 = w3 * p_i[3] * inv_d3;
-    let t4 = w4 * p_i[4] * inv_d4;
+    let t0 = w0 * p0 * inv_d0;
+    let t1 = w1 * p1 * inv_d1;
+    let t2 = w2 * p2 * inv_d2;
+    let t3 = w3 * p3 * inv_d3;
+    let t4 = w4 * p4 * inv_d4;
 
     l * (t0 + t1 + t2 + t3 + t4)
 }
@@ -195,18 +195,23 @@ fn extrapolate_uni_poly_deg_4<F: Field>(p_i: &[F; 5], eval_at: F) -> F {
 /// with unrolled loops for performance
 ///
 /// # Arguments
-/// * `p_i` - Values of the polynomial at consecutive integer points.
+/// * `p0` - Polynomial evaluation at point 0.
+/// * `p_i` - Values of the polynomial at consecutive integer points starting from 1.
 /// * `eval_at` - The point at which to evaluate the interpolated polynomial.
 ///
 /// # Returns
 /// The value of the polynomial `eval_at`.
-pub fn extrapolate_uni_poly<F: Field>(p: &[F], eval_at: F) -> F {
+pub fn extrapolate_uni_poly<F: Field>(p0: F, p: &[F], eval_at: F) -> F {
+    assert!(
+        !p.is_empty(),
+        "at least one evaluation beyond p(0) is required"
+    );
     match p.len() {
-        2 => extrapolate_uni_poly_deg_1(p.try_into().unwrap(), eval_at),
-        3 => extrapolate_uni_poly_deg_2(p.try_into().unwrap(), eval_at),
-        4 => extrapolate_uni_poly_deg_3(p.try_into().unwrap(), eval_at),
-        5 => extrapolate_uni_poly_deg_4(p.try_into().unwrap(), eval_at),
-        _ => unimplemented!("Extrapolation for degree {} not implemented", p.len() - 1),
+        1 => extrapolate_uni_poly_deg_1(p0, p[0], eval_at),
+        2 => extrapolate_uni_poly_deg_2(p0, p[0], p[1], eval_at),
+        3 => extrapolate_uni_poly_deg_3(p0, p[0], p[1], p[2], eval_at),
+        4 => extrapolate_uni_poly_deg_4(p0, p[0], p[1], p[2], p[3], eval_at),
+        _ => unimplemented!("Extrapolation for degree {} not implemented", p.len()),
     }
 }
 
