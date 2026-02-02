@@ -120,60 +120,28 @@ impl<E: ExtensionField> IOPVerifierState<E> {
             panic!("insufficient rounds",);
         }
 
+        let mut expected_claim = *asserted_sum;
         // the deferred check during the interactive phase:
-        // 2. set `expected` to P(r)`
-        let (expected_vec, evals_0) = self
-            .polynomials_received
-            .iter()
-            .zip(self.challenges.iter())
-            .fold(
-                (vec![*asserted_sum], vec![]),
-                |(mut claims, mut evals_0), (evaluations, challenge)| {
-                    let last_claim = claims.last().copied().unwrap();
-                    if evaluations.len() != self.max_degree {
-                        panic!(
-                            "incorrect number of evaluations: {} vs {}",
-                            evaluations.len(),
-                            self.max_degree
-                        );
-                    }
-                    // https://eprint.iacr.org/2024/108.pdf sec 3.1 derive eval_0 = claim - eval_1
-                    let eval_0 = last_claim - evaluations.first().copied().unwrap();
-                    evals_0.push(eval_0);
-                    claims.push(extrapolate_uni_poly::<E>(
-                        eval_0,
-                        evaluations,
-                        challenge.elements,
-                    ));
-                    (claims, evals_0)
-                },
-            );
-
-        for (i, ((evaluations, &expected), eval_0)) in self
-            .polynomials_received
-            .iter()
-            .zip(&expected_vec)
-            .zip(&evals_0)
-            .enumerate()
-            .take(self.num_vars)
-        {
-            // the deferred check during the interactive phase:
-            // 1. check if the received 'P(0) + P(1) = expected`.
-            if *eval_0 + evaluations[0] != expected {
+        // NOTE: must iterate through challenges, source-of-truth for verifier
+        for (i, challenge) in self.challenges.iter().enumerate() {
+            let evaluations = &self.polynomials_received[i];
+            if evaluations.len() != self.max_degree {
                 panic!(
-                    "{}th round's prover message is not consistent with the claim. {:?} {:?}",
-                    i,
-                    *eval_0 + evaluations[0],
-                    expected
+                    "incorrect number of evaluations: {} vs {}",
+                    evaluations.len(),
+                    self.max_degree
                 );
             }
+            // https://eprint.iacr.org/2024/108.pdf sec 3.1 derive eval_0 = claim - eval_1
+            let eval_0 = expected_claim - evaluations.first().copied().unwrap();
+            expected_claim = extrapolate_uni_poly::<E>(eval_0, evaluations, challenge.elements);
         }
         exit_span!(start);
         SumCheckSubClaim {
             point: self.challenges.clone(),
             // the last expected value (not checked within this function) will be included in the
             // subclaim
-            expected_evaluation: expected_vec[self.num_vars],
+            expected_evaluation: expected_claim,
         }
     }
 }
