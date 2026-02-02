@@ -286,7 +286,7 @@ pub fn batch_verifier_query_phase<E: ExtensionField, S: EncodingScheme<E>>(
     assert_eq!(
         sumcheck_messages.len(),
         fold_challenges.len(),
-        "sumcheck messages and fold challenges mismatch"
+        "sumcheck messages and fold challenges length mismatch"
     );
 
     // Reconstruct the implicit P(0) evaluation for each round and update the claim in place.
