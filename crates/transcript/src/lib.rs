@@ -131,7 +131,7 @@ pub trait Transcript<E: ExtensionField>: GrindingChallenger<Witness = E::BaseFie
 /// Forkable Transcript trait, enable fork method
 pub trait ForkableTranscript<E: ExtensionField>: Transcript<E> + Sized + Clone {
     /// Fork this transcript into n different threads.
-    fn fork(self, n: usize) -> Vec<Self> {
+    fn fork(&self, n: usize) -> Vec<impl Transcript<E>> {
         (0..n)
             .map(|i| {
                 let mut fork = self.clone();
