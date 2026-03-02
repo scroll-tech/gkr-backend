@@ -38,14 +38,16 @@ impl<'a, E: ExtensionField> Phase1Workers<'a, E> {
     ) -> (Vec<IOPProverState<'a, E>>, Vec<IOPProverMessage<E>>) {
         let mut prover_msgs = Vec::with_capacity(num_variables);
         for _ in 0..num_variables {
-            let evaluations: AdditiveVec<E> = self.workers_states.par_iter_mut().par_fold_reduce(
-                || AdditiveVec::new(max_degree + 1),
-                |mut acc, state| {
-                    acc += state.run_round();
-                    acc
-                },
-                |a, b| a + b,
-            );
+            let evaluations = self
+                .workers_states
+                .par_iter_mut()
+                .map(|state| state.run_round())
+                .par_fold_reduce(
+                    || AdditiveVec::new(max_degree),
+                    |acc, item| acc + item,
+                    |a, b| a + b,
+                );
+
             transcript.append_field_element_exts(&evaluations.0);
 
             let challenge = transcript.sample_and_append_challenge(b"Internal round");
@@ -303,7 +305,11 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
     /// next round.
     ///
     /// Main algorithm used is from section 3.2 of [XZZPS19](https://eprint.iacr.org/2019/317.pdf#subsection.3.2).
-    #[tracing::instrument(skip_all, name = "sumcheck::prove_round_and_update_state")]
+    #[tracing::instrument(
+        skip_all,
+        name = "sumcheck::prove_round_and_update_state",
+        level = "trace"
+    )]
     pub fn prove_round_and_update_state(
         &mut self,
         challenge: &Option<Challenge<E>>,
@@ -348,7 +354,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         // Step 2: generate sum for the partial evaluated polynomial:
         // f(r_1, ... r_m,, x_{m+1}... x_n)
         let span = entered_span!("build_uni_poly");
-        let AdditiveVec(uni_polys) = self.poly.products.iter().fold(
+        let AdditiveVec(mut uni_polys) = self.poly.products.iter().fold(
             AdditiveVec::new(self.poly.aux_info.max_degree + 1),
             |mut uni_polys, MonomialTerms { terms }| {
                 for Term {
@@ -399,6 +405,11 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         exit_span!(span);
 
         exit_span!(start);
+
+        assert!(uni_polys.len() > 1);
+        // NOTE remove uni_polys.eval(0) from lagrange domain
+        // as verifier can derive via claim - uni_polys.eval(1)
+        uni_polys.remove(0);
 
         IOPProverMessage {
             evaluations: uni_polys,
@@ -462,7 +473,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
 #[deprecated(note = "deprecated parallel version due to syncronizaion overhead")]
 impl<'a, E: ExtensionField> IOPProverState<'a, E> {
     /// Given a virtual polynomial, generate an IOP proof.
-    #[tracing::instrument(skip_all, name = "sumcheck::prove_parallel")]
+    #[tracing::instrument(skip_all, name = "sumcheck::prove_parallel", level = "trace")]
     pub fn prove_parallel(
         poly: VirtualPolynomial<'a, E>,
         transcript: &mut impl Transcript<E>,
@@ -554,7 +565,11 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
     /// next round.
     ///
     /// Main algorithm used is from section 3.2 of [XZZPS19](https://eprint.iacr.org/2019/317.pdf#subsection.3.2).
-    #[tracing::instrument(skip_all, name = "sumcheck::prove_round_and_update_state_parallel")]
+    #[tracing::instrument(
+        skip_all,
+        name = "sumcheck::prove_round_and_update_state_parallel",
+        level = "trace"
+    )]
     pub(crate) fn prove_round_and_update_state_parallel(
         &mut self,
         challenge: &Option<Challenge<E>>,
@@ -594,7 +609,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         // Step 2: generate sum for the partial evaluated polynomial:
         // f(r_1, ... r_m,, x_{m+1}... x_n)
         let span = entered_span!("build_uni_poly");
-        let AdditiveVec(uni_polys) = self
+        let AdditiveVec(mut uni_polys) = self
             .poly
             .products
             .par_iter()
@@ -645,8 +660,12 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             );
 
         exit_span!(span);
-
         exit_span!(start);
+
+        assert!(uni_polys.len() > 1);
+        // NOTE remove uni_polys.eval(0) from lagrange domain
+        // as verifier can derive via claim - uni_polys.eval(1)
+        uni_polys.remove(0);
 
         IOPProverMessage {
             evaluations: uni_polys,

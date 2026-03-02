@@ -212,9 +212,7 @@ where
             .bit_reverse_rows()
             .to_row_major_matrix()
             .values;
-        // to make 2 consecutive position to be open together, we trickily "concat" 2 consecutive leafs
-        // so both can be open under same row index
-        let codeword = DenseMatrix::new(codeword, num_polys * 2);
+        let codeword = DenseMatrix::new(codeword, num_polys);
         Ok(codeword)
     }
 
@@ -294,10 +292,7 @@ mod tests {
 
     use ff_ext::GoldilocksExt2;
     use itertools::izip;
-    use p3::{
-        commit::{ExtensionMmcs, Mmcs},
-        goldilocks::Goldilocks,
-    };
+    use p3::{commit::ExtensionMmcs, goldilocks::Goldilocks};
 
     use rand::rngs::OsRng;
     use transcript::BasicTranscript;
@@ -336,6 +331,7 @@ mod tests {
             izip!(&codeword.values, &codeword_ext.values).all(|(base, ext)| E::from(*base) == *ext)
         );
 
+        let mut running_codeword_opt = None;
         let mut codeword_ext = VecDeque::from(vec![codeword_ext]);
         let mut transcript = BasicTranscript::new(b"test");
 
@@ -344,6 +340,7 @@ mod tests {
         let r = E::from_canonical_u64(97);
         basefold_fri_round::<E, BasefoldRSParams>(
             &pp,
+            &mut running_codeword_opt,
             &mut codeword_ext,
             &mut prove_data,
             &mut vec![],
@@ -365,7 +362,7 @@ mod tests {
             ),
         );
         assert_eq!(
-            &mmcs_ext.get_matrices(&prove_data[0])[0].values,
+            &running_codeword_opt.as_ref().unwrap().values,
             &codeword_from_folded_rmm.values
         );
     }

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::Expression;
 use Expression::*;
 use p3::field::FieldAlgebra;
-use std::{fmt::Display, iter::Sum};
+use std::{collections::BTreeMap, fmt::Display, iter::Sum};
 
 impl<E: ExtensionField> Expression<E> {
     pub fn get_monomial_terms(&self) -> Vec<Term<Expression<E>, Expression<E>>> {
@@ -71,7 +71,10 @@ impl<E: ExtensionField> Expression<E> {
         terms
             .into_iter()
             .map(|Term { scalar, product }| (product, scalar))
-            .into_group_map()
+            .fold(BTreeMap::new(), |mut acc, (product, scalar)| {
+                acc.entry(product).or_insert_with(Vec::new).push(scalar);
+                acc
+            })
             .into_iter()
             .map(|(product, scalar)| Term {
                 scalar: scalar.into_iter().sum(),

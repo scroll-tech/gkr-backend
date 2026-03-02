@@ -120,51 +120,28 @@ impl<E: ExtensionField> IOPVerifierState<E> {
             panic!("insufficient rounds",);
         }
 
+        let mut expected_claim = *asserted_sum;
         // the deferred check during the interactive phase:
-        // 2. set `expected` to P(r)`
-        let mut expected_vec = self
-            .polynomials_received
-            .iter()
-            .zip(self.challenges.iter())
-            .map(|(evaluations, challenge)| {
-                if evaluations.len() != self.max_degree + 1 {
-                    panic!(
-                        "incorrect number of evaluations: {} vs {}",
-                        evaluations.len(),
-                        self.max_degree + 1
-                    );
-                }
-                extrapolate_uni_poly::<E>(evaluations, challenge.elements)
-            })
-            .collect::<Vec<_>>();
-
-        // l-append asserted_sum to the first position of the expected vector
-        expected_vec.insert(0, *asserted_sum);
-
-        for (i, (evaluations, &expected)) in self
-            .polynomials_received
-            .iter()
-            .zip(expected_vec.iter())
-            .enumerate()
-            .take(self.num_vars)
-        {
-            // the deferred check during the interactive phase:
-            // 1. check if the received 'P(0) + P(1) = expected`.
-            if evaluations[0] + evaluations[1] != expected {
+        // NOTE: must iterate through challenges, source-of-truth for verifier
+        for (i, challenge) in self.challenges.iter().enumerate() {
+            let evaluations = &self.polynomials_received[i];
+            if evaluations.len() != self.max_degree {
                 panic!(
-                    "{}th round's prover message is not consistent with the claim. {:?} {:?}",
-                    i,
-                    evaluations[0] + evaluations[1],
-                    expected
+                    "incorrect number of evaluations: {} vs {}",
+                    evaluations.len(),
+                    self.max_degree
                 );
             }
+            // https://eprint.iacr.org/2024/108.pdf sec 3.1 derive eval_0 = claim - eval_1
+            let eval_0 = expected_claim - evaluations.first().copied().unwrap();
+            expected_claim = extrapolate_uni_poly::<E>(eval_0, evaluations, challenge.elements);
         }
         exit_span!(start);
         SumCheckSubClaim {
             point: self.challenges.clone(),
             // the last expected value (not checked within this function) will be included in the
             // subclaim
-            expected_evaluation: expected_vec[self.num_vars],
+            expected_evaluation: expected_claim,
         }
     }
 }

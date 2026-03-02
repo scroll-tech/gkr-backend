@@ -403,6 +403,7 @@ where
         // prepare folding challenges via sumcheck round msg + FRI commitment
         let mut fold_challenges: Vec<E> = Vec::with_capacity(max_num_var);
         let commits = &proof.commits;
+        assert_eq!(commits.len(), num_rounds);
         let sumcheck_messages = proof.sumcheck_proof.as_ref().unwrap();
         for i in 0..num_rounds {
             transcript.append_field_element_exts(sumcheck_messages[i].evaluations.as_slice());
@@ -411,9 +412,7 @@ where
                     .sample_and_append_challenge(b"commit round")
                     .elements,
             );
-            if i < num_rounds - 1 {
-                write_digest_to_transcript(&commits[i], transcript);
-            }
+            write_digest_to_transcript(&commits[i], transcript);
         }
         #[cfg(debug_assertions)]
         {
