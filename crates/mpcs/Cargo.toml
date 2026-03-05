@@ -53,3 +53,4 @@ name = "interpolate"
 [[bench]]
 harness = false
 name = "whir"
+required-features = ["whir"]

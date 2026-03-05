@@ -269,6 +269,7 @@ pub use basefold::{
 };
 #[cfg(feature = "whir")]
 extern crate whir as whir_external;
+#[cfg(feature = "whir")]
 mod whir;
 use multilinear_extensions::mle::ArcMultilinearExtension;
 #[cfg(feature = "whir")]
@@ -382,7 +383,7 @@ pub mod test_util {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "whir"))]
     pub(super) fn run_simple_batch_commit_open_verify<E, Pcs>(
         num_vars_start: usize,
         num_vars_end: usize,
