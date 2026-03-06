@@ -258,6 +258,7 @@ pub enum Error {
     PolynomialSizesNotEqual,
     MerkleRootMismatch,
     PointEvalMismatch(String),
+    #[cfg(feature = "whir")]
     WhirError(whir_external::error::Error),
 }
 
@@ -266,9 +267,12 @@ pub use basefold::{
     Basefold, BasefoldCommitment, BasefoldCommitmentWithWitness, BasefoldDefault, BasefoldParams,
     BasefoldRSParams, BasefoldSpec, EncodingScheme, RSCode, RSCodeDefaultSpec,
 };
+#[cfg(feature = "whir")]
 extern crate whir as whir_external;
+#[cfg(feature = "whir")]
 mod whir;
 use multilinear_extensions::mle::ArcMultilinearExtension;
+#[cfg(feature = "whir")]
 pub use whir::{Whir, WhirDefault, WhirDefaultSpec};
 
 // TODO: Need to use some functions here in the integration benchmarks. But
@@ -379,7 +383,7 @@ pub mod test_util {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "whir"))]
     pub(super) fn run_simple_batch_commit_open_verify<E, Pcs>(
         num_vars_start: usize,
         num_vars_end: usize,

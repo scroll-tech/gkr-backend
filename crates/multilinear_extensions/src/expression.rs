@@ -9,8 +9,7 @@ use crate::{
 };
 use ff_ext::{ExtensionField, SmallField};
 use itertools::{Either, Itertools, chain, izip};
-use p3::field::FieldAlgebra;
-use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use p3::{field::FieldAlgebra, maybe_rayon::prelude::*};
 use serde::de::DeserializeOwned;
 use std::{
     cmp::max,
