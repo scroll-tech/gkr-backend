@@ -1,14 +1,12 @@
 #![deny(clippy::cargo)]
 
 use p3::field::{
-    ExtensionField as P3ExtensionField, Field as P3Field, FieldAlgebra, PrimeField, TwoAdicField,
+    BasedVectorSpace, ExtensionField as P3ExtensionField, Field as P3Field, PrimeCharacteristicRing,
+    PrimeField, TwoAdicField,
 };
 use rand_core::RngCore;
 use serde::{Serialize, de::DeserializeOwned};
-use std::{
-    array::from_fn,
-    iter::{self, repeat_with},
-};
+use std::{array::from_fn, iter::repeat_with};
 mod babybear;
 mod wrapper;
 pub use babybear::impl_babybear::*;
@@ -61,16 +59,15 @@ pub trait FromUniformBytes: Sized {
 macro_rules! impl_from_uniform_bytes_for_binomial_extension {
     ($base:ty, $degree:literal) => {
         impl FromUniformBytes for p3::field::extension::BinomialExtensionField<$base, $degree> {
-            type Bytes = [u8; <$base as FromUniformBytes>::Bytes::WIDTH * $degree];
+            type Bytes = [u8; core::mem::size_of::<<$base as FromUniformBytes>::Bytes>() * $degree];
 
             fn try_from_uniform_bytes(bytes: Self::Bytes) -> Option<Self> {
-                Some(p3::field::FieldExtensionAlgebra::from_base_slice(
-                    &array_try_from_uniform_bytes::<
-                        $base,
-                        { <$base as FromUniformBytes>::Bytes::WIDTH },
-                        $degree,
-                    >(&bytes)?,
-                ))
+                let coeffs = array_try_from_uniform_bytes::<
+                    $base,
+                    { core::mem::size_of::<<$base as FromUniformBytes>::Bytes>() },
+                    $degree,
+                >(&bytes)?;
+                p3::field::BasedVectorSpace::from_basis_coefficients_slice(&coeffs)
             }
         }
     };
@@ -126,23 +123,24 @@ pub trait ExtensionField:
         + DeserializeOwned;
 
     fn from_ref_base(base: &Self::BaseField) -> Self {
-        Self::from_base_iter(
-            iter::once(*base).chain(iter::repeat_n(Self::BaseField::ZERO, Self::DEGREE - 1)),
-        )
+        let mut coeffs = vec![Self::BaseField::ZERO; Self::DEGREE];
+        coeffs[0] = *base;
+        Self::from_bases(&coeffs)
     }
 
     fn from_bases(bases: &[Self::BaseField]) -> Self {
-        debug_assert_eq!(bases.len(), Self::D,);
-        Self::from_base_slice(bases)
+        debug_assert_eq!(bases.len(), Self::DEGREE);
+        BasedVectorSpace::from_basis_coefficients_slice(bases)
+            .expect("slice length matches degree")
     }
 
     fn as_bases(&self) -> &[Self::BaseField] {
-        self.as_base_slice()
+        self.as_basis_coefficients_slice()
     }
 
     /// Convert limbs into self
     fn from_limbs(limbs: &[Self::BaseField]) -> Self {
-        Self::from_bases(&limbs[0..Self::D])
+        Self::from_bases(&limbs[..Self::DEGREE])
     }
 
     /// Convert a field elements to a u64 vector

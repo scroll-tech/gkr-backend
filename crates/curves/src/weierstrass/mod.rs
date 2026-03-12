@@ -293,7 +293,7 @@ pub trait FpOpField: FieldParameters + NumWords {
 mod tests {
 
     use num::bigint::RandBigInt;
-    use rand::thread_rng;
+use rand::thread_rng;
 
     use super::bn254;
 

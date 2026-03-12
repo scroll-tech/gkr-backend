@@ -43,24 +43,24 @@ either = { version = "1.15.*", features = ["serde"] }
 generic-array = { version = "1.1.0", features = ["alloc", "serde"] }
 itertools = "0.13"
 num = "0.4.3"
-p3-air = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
-p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
-p3-challenger = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
-p3-commit = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
-p3-dft = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
-p3-field = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
-p3-fri = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
-p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
-p3-matrix = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
-p3-maybe-rayon = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
-p3-mds = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
-p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
-p3-monty-31 = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
-p3-poseidon = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
-p3-poseidon2 = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
-p3-poseidon2-air = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
-p3-symmetric = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
-p3-util = { git = "https://github.com/Plonky3/Plonky3.git", rev = "539bbc84085efb609f4f62cb03cf49588388abdb" }
+p3-air = { version = "=0.4.1", default-features = false }
+p3-baby-bear = { version = "=0.4.1", default-features = false }
+p3-challenger = { version = "=0.4.1", default-features = false }
+p3-commit = { version = "=0.4.1", default-features = false }
+p3-dft = { version = "=0.4.1", default-features = false }
+p3-field = { version = "=0.4.1", default-features = false }
+p3-fri = { version = "=0.4.1", default-features = false }
+p3-goldilocks = { version = "=0.4.1", default-features = false }
+p3-matrix = { version = "=0.4.1", default-features = false }
+p3-maybe-rayon = { version = "=0.4.1", default-features = false }
+p3-mds = { version = "=0.4.1", default-features = false }
+p3-merkle-tree = { version = "=0.4.1", default-features = false }
+p3-monty-31 = { version = "=0.4.1", default-features = false }
+p3-poseidon = { version = "=0.4.1", default-features = false }
+p3-poseidon2 = { version = "=0.4.1", default-features = false }
+p3-poseidon2-air = { version = "=0.4.1", default-features = false }
+p3-symmetric = { version = "=0.4.1", default-features = false }
+p3-util = { version = "=0.4.1", default-features = false }
 rand = "0.8"
 rand_chacha = { version = "0.3", features = ["serde1"] }
 rand_core = "0.6"

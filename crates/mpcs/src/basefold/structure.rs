@@ -7,8 +7,8 @@ use core::fmt::Debug;
 use ff_ext::{ExtensionField, PoseidonField};
 use itertools::izip;
 use p3::{
-    commit::{ExtensionMmcs, Mmcs},
-    fri::{BatchOpening, CommitPhaseProofStep},
+    commit::{BatchOpening, ExtensionMmcs, Mmcs},
+    fri::CommitPhaseProofStep,
     matrix::{Matrix, dense::DenseMatrix},
 };
 use serde::{Deserialize, Serialize, Serializer, de::DeserializeOwned};

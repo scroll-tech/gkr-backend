@@ -7,7 +7,7 @@ use criterion::*;
 use either::Either;
 use ff_ext::{ExtensionField, GoldilocksExt2};
 use itertools::Itertools;
-use p3::field::FieldAlgebra;
+use p3_field::PrimeCharacteristicRing;
 use rand::thread_rng;
 use sumcheck::structs::IOPProverState;
 
@@ -39,7 +39,9 @@ pub fn transpose<T>(v: Vec<Vec<T>>) -> Vec<Vec<T>> {
         .collect()
 }
 
-fn prepare_input<'a, E: ExtensionField>(nv: usize) -> (E, Vec<MultilinearExtension<'a, E>>) {
+fn prepare_input<'a, E: ExtensionField + PrimeCharacteristicRing>(
+    nv: usize,
+) -> (E, Vec<MultilinearExtension<'a, E>>) {
     let mut rng = thread_rng();
     let fs = (0..NUM_DEGREE)
         .map(|_| MultilinearExtension::<E>::random(nv, &mut rng))
@@ -83,8 +85,8 @@ fn sumcheck_fn(c: &mut Criterion) {
 
                         let virtual_poly_v1 = VirtualPolynomial::new_from_product(fs, E::ONE);
                         let instant = std::time::Instant::now();
-                        #[allow(deprecated)]
-                        let (_sumcheck_proof_v1, _) = IOPProverState::<E>::prove_parallel(
+                                            #[allow(deprecated)]
+                                            let (_sumcheck_proof_v1, _) = IOPProverState::<E>::prove_parallel(
                             virtual_poly_v1,
                             &mut prover_transcript,
                         );

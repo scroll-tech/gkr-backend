@@ -1,5 +1,6 @@
 use ff_ext::ExtensionField;
 use itertools::Itertools;
+use p3_field::PrimeCharacteristicRing;
 use std::{
     any::{Any, TypeId},
     collections::BTreeMap,
@@ -31,19 +32,19 @@ use std::{
 /// This structure stores all `v_j` coefficients for each `(degree, target_z)` pair.
 /// At runtime, extrapolation is done by a simple dot product of `v_j` with the known values `f(x_j)`,
 /// without needing any inverses.
-pub struct ExtrapolationTable<E: ExtensionField> {
+pub struct ExtrapolationTable<E: ExtensionField + PrimeCharacteristicRing> {
     /// weights[degree][z - degree - 1][j] = coefficient for f(x_j) when extrapolating to z
     pub weights: Vec<Vec<Vec<E>>>,
 }
 
-impl<E: ExtensionField> ExtrapolationTable<E> {
+impl<E: ExtensionField + PrimeCharacteristicRing> ExtrapolationTable<E> {
     pub fn new(min_degree: usize, max_degree: usize) -> Self {
         let mut weights = Vec::new();
 
         for d in min_degree..=max_degree {
             let mut degree_weights = Vec::new();
 
-            let xs: Vec<E> = (0..=d as u64).map(E::from_canonical_u64).collect_vec();
+            let xs: Vec<E> = (0..=d as u64).map(E::from_u64).collect_vec();
             let mut bary_weights = Vec::new();
 
             // Compute barycentric weights w_j = 1 / prod_{i != j} (x_j - x_i)
@@ -58,7 +59,7 @@ impl<E: ExtensionField> ExtrapolationTable<E> {
             }
 
             for z_idx in d + 1..=max_degree {
-                let z = E::from_canonical_u64(z_idx as u64);
+                let z = E::from_u64(z_idx as u64);
                 let mut den = E::ZERO;
                 let mut tmp: Vec<E> = Vec::with_capacity(d + 1);
 
@@ -70,7 +71,7 @@ impl<E: ExtensionField> ExtrapolationTable<E> {
 
                 // Normalize
                 for t in tmp.iter_mut() {
-                    *t = *t / den;
+                    *t /= den;
                 }
 
                 degree_weights.push(tmp);
@@ -83,11 +84,11 @@ impl<E: ExtensionField> ExtrapolationTable<E> {
     }
 }
 
-pub struct ExtrapolationCache<E> {
+pub struct ExtrapolationCache<E: ExtensionField + PrimeCharacteristicRing> {
     _marker: PhantomData<E>,
 }
 
-impl<E: ExtensionField> ExtrapolationCache<E> {
+impl<E: ExtensionField + PrimeCharacteristicRing> ExtrapolationCache<E> {
     fn global_cache() -> &'static Mutex<BTreeMap<TypeId, Box<dyn Any + Send + Sync>>> {
         static GLOBAL_CACHE: OnceLock<Mutex<BTreeMap<TypeId, Box<dyn Any + Send + Sync>>>> =
             OnceLock::new();

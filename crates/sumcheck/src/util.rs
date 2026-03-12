@@ -15,6 +15,7 @@ use multilinear_extensions::{
     virtual_polys::PolyMeta,
 };
 use p3::field::Field;
+use p3_field::PrimeCharacteristicRing;
 use transcript::Transcript;
 
 use crate::{extrapolate::ExtrapolationCache, structs::IOPProverState};
@@ -27,7 +28,10 @@ use crate::{extrapolate::ExtrapolationCache, structs::IOPProverState};
 /// efficient barycentric extrapolation without requiring any inverse operations at runtime.
 ///
 /// Note: this function is highly optimized without field inverse. see [`ExtrapolationTable`] for how to achieve it
-pub fn extrapolate_from_table<E: ExtensionField>(uni_variate: &mut [E], start: usize) {
+pub fn extrapolate_from_table<E: ExtensionField + PrimeCharacteristicRing>(
+    uni_variate: &mut [E],
+    start: usize,
+) {
     let cur_degree = start - 1;
     let table = ExtrapolationCache::<E>::get(cur_degree, uni_variate.len() - 1);
     let target_len = uni_variate.len();
@@ -53,7 +57,7 @@ pub fn extrapolate_from_table<E: ExtensionField>(uni_variate: &mut [E], start: u
     }
 }
 
-fn extrapolate_uni_poly_deg_1<F: Field>(p0: F, p1: F, eval_at: F) -> F {
+fn extrapolate_uni_poly_deg_1<F: Field + PrimeCharacteristicRing>(p0: F, p1: F, eval_at: F) -> F {
     let x0 = F::ZERO;
     let x1 = F::ONE;
 
@@ -75,17 +79,22 @@ fn extrapolate_uni_poly_deg_1<F: Field>(p0: F, p1: F, eval_at: F) -> F {
     l * (t0 + t1)
 }
 
-fn extrapolate_uni_poly_deg_2<F: Field>(p0: F, p1: F, p2: F, eval_at: F) -> F {
-    let x0 = F::from_canonical_u64(0);
-    let x1 = F::from_canonical_u64(1);
-    let x2 = F::from_canonical_u64(2);
+fn extrapolate_uni_poly_deg_2<F: Field + PrimeCharacteristicRing>(
+    p0: F,
+    p1: F,
+    p2: F,
+    eval_at: F,
+) -> F {
+    let x0 = F::from_u64(0);
+    let x1 = F::from_u64(1);
+    let x2 = F::from_u64(2);
 
     // w0 = 1 / ((0−1)(0−2)) =  1/2
     // w1 = 1 / ((1−0)(1−2)) = -1
     // w2 = 1 / ((2−0)(2−1)) =  1/2
-    let w0 = F::from_canonical_u64(1).div(F::from_canonical_u64(2));
+    let w0 = F::from_u64(1).div(F::from_u64(2));
     let w1 = -F::ONE;
-    let w2 = F::from_canonical_u64(1).div(F::from_canonical_u64(2));
+    let w2 = F::from_u64(1).div(F::from_u64(2));
 
     let d0 = eval_at - x0;
     let d1 = eval_at - x1;
@@ -104,20 +113,26 @@ fn extrapolate_uni_poly_deg_2<F: Field>(p0: F, p1: F, p2: F, eval_at: F) -> F {
     l * (t0 + t1 + t2)
 }
 
-fn extrapolate_uni_poly_deg_3<F: Field>(p0: F, p1: F, p2: F, p3: F, eval_at: F) -> F {
-    let x0 = F::from_canonical_u64(0);
-    let x1 = F::from_canonical_u64(1);
-    let x2 = F::from_canonical_u64(2);
-    let x3 = F::from_canonical_u64(3);
+fn extrapolate_uni_poly_deg_3<F: Field + PrimeCharacteristicRing>(
+    p0: F,
+    p1: F,
+    p2: F,
+    p3: F,
+    eval_at: F,
+) -> F {
+    let x0 = F::from_u64(0);
+    let x1 = F::from_u64(1);
+    let x2 = F::from_u64(2);
+    let x3 = F::from_u64(3);
 
     // w0 = 1 / ((0−1)(0−2)(0−3)) = -1/6
     // w1 = 1 / ((1−0)(1−2)(1−3)) =  1/2
     // w2 = 1 / ((2−0)(2−1)(2−3)) = -1/2
     // w3 = 1 / ((3−0)(3−1)(3−2)) =  1/6
-    let w0 = -F::from_canonical_u64(1).div(F::from_canonical_u64(6));
-    let w1 = F::from_canonical_u64(1).div(F::from_canonical_u64(2));
-    let w2 = -F::from_canonical_u64(1).div(F::from_canonical_u64(2));
-    let w3 = F::from_canonical_u64(1).div(F::from_canonical_u64(6));
+    let w0 = -F::from_u64(1).div(F::from_u64(6));
+    let w1 = F::from_u64(1).div(F::from_u64(2));
+    let w2 = -F::from_u64(1).div(F::from_u64(2));
+    let w3 = F::from_u64(1).div(F::from_u64(6));
 
     let d0 = eval_at - x0;
     let d1 = eval_at - x1;
@@ -140,22 +155,22 @@ fn extrapolate_uni_poly_deg_3<F: Field>(p0: F, p1: F, p2: F, p3: F, eval_at: F) 
 }
 
 fn extrapolate_uni_poly_deg_4<F: Field>(p0: F, p1: F, p2: F, p3: F, p4: F, eval_at: F) -> F {
-    let x0 = F::from_canonical_u64(0);
-    let x1 = F::from_canonical_u64(1);
-    let x2 = F::from_canonical_u64(2);
-    let x3 = F::from_canonical_u64(3);
-    let x4 = F::from_canonical_u64(4);
+    let x0 = F::from_u64(0);
+    let x1 = F::from_u64(1);
+    let x2 = F::from_u64(2);
+    let x3 = F::from_u64(3);
+    let x4 = F::from_u64(4);
 
     // w0 = 1 / ((0−1)(0−2)(0−3)(0−4)) =  1/24
     // w1 = 1 / ((1−0)(1−2)(1−3)(1−4)) = -1/6
     // w2 = 1 / ((2−0)(2−1)(2−3)(2−4)) =  1/4
     // w3 = 1 / ((3−0)(3−1)(3−2)(3−4)) = -1/6
     // w4 = 1 / ((4−0)(4−1)(4−2)(4−3)) =  1/24
-    let w0 = F::from_canonical_u64(1).div(F::from_canonical_u64(24));
-    let w1 = -F::from_canonical_u64(1).div(F::from_canonical_u64(6));
-    let w2 = F::from_canonical_u64(1).div(F::from_canonical_u64(4));
-    let w3 = -F::from_canonical_u64(1).div(F::from_canonical_u64(6));
-    let w4 = F::from_canonical_u64(1).div(F::from_canonical_u64(24));
+    let w0 = F::from_u64(1).div(F::from_u64(24));
+    let w1 = -F::from_u64(1).div(F::from_u64(6));
+    let w2 = F::from_u64(1).div(F::from_u64(4));
+    let w3 = -F::from_u64(1).div(F::from_u64(6));
+    let w4 = F::from_u64(1).div(F::from_u64(24));
 
     let d0 = eval_at - x0;
     let d1 = eval_at - x1;
@@ -445,13 +460,12 @@ impl<F: MulAssign + Copy> Mul<F> for AdditiveVec<F> {
 mod tests {
     use super::*;
     use ff_ext::GoldilocksExt2;
-    use p3::field::FieldAlgebra;
 
     #[test]
     fn test_extrapolate_from_table() {
         type E = GoldilocksExt2;
         fn f(x: u64) -> E {
-            E::from_canonical_u64(2u64) * E::from_canonical_u64(x) + E::from_canonical_u64(3u64)
+            E::from_u64(2u64) * E::from_u64(x) + E::from_u64(3u64)
         }
         // Test a known linear polynomial: f(x) = 2x + 3
 

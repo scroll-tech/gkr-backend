@@ -76,7 +76,7 @@ where
 mod tests {
 
     use ff_ext::GoldilocksExt2;
-    use p3::field::FieldAlgebra;
+    use p3_field::PrimeCharacteristicRing;
 
     use crate::utils::base_decomposition;
 
@@ -90,7 +90,7 @@ mod tests {
 
         let num_evaluation_points = 3_usize.pow(num_variables as u32);
         let evaluations = (0..num_evaluation_points as u64)
-            .map(F::from_canonical_u64)
+            .map(F::from_u64)
             .collect();
 
         let poly = SumcheckPolynomial::new(evaluations, num_variables);
@@ -99,7 +99,7 @@ mod tests {
             let decomp = base_decomposition(i, 3, num_variables);
             let point = decomp
                 .into_iter()
-                .map(F::from_canonical_u8)
+                .map(F::from_u8)
                 .collect::<Vec<_>>();
             assert_eq!(poly.evaluate_at_point(&point), poly.evaluations()[i]);
         }

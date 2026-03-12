@@ -1,3 +1,4 @@
+use p3_field::PrimeCharacteristicRing;
 use crate::{
     Error, PCSFriParam, Point, PolynomialCommitmentScheme, SecurityLevel,
     util::{
@@ -7,7 +8,7 @@ use crate::{
 };
 pub use encoding::{EncodingScheme, RSCode, RSCodeDefaultSpec};
 use ff_ext::ExtensionField;
-use p3::{commit::Mmcs, field::FieldAlgebra, matrix::dense::DenseMatrix, util::log2_strict_usize};
+use p3::{commit::Mmcs, matrix::dense::DenseMatrix, util::log2_strict_usize};
 use query_phase::{batch_query_phase, batch_verifier_query_phase};
 use structure::BasefoldProof;
 pub use structure::{BasefoldSpec, Digest};
@@ -184,7 +185,7 @@ where
         transcript: &mut impl Transcript<E>,
     ) -> Result<(), Error> {
         write_digest_to_transcript(&comm.commit(), transcript);
-        transcript.append_field_element(&E::BaseField::from_canonical_u64(
+        transcript.append_field_element(&E::BaseField::from_u64(
             comm.log2_max_codeword_size as u64,
         ));
         Ok(())

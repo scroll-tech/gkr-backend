@@ -15,6 +15,7 @@ ff_ext.workspace = true
 itertools.workspace = true
 multilinear_extensions.workspace = true
 p3.workspace = true
+p3-field.workspace = true
 rayon.workspace = true
 serde.workspace = true
 sumcheck_macro.workspace = true

@@ -11,10 +11,8 @@ use crate::{
 };
 use ff_ext::ExtensionField;
 use multilinear_extensions::mle::{FieldType, MultilinearExtension};
-use p3::{
-    field::{Field, FieldAlgebra},
-    matrix::dense::RowMajorMatrix,
-};
+use p3::{field::Field, matrix::dense::RowMajorMatrix};
+use p3_field::PrimeCharacteristicRing;
 use sumcheck::macros::{entered_span, exit_span};
 use transcript::{BasicTranscript, Transcript};
 

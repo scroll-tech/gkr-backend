@@ -385,7 +385,7 @@ where
                             &round_state.folding_randomness,
                             coset_offset_inv,
                             coset_generator_inv,
-                            E::from_canonical_u64(2).inverse(),
+                            E::from_u64(2).inverse(),
                             self.0.folding_factor.at_round(round_state.round),
                         )
                     },

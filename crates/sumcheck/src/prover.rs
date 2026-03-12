@@ -23,7 +23,7 @@ use crate::{
         merge_sumcheck_prover_state,
     },
 };
-use p3::field::FieldAlgebra;
+use p3::field::PrimeCharacteristicRing;
 
 struct Phase1Workers<'a, E: ExtensionField> {
     workers_states: Vec<Phase1WorkerState<'a, E>>,

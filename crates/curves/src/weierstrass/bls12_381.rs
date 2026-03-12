@@ -146,7 +146,7 @@ mod tests {
     use super::*;
     use crate::utils::biguint_from_limbs;
     use num::bigint::RandBigInt;
-    use rand::thread_rng;
+use rand::thread_rng;
 
     const NUM_TEST_CASES: usize = 10;
 

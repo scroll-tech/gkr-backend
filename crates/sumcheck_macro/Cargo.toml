@@ -26,4 +26,5 @@ nightly-features = ["ff_ext/nightly-features"]
 [dev-dependencies]
 ff_ext.workspace = true
 multilinear_extensions.workspace = true
+p3-field.workspace = true
 sumcheck.workspace = true
