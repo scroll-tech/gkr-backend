@@ -1,13 +1,12 @@
 use ff_ext::ExtensionField;
-use p3::field::{Field, TwoAdicField};
-use p3_field::{PrimeCharacteristicRing, coset::TwoAdicMultiplicativeCoset};
+use p3::field::{Field, PrimeCharacteristicRing, TwoAdicField, coset::TwoAdicMultiplicativeCoset};
 
 #[derive(Debug, Clone)]
 pub struct Domain<E>
 where
     E: ExtensionField,
 {
-    pub base_domain: Option<TwoAdicMultiplicativeCoset<E::BaseField>>, // base-field domain for initial FFT
+    pub base_domain: Option<TwoAdicMultiplicativeCoset<E::BaseField>>, /* base-field domain for initial FFT */
     pub backing_domain: TwoAdicMultiplicativeCoset<E>,
 }
 
@@ -18,12 +17,14 @@ where
     pub fn new(degree: usize, log_rho_inv: usize) -> Option<Self> {
         let size = degree * (1 << log_rho_inv);
         let log_size = p3::util::log2_strict_usize(size);
-        let base_domain =
-            TwoAdicMultiplicativeCoset::new(E::BaseField::from_u64(1), log_size)?;
+        let base_domain = TwoAdicMultiplicativeCoset::new(E::BaseField::from_u64(1), log_size)?;
         let backing_domain = TwoAdicMultiplicativeCoset::new(E::ONE, log_size)
             .expect("extension field must support the same two-adicity");
 
-        Some(Self { base_domain: Some(base_domain), backing_domain })
+        Some(Self {
+            base_domain: Some(base_domain),
+            backing_domain,
+        })
     }
 
     // returns the size of the domain after folding folding_factor many times.
@@ -40,7 +41,10 @@ where
     }
 
     pub fn scale(&self, power: usize) -> Self {
-        debug_assert!(power.is_power_of_two(), "scale expects a power-of-two factor");
+        debug_assert!(
+            power.is_power_of_two(),
+            "scale expects a power-of-two factor"
+        );
         let log_power = p3::util::log2_strict_usize(power);
         let backing_domain = self
             .backing_domain

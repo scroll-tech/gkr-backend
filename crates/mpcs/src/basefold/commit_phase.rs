@@ -1,4 +1,4 @@
-use p3_field::PrimeCharacteristicRing;
+use p3::field::PrimeCharacteristicRing;
 use std::collections::HashSet;
 
 use super::{

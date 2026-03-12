@@ -1,6 +1,6 @@
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use p3_field::PrimeCharacteristicRing;
+use p3::field::PrimeCharacteristicRing;
 use std::{
     any::{Any, TypeId},
     collections::BTreeMap,

@@ -1,8 +1,7 @@
 use ff_ext::ExtensionField;
 use multilinear_extensions::mle::FieldType;
 use num_integer::Integer;
-use p3::field::Field;
-use p3_field::PrimeCharacteristicRing;
+use p3::field::{Field, PrimeCharacteristicRing};
 use std::{borrow::Borrow, iter};
 
 mod hypercube;

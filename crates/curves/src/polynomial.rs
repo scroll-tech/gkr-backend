@@ -1,9 +1,9 @@
-#[allow(unused_imports)]
-use p3_field::PrimeCharacteristicRing;
 use core::{
     fmt::Debug,
     ops::{Add, AddAssign, Mul, Neg, Sub},
 };
+#[allow(unused_imports)]
+use p3_field::PrimeCharacteristicRing;
 use std::slice::Iter;
 
 use itertools::Itertools;
@@ -232,12 +232,7 @@ impl<T: Field> Mul<T> for Polynomial<T> {
     type Output = Self;
 
     fn mul(self, other: T) -> Self {
-        Self::new(
-            self.coefficients
-                .into_iter()
-                .map(|x| x * other)
-                .collect(),
-        )
+        Self::new(self.coefficients.into_iter().map(|x| x * other).collect())
     }
 }
 
@@ -245,12 +240,7 @@ impl<T: Field> Mul<T> for &Polynomial<T> {
     type Output = Polynomial<T>;
 
     fn mul(self, other: T) -> Polynomial<T> {
-        Polynomial::new(
-            self.coefficients
-                .iter()
-                .map(|x| *x * other)
-                .collect(),
-        )
+        Polynomial::new(self.coefficients.iter().map(|x| *x * other).collect())
     }
 }
 
@@ -279,11 +269,7 @@ impl<T: Eq + Field> PartialEq<Polynomial<T>> for Polynomial<T> {
 impl Polynomial<u8> {
     pub fn as_field<F: Field>(self) -> Polynomial<F> {
         Polynomial {
-            coefficients: self
-                .coefficients
-                .iter()
-                .map(|x| F::from_u8(*x))
-                .collect(),
+            coefficients: self.coefficients.iter().map(|x| F::from_u8(*x)).collect(),
         }
     }
 }

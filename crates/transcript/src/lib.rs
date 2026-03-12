@@ -5,10 +5,9 @@
 pub mod basic;
 
 pub use basic::BasicTranscript;
-use p3::field::PrimeCharacteristicRing;
 use ff_ext::SmallField;
 use itertools::Itertools;
-use p3::challenger::GrindingChallenger;
+use p3::{challenger::GrindingChallenger, field::PrimeCharacteristicRing};
 #[derive(Default, Copy, Clone, Eq, PartialEq, Debug)]
 pub struct Challenge<F> {
     pub elements: F,

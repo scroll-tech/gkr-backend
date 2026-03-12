@@ -1024,9 +1024,7 @@ impl<E: ExtensionField> PrimeCharacteristicRing for Expression<E> {
     const NEG_ONE: Self = Expression::Constant(Either::Left(E::BaseField::NEG_ONE));
 
     fn from_prime_subfield(f: Self::PrimeSubfield) -> Self {
-        Expression::Constant(Either::Left(
-            E::BaseField::from_prime_subfield(f),
-        ))
+        Expression::Constant(Either::Left(E::BaseField::from_prime_subfield(f)))
     }
 }
 

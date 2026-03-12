@@ -311,10 +311,7 @@ mod tests {
         for (i, fold) in stacked.chunks_exact(fold_size).enumerate() {
             assert_eq!(fold.len(), fold_size);
             for (j, item) in fold.iter().copied().enumerate().take(fold_size) {
-                assert_eq!(
-                    item,
-                    F::from_u64((i + j * num / fold_size) as u64)
-                );
+                assert_eq!(item, F::from_u64((i + j * num / fold_size) as u64));
             }
         }
     }

@@ -117,7 +117,7 @@ mod tests {
     use super::*;
     use crate::utils::biguint_from_limbs;
     use num::bigint::RandBigInt;
-use rand::thread_rng;
+    use rand::thread_rng;
 
     #[test]
     fn test_weierstrass_biguint_scalar_mul() {

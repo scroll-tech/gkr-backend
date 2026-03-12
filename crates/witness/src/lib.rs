@@ -1,6 +1,8 @@
-use p3::field::PrimeCharacteristicRing;
 use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
-use p3::{field::Field, matrix::Matrix};
+use p3::{
+    field::{Field, PrimeCharacteristicRing},
+    matrix::Matrix,
+};
 use rand::Rng;
 use rayon::{
     iter::{IndexedParallelIterator, IntoParallelIterator, ParallelExtend, ParallelIterator},

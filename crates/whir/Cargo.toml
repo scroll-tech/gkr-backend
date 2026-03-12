@@ -18,7 +18,6 @@ clap.workspace = true
 ff_ext.workspace = true
 multilinear_extensions.workspace = true
 p3.workspace = true
-p3-field.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
 rayon = { workspace = true, optional = true }

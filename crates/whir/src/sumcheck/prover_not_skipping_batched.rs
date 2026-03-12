@@ -64,8 +64,7 @@ mod tests {
         mle::{FieldType, MultilinearExtension},
         virtual_poly::eq_eval,
     };
-    use p3::util::log2_strict_usize;
-    use p3_field::PrimeCharacteristicRing;
+    use p3::{field::PrimeCharacteristicRing, util::log2_strict_usize};
     use transcript::{BasicTranscript, Transcript};
 
     use crate::{
@@ -98,9 +97,7 @@ mod tests {
         let folding_factor = 2;
         let polynomials = vec![
             (0..1 << num_variables).map(F::from_u64).collect(),
-            (1..(1 << num_variables) + 1)
-                .map(F::from_u64)
-                .collect(),
+            (1..(1 << num_variables) + 1).map(F::from_u64).collect(),
         ];
 
         // Initial stuff

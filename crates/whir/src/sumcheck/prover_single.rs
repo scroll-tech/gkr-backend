@@ -259,12 +259,7 @@ mod tests {
 
         let eval = MultilinearExtension::from_evaluations_ext_vec(2, polynomial.clone())
             .evaluate(&eval_point);
-        let mut prover = SumcheckSingle::new(
-            polynomial,
-            &[eval_point],
-            &[E::from_u64(1)],
-            &[eval],
-        );
+        let mut prover = SumcheckSingle::new(polynomial, &[eval_point], &[E::from_u64(1)], &[eval]);
 
         let poly_1 = prover.compute_sumcheck_polynomial();
 

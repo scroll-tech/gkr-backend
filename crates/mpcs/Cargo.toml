@@ -18,7 +18,6 @@ whir = { workspace = true, optional = true }
 multilinear_extensions.workspace = true
 num-integer = "0.1"
 p3.workspace = true
-p3-field.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
 rayon = { workspace = true, optional = true }

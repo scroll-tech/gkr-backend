@@ -75,8 +75,7 @@ mod tests {
         mle::{FieldType, MultilinearExtension},
         virtual_poly::eq_eval,
     };
-    use p3::util::log2_strict_usize;
-    use p3_field::PrimeCharacteristicRing;
+    use p3::{field::PrimeCharacteristicRing, util::log2_strict_usize};
     use transcript::{BasicTranscript, Transcript};
 
     use crate::{
@@ -103,9 +102,7 @@ mod tests {
     fn test_e2e_short() -> Result<(), Error> {
         let num_variables = 2;
         let folding_factor = 2;
-        let polynomial = (0..1 << num_variables)
-            .map(F::from_u64)
-            .collect::<Vec<_>>();
+        let polynomial = (0..1 << num_variables).map(F::from_u64).collect::<Vec<_>>();
 
         // Initial stuff
         let ood_point = expand_from_univariate(F::from_u64(42), num_variables);
@@ -191,9 +188,7 @@ mod tests {
     fn test_e2e() -> Result<(), Error> {
         let num_variables = 4;
         let folding_factor = 2;
-        let polynomial = (0..1 << num_variables)
-            .map(F::from_u64)
-            .collect::<Vec<_>>();
+        let polynomial = (0..1 << num_variables).map(F::from_u64).collect::<Vec<_>>();
 
         // Initial stuff
         let ood_point = expand_from_univariate(F::from_u64(42), num_variables);

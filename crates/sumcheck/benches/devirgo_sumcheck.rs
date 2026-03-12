@@ -7,7 +7,7 @@ use criterion::*;
 use either::Either;
 use ff_ext::{ExtensionField, GoldilocksExt2};
 use itertools::Itertools;
-use p3_field::PrimeCharacteristicRing;
+use p3::field::PrimeCharacteristicRing;
 use rand::thread_rng;
 use sumcheck::structs::IOPProverState;
 
@@ -85,8 +85,8 @@ fn sumcheck_fn(c: &mut Criterion) {
 
                         let virtual_poly_v1 = VirtualPolynomial::new_from_product(fs, E::ONE);
                         let instant = std::time::Instant::now();
-                                            #[allow(deprecated)]
-                                            let (_sumcheck_proof_v1, _) = IOPProverState::<E>::prove_parallel(
+                        #[allow(deprecated)]
+                        let (_sumcheck_proof_v1, _) = IOPProverState::<E>::prove_parallel(
                             virtual_poly_v1,
                             &mut prover_transcript,
                         );

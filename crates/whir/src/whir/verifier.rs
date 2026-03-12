@@ -1,4 +1,3 @@
-use p3::field::PrimeCharacteristicRing;
 use crate::{
     crypto::{Digest, DigestExt, MerklePathExt, verify_multi_proof, write_digest_to_transcript},
     utils::{evaluate_as_multilinear_coeffs, evaluate_as_univariate},
@@ -7,7 +6,7 @@ use ff_ext::{ExtensionField, PoseidonField};
 use multilinear_extensions::{mle::MultilinearExtension, virtual_poly::eq_eval};
 use p3::{
     commit::Mmcs,
-    field::Field,
+    field::{Field, PrimeCharacteristicRing},
     maybe_rayon::prelude::*,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};

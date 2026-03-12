@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 use ff_ext::{ExtensionField, SmallField};
 pub mod merkle_tree;
-use p3_field::PrimeCharacteristicRing;
+use p3::field::PrimeCharacteristicRing;
 
 pub fn base_to_usize<E: ExtensionField>(x: &E::BaseField) -> usize {
     x.to_canonical_u64() as usize
@@ -103,15 +103,15 @@ pub(crate) fn codeword_fold_with_challenge<E: ExtensionField>(
 
 #[cfg(test)]
 pub mod test {
+    #[cfg(test)]
+    use crate::util::{base_to_usize, u32_to_field};
     use ff_ext::FromUniformBytes;
-    use p3_field::PrimeCharacteristicRing;
+    use p3::field::PrimeCharacteristicRing;
     use rand::{
         CryptoRng, RngCore, SeedableRng,
         rngs::{OsRng, StdRng},
     };
     use std::{array, iter, ops::Range};
-    #[cfg(test)]
-    use crate::util::{base_to_usize, u32_to_field};
 
     #[cfg(test)]
     type E = ff_ext::GoldilocksExt2;
@@ -140,10 +140,7 @@ pub mod test {
 
     #[test]
     pub fn test_field_transform() {
-        assert_eq!(
-            F::from_u64(2) * F::from_u64(3),
-            F::from_u64(6)
-        );
+        assert_eq!(F::from_u64(2) * F::from_u64(3), F::from_u64(6));
         assert_eq!(base_to_usize::<E>(&u32_to_field::<E>(1u32)), 1);
         assert_eq!(base_to_usize::<E>(&u32_to_field::<E>(10u32)), 10);
     }

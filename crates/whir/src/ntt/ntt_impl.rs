@@ -9,8 +9,7 @@ use super::{
 };
 use ff_ext::ExtensionField;
 use p3::{
-    field::{Field, TwoAdicField},
-    field::PrimeCharacteristicRing,
+    field::{Field, PrimeCharacteristicRing, TwoAdicField},
     matrix::{
         Matrix,
         dense::{DenseMatrix, RowMajorMatrix},

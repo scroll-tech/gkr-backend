@@ -997,8 +997,7 @@ mod tests {
         let c0 = Expression::<E>::Challenge(0, 1, E::ONE, E::ZERO);
         let c1 = Expression::<E>::Challenge(1, 1, E::ONE, E::ZERO);
         let constant_2 = Expression::<E>::Constant(Either::Left(B::from_u32(2)));
-        let constant_negative_1 =
-            Expression::<E>::Constant(Either::Left(B::from_u32(1).neg()));
+        let constant_negative_1 = Expression::<E>::Constant(Either::Left(B::from_u32(1).neg()));
 
         let e: Expression<E> = w1.expr()
             * (c1.expr()

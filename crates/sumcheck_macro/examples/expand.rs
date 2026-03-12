@@ -3,13 +3,13 @@
 /// cargo expand --example expand
 /// ```
 use ff_ext::{ExtensionField, GoldilocksExt2};
-use p3_field::PrimeCharacteristicRing;
 use multilinear_extensions::{
     mle::FieldType,
     util::{ceil_log2, largest_even_below},
     virtual_poly::VirtualPolynomial,
     virtual_polys::PolyMeta,
 };
+use p3::field::PrimeCharacteristicRing;
 use rand::rngs::OsRng;
 use sumcheck::util::AdditiveArray;
 

@@ -14,8 +14,7 @@ use multilinear_extensions::{
     virtual_poly::VirtualPolynomial,
     virtual_polys::PolyMeta,
 };
-use p3::field::Field;
-use p3_field::PrimeCharacteristicRing;
+use p3::field::{Field, PrimeCharacteristicRing};
 use transcript::Transcript;
 
 use crate::{extrapolate::ExtrapolationCache, structs::IOPProverState};

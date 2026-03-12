@@ -117,11 +117,7 @@ mod tests {
 
         let claimed_value = polynomial.evaluate(&eval_point);
 
-        let mut prover = SumcheckCore::new(
-            polynomial.clone(),
-            &[eval_point],
-            &[F::from_u64(1)],
-        );
+        let mut prover = SumcheckCore::new(polynomial.clone(), &[eval_point], &[F::from_u64(1)]);
 
         let poly_1 = prover.compute_sumcheck_polynomial(folding_factor);
 
@@ -274,11 +270,7 @@ mod tests {
             F::from_u64(15),
         ];
         let fold_point_2 = vec![F::from_u64(311), F::from_u64(115)];
-        let combination_randomness_1 = [
-            F::from_u64(1289),
-            F::from_u64(3281),
-            F::from_u64(10921),
-        ];
+        let combination_randomness_1 = [F::from_u64(1289), F::from_u64(3281), F::from_u64(10921)];
         let combination_randomness_2 = [F::from_u64(3281), F::from_u64(3232)];
 
         let mut prover = SumcheckCore::new(

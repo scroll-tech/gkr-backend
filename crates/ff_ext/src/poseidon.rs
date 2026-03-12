@@ -13,9 +13,7 @@ pub trait FieldChallengerExt<F: PoseidonField>: FieldChallenger<F> {
     }
 
     fn sample_ext_vec<E: ExtensionField<BaseField = F>>(&mut self, n: usize) -> Vec<E> {
-        (0..n)
-            .map(|_| self.sample_algebra_element())
-            .collect()
+        (0..n).map(|_| self.sample_algebra_element()).collect()
     }
 }
 

@@ -1,8 +1,8 @@
 #![deny(clippy::cargo)]
 
 use p3::field::{
-    BasedVectorSpace, ExtensionField as P3ExtensionField, Field as P3Field, PrimeCharacteristicRing,
-    PrimeField, TwoAdicField,
+    BasedVectorSpace, ExtensionField as P3ExtensionField, Field as P3Field,
+    PrimeCharacteristicRing, PrimeField, TwoAdicField,
 };
 use rand_core::RngCore;
 use serde::{Serialize, de::DeserializeOwned};
@@ -130,8 +130,7 @@ pub trait ExtensionField:
 
     fn from_bases(bases: &[Self::BaseField]) -> Self {
         debug_assert_eq!(bases.len(), Self::DEGREE);
-        BasedVectorSpace::from_basis_coefficients_slice(bases)
-            .expect("slice length matches degree")
+        BasedVectorSpace::from_basis_coefficients_slice(bases).expect("slice length matches degree")
     }
 
     fn as_bases(&self) -> &[Self::BaseField] {
