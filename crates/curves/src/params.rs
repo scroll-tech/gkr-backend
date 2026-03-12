@@ -1,5 +1,5 @@
 #[allow(unused_imports)]
-use p3_field::PrimeCharacteristicRing;
+use p3::field::PrimeCharacteristicRing;
 use std::{
     fmt::Debug,
     ops::{Div, Index, IndexMut},
@@ -15,7 +15,7 @@ use typenum::{U2, U4, Unsigned};
 use generic_array::{ArrayLength, GenericArray, sequence::GenericSequence};
 use num::BigUint;
 
-use p3_field::Field;
+use p3::field::Field;
 
 use crate::{polynomial::Polynomial, utils::biguint_from_limbs};
 

@@ -3,11 +3,11 @@ use core::{
     ops::{Add, AddAssign, Mul, Neg, Sub},
 };
 #[allow(unused_imports)]
-use p3_field::PrimeCharacteristicRing;
+use p3::field::PrimeCharacteristicRing;
 use std::slice::Iter;
 
 use itertools::Itertools;
-use p3_field::{Algebra, Field};
+use p3::field::{Algebra, Field};
 
 /// A polynomial represented as a vector of coefficients.
 #[derive(Debug, Clone)]
