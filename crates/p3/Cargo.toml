@@ -30,10 +30,5 @@ p3-symmetric.workspace = true
 p3-util.workspace = true
 
 [features]
-nightly-features = [
-  "p3-baby-bear/nightly-features",
-  "p3-dft/nightly-features",
-  "p3-goldilocks/nightly-features",
-  "p3-poseidon2/nightly-features",
-]
+nightly-features = []
 parallel = ["p3-maybe-rayon/parallel"]

@@ -8,7 +8,7 @@ pub mod impl_goldilocks {
     use p3::{
         challenger::DuplexChallenger,
         field::{
-            Field, FieldAlgebra, FieldExtensionAlgebra, PackedValue, PrimeField64, TwoAdicField,
+            Field, PrimeCharacteristicRing, PrimeField64, TwoAdicField,
             extension::{BinomialExtensionField, BinomiallyExtendable},
         },
         goldilocks::{
@@ -27,13 +27,13 @@ pub mod impl_goldilocks {
 
     impl FieldFrom<u64> for Goldilocks {
         fn from_v(v: u64) -> Self {
-            Self::from_canonical_u64(v)
+            Self::from_u64(v)
         }
     }
 
     impl FieldFrom<u64> for GoldilocksExt2 {
         fn from_v(v: u64) -> Self {
-            Self::from_canonical_u64(v)
+            Self::from_u64(v)
         }
     }
 
@@ -92,7 +92,7 @@ pub mod impl_goldilocks {
                 .flatten()
                 .chain(HL_GOLDILOCKS_8_INTERNAL_ROUND_CONSTANTS.iter())
                 .chain(HL_GOLDILOCKS_8_EXTERNAL_ROUND_CONSTANTS[1].iter().flatten())
-                .map(|v| Self::from_canonical_u64(*v))
+                .map(|v| Self::from_u64(*v))
                 .collect()
         }
 
@@ -117,7 +117,7 @@ pub mod impl_goldilocks {
         fn try_from_uniform_bytes(bytes: [u8; 8]) -> Option<Self> {
             let value = u64::from_le_bytes(bytes);
             let is_canonical = value < Self::ORDER_U64;
-            is_canonical.then(|| Self::from_canonical_u64(value))
+            is_canonical.then(|| Self::from_u64(value))
         }
     }
 
@@ -133,7 +133,7 @@ pub mod impl_goldilocks {
                     array[..chunk.len()].copy_from_slice(chunk);
                     unsafe { std::ptr::read_unaligned(array.as_ptr() as *const u64) }
                 })
-                .map(Self::from_canonical_u64)
+                .map(Self::from_u64)
                 .collect::<Vec<_>>()
         }
 
@@ -154,7 +154,7 @@ pub mod impl_goldilocks {
         type BaseField = Goldilocks;
 
         fn to_canonical_u64_vec(&self) -> Vec<u64> {
-            self.as_base_slice()
+            self.as_bases()
                 .iter()
                 .map(|v: &Self::BaseField| v.as_canonical_u64())
                 .collect()

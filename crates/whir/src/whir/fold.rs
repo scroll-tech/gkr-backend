@@ -66,7 +66,7 @@ pub fn restructure_evaluations<F: TwoAdicField>(
 
             // Apply coset and size correction.
             // Stacked evaluation at i is f(B_l) where B_l = w^i * <w^n/k>
-            let size_inv = F::from_canonical_u64(folding_size).inverse();
+            let size_inv = F::from_u64(folding_size).inverse();
             #[cfg(not(feature = "parallel"))]
             {
                 let mut coset_offset_inv = F::ONE;
@@ -120,7 +120,7 @@ pub fn restructure_evaluations_mut<F: TwoAdicField>(
 
             // Apply coset and size correction.
             // Stacked evaluation at i is f(B_l) where B_l = w^i * <w^n/k>
-            let size_inv = F::from_canonical_u64(folding_size).inverse();
+            let size_inv = F::from_u64(folding_size).inverse();
             #[cfg(not(feature = "parallel"))]
             {
                 let mut coset_offset_inv = F::ONE;
@@ -173,7 +173,7 @@ pub fn restructure_evaluations_mut_rmm<F: TwoAdicField + Ord>(
 
             // Apply coset and size correction.
             // Stacked evaluation at i is f(B_l) where B_l = w^i * <w^n/k>
-            let size_inv = F::from_canonical_u64(folding_size).inverse();
+            let size_inv = F::from_u64(folding_size).inverse();
             #[cfg(not(feature = "parallel"))]
             {
                 let mut coset_offset_inv = F::ONE;
@@ -360,7 +360,7 @@ where
 mod tests {
     use ff_ext::GoldilocksExt2;
     use multilinear_extensions::mle::MultilinearExtension;
-    use p3::field::{Field, FieldAlgebra, TwoAdicField};
+    use p3::field::{Field, PrimeCharacteristicRing, TwoAdicField};
 
     use crate::{
         utils::{evaluate_over_hypercube, stack_evaluations},
@@ -382,17 +382,14 @@ mod tests {
 
         let poly = MultilinearExtension::from_evaluations_ext_vec(
             num_variables,
-            (0..num_coeffs)
-                .map(F::from_canonical_u64)
-                .collect::<Vec<_>>(),
+            (0..num_coeffs).map(F::from_u64).collect::<Vec<_>>(),
         );
 
         let root_of_unity = F::two_adic_generator(p3::util::log2_strict_usize(domain_size));
 
         let index = 15;
-        let folding_randomness: Vec<_> = (0..folding_factor)
-            .map(|i| F::from_canonical_u64(i as u64))
-            .collect();
+        let folding_randomness: Vec<_> =
+            (0..folding_factor).map(|i| F::from_u64(i as u64)).collect();
 
         let coset_offset = root_of_unity.exp_u64(index);
         let coset_gen = root_of_unity.exp_u64((domain_size / folding_factor_exp) as u64);
@@ -412,7 +409,7 @@ mod tests {
             &folding_randomness,
             coset_offset.inverse(),
             coset_gen.inverse(),
-            F::from_canonical_u64(2).inverse(),
+            F::from_u64(2).inverse(),
             folding_factor,
         );
 
@@ -437,17 +434,14 @@ mod tests {
 
         let poly = MultilinearExtension::from_evaluations_ext_vec(
             num_variables,
-            (0..num_coeffs)
-                .map(F::from_canonical_u64)
-                .collect::<Vec<_>>(),
+            (0..num_coeffs).map(F::from_u64).collect::<Vec<_>>(),
         );
 
         let root_of_unity = F::two_adic_generator(p3::util::log2_strict_usize(domain_size));
         let root_of_unity_inv = root_of_unity.inverse();
 
-        let folding_randomness: Vec<_> = (0..folding_factor)
-            .map(|i| F::from_canonical_u64(i as u64))
-            .collect();
+        let folding_randomness: Vec<_> =
+            (0..folding_factor).map(|i| F::from_u64(i as u64)).collect();
 
         // Evaluate the polynomial on the domain
         let domain_evaluations: Vec<_> = (0..domain_size)
@@ -476,7 +470,7 @@ mod tests {
                 &folding_randomness,
                 offset_inv,
                 coset_gen_inv,
-                F::from_canonical_u64(2).inverse(),
+                F::from_u64(2).inverse(),
                 folding_factor,
             );
 

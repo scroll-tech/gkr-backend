@@ -1,9 +1,9 @@
 use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 use p3::{
-    field::{Field, FieldAlgebra},
+    field::{Field, PrimeCharacteristicRing},
     matrix::Matrix,
 };
-use rand::{Rng, distributions::Standard, prelude::Distribution};
+use rand::Rng;
 use rayon::{
     iter::{IndexedParallelIterator, IntoParallelIterator, ParallelExtend, ParallelIterator},
     prelude::ParallelSliceMut,
@@ -43,15 +43,15 @@ pub struct RowMajorMatrix<T: Sized + Sync + Clone + Send + Copy> {
     padding_strategy: InstancePaddingStrategy,
 }
 
-impl<T: Sized + Sync + Clone + Send + Copy + Default + FieldAlgebra> RowMajorMatrix<T> {
-    pub fn rand<R: Rng>(rng: &mut R, rows: usize, cols: usize) -> Self
-    where
-        Standard: Distribution<T>,
-    {
+impl<T: Sized + Sync + Clone + Send + Copy + Default + PrimeCharacteristicRing> RowMajorMatrix<T> {
+    pub fn rand<R: Rng>(rng: &mut R, rows: usize, cols: usize) -> Self {
         debug_assert!(rows > 0);
         let num_row_padded = next_pow2_instance_padding(rows);
+        let values = (0..num_row_padded * cols)
+            .map(|_| T::from_u64(rng.gen()))
+            .collect();
         Self {
-            inner: p3::matrix::dense::RowMajorMatrix::rand(rng, num_row_padded, cols),
+            inner: p3::matrix::dense::RowMajorMatrix::new(values, cols),
             num_rows: rows,
             is_padded: true,
             log2_num_rotation: 0,
@@ -205,7 +205,7 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + FieldAlgebra> RowMajorMat
                     .enumerate()
                     .for_each(|(i, instance)| {
                         instance.iter_mut().enumerate().for_each(|(j, v)| {
-                            *v = T::from_canonical_u64(fun((start_index + i) as u64, j as u64));
+                            *v = T::from_u64(fun((start_index + i) as u64, j as u64));
                         })
                     });
             }
@@ -303,7 +303,7 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default> DerefMut for RowMajorMatri
     }
 }
 
-impl<F: Sync + Send + Copy + FieldAlgebra> Index<usize> for RowMajorMatrix<F> {
+impl<F: Sync + Send + Copy + PrimeCharacteristicRing> Index<usize> for RowMajorMatrix<F> {
     type Output = [F];
 
     fn index(&self, idx: usize) -> &Self::Output {

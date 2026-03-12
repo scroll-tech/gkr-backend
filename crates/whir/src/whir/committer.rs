@@ -12,7 +12,7 @@ use crate::{
 use ff_ext::ExtensionField;
 use multilinear_extensions::mle::{FieldType, MultilinearExtension};
 use p3::{
-    field::{Field, FieldAlgebra},
+    field::{Field, PrimeCharacteristicRing},
     matrix::dense::RowMajorMatrix,
 };
 use sumcheck::macros::{entered_span, exit_span};

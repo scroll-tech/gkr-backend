@@ -6,7 +6,7 @@ use ff_ext::{ExtensionField, PoseidonField};
 use multilinear_extensions::{mle::MultilinearExtension, virtual_poly::eq_eval};
 use p3::{
     commit::Mmcs,
-    field::{Field, FieldAlgebra},
+    field::{Field, PrimeCharacteristicRing},
     maybe_rayon::prelude::*,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -74,7 +74,7 @@ where
     pub fn new(params: WhirConfig<E>) -> Self {
         Verifier {
             params,
-            two_inv: E::BaseField::from_canonical_u64(2).inverse(), /* The only inverse in the entire code :) */
+            two_inv: E::BaseField::from_u64(2).inverse(), /* The only inverse in the entire code :) */
         }
     }
 
@@ -160,7 +160,7 @@ where
         };
 
         let mut prev_root = parsed_commitment.root.clone();
-        let mut domain_gen = self.params.starting_domain.backing_domain_group_gen();
+        let mut domain_gen: E = self.params.starting_domain.backing_domain_group_gen();
         let mut exp_domain_gen = domain_gen.exp_power_of_2(self.params.folding_factor.at_round(0));
         let mut domain_gen_inv = self
             .params

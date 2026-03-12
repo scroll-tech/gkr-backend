@@ -9,7 +9,7 @@ use crate::{
 };
 use ff_ext::{ExtensionField, SmallField};
 use itertools::{Either, Itertools, chain, izip};
-use p3::{field::FieldAlgebra, maybe_rayon::prelude::*};
+use p3::{field::PrimeCharacteristicRing, maybe_rayon::prelude::*};
 use serde::de::DeserializeOwned;
 use std::{
     cmp::max,
@@ -1012,8 +1012,8 @@ impl<E: ExtensionField> Default for Expression<E> {
     }
 }
 
-impl<E: ExtensionField> FieldAlgebra for Expression<E> {
-    type F = E::BaseField;
+impl<E: ExtensionField> PrimeCharacteristicRing for Expression<E> {
+    type PrimeSubfield = <E::BaseField as PrimeCharacteristicRing>::PrimeSubfield;
 
     const ZERO: Self = Expression::Constant(Either::Left(E::BaseField::ZERO));
 
@@ -1023,36 +1023,8 @@ impl<E: ExtensionField> FieldAlgebra for Expression<E> {
 
     const NEG_ONE: Self = Expression::Constant(Either::Left(E::BaseField::NEG_ONE));
 
-    fn from_f(f: Self::F) -> Self {
-        Expression::Constant(Either::Left(f))
-    }
-
-    fn from_canonical_u8(n: u8) -> Self {
-        Expression::Constant(Either::Left(E::BaseField::from_canonical_u8(n)))
-    }
-
-    fn from_canonical_u16(n: u16) -> Self {
-        Expression::Constant(Either::Left(E::BaseField::from_canonical_u16(n)))
-    }
-
-    fn from_canonical_u32(n: u32) -> Self {
-        Expression::Constant(Either::Left(E::BaseField::from_canonical_u32(n)))
-    }
-
-    fn from_canonical_u64(n: u64) -> Self {
-        Expression::Constant(Either::Left(E::BaseField::from_canonical_u64(n)))
-    }
-
-    fn from_canonical_usize(n: usize) -> Self {
-        Expression::Constant(Either::Left(E::BaseField::from_canonical_usize(n)))
-    }
-
-    fn from_wrapped_u32(n: u32) -> Self {
-        Expression::Constant(Either::Left(E::BaseField::from_wrapped_u32(n)))
-    }
-
-    fn from_wrapped_u64(n: u64) -> Self {
-        Expression::Constant(Either::Left(E::BaseField::from_wrapped_u64(n)))
+    fn from_prime_subfield(f: Self::PrimeSubfield) -> Self {
+        Expression::Constant(Either::Left(E::BaseField::from_prime_subfield(f)))
     }
 }
 
@@ -1363,7 +1335,7 @@ macro_rules! impl_expr_from_unsigned {
         $(
             impl<F: ff_ext::SmallField, E: ExtensionField<BaseField = F>> From<$t> for Expression<E> {
                 fn from(value: $t) -> Self {
-                    Expression::Constant(Either::Left(F::from_canonical_u64(value as u64)))
+                    Expression::Constant(Either::Left(F::from_u64(value as u64)))
                 }
             }
         )*
@@ -1378,7 +1350,7 @@ macro_rules! impl_from_signed {
             impl<F: SmallField, E: ExtensionField<BaseField = F>> From<$t> for Expression<E> {
                 fn from(value: $t) -> Self {
                     let reduced = (value as i128).rem_euclid(F::MODULUS_U64 as i128) as u64;
-                    Expression::Constant(Either::Left(F::from_canonical_u64(reduced)))
+                    Expression::Constant(Either::Left(F::from_u64(reduced)))
                 }
             }
         )*
@@ -1535,7 +1507,7 @@ mod tests {
     use crate::{expression::WitIn, mle::IntoMLE, wit_infer_by_expr};
     use either::Either;
     use ff_ext::{FieldInto, GoldilocksExt2};
-    use p3::field::FieldAlgebra;
+    use p3::field::PrimeCharacteristicRing;
 
     #[test]
     fn test_expression_arithmetics() {
@@ -1704,9 +1676,9 @@ mod tests {
             0,
             &[],
             &[
-                vec![B::from_canonical_u64(1)].into_mle().into(),
-                vec![B::from_canonical_u64(2)].into_mle().into(),
-                vec![B::from_canonical_u64(3)].into_mle().into(),
+                vec![B::from_u64(1)].into_mle().into(),
+                vec![B::from_u64(2)].into_mle().into(),
+                vec![B::from_u64(3)].into_mle().into(),
             ],
             &[],
             &[],

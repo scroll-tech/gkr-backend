@@ -9,12 +9,12 @@ use multilinear_extensions::{
     virtual_poly::VirtualPolynomial,
     virtual_polys::PolyMeta,
 };
-use p3::field::FieldAlgebra;
+use p3::field::PrimeCharacteristicRing;
 use rand::rngs::OsRng;
 use sumcheck::util::AdditiveArray;
 
 #[derive(Default)]
-struct Container<'a, E: ExtensionField> {
+struct Container<'a, E: ExtensionField + PrimeCharacteristicRing> {
     poly: VirtualPolynomial<'a, E>,
     is_main_worker: bool,
     phase2_numvar: Option<usize>,
@@ -25,7 +25,7 @@ fn main() {
     c.run();
 }
 
-impl<E: ExtensionField> Container<'_, E> {
+impl<E: ExtensionField + PrimeCharacteristicRing> Container<'_, E> {
     pub fn run(&self) {
         let poly = &self.poly.flattened_ml_extensions;
         let _result =

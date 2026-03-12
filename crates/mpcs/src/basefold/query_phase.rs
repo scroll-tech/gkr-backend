@@ -1,3 +1,4 @@
+use p3::field::PrimeCharacteristicRing;
 use std::slice;
 
 use crate::{
@@ -9,9 +10,9 @@ use ff_ext::ExtensionField;
 use itertools::{Itertools, izip};
 use multilinear_extensions::virtual_poly::{build_eq_x_r_vec, eq_eval};
 use p3::{
-    commit::{ExtensionMmcs, Mmcs},
-    field::{Field, FieldAlgebra, dot_product},
-    fri::{BatchOpening, CommitPhaseProofStep},
+    commit::{BatchOpening, BatchOpeningRef, ExtensionMmcs, Mmcs},
+    field::{Field, dot_product},
+    fri::CommitPhaseProofStep,
     matrix::{Dimensions, dense::RowMajorMatrix},
     util::log2_strict_usize,
 };
@@ -62,7 +63,8 @@ where
                     // in the original (non-row-bit-reversed) format.
                     let idx_shift = log2_max_codeword_size - pcs_data.log2_max_codeword_size;
                     let idx = idx >> idx_shift;
-                    let (opened_values, opening_proof) = mmcs.open_batch(idx, &pcs_data.codeword);
+                    let opened = mmcs.open_batch(idx, &pcs_data.codeword);
+                    let (opened_values, opening_proof) = opened.unpack();
                     BatchOpening {
                         opened_values,
                         opening_proof,
@@ -82,7 +84,8 @@ where
                         // 2. since even and odd parts are concatenated in the same leaf,
                         //    the overall merkle tree height is effectively halved,
                         //    so we divide by 2.
-                        let (mut values, opening_proof) = mmcs_ext.open_batch(leaf_idx, tree);
+                        let opened = mmcs_ext.open_batch(leaf_idx, tree);
+                        let (mut values, opening_proof) = opened.unpack();
                         let leafs = values.pop().unwrap();
                         debug_assert_eq!(leafs.len(), 2);
                         let sibling_value = leafs[(!is_interpolate_to_right_index) as usize];
@@ -112,7 +115,7 @@ pub fn batch_verifier_query_phase<E: ExtensionField, S: EncodingScheme<E>>(
 ) where
     E::BaseField: Serialize + DeserializeOwned,
 {
-    let inv_2 = E::BaseField::from_canonical_u64(2).inverse();
+    let inv_2 = E::BaseField::from_u64(2).inverse();
     let final_message = &proof.final_message;
     let sumcheck_messages = proof.sumcheck_proof.as_ref().unwrap();
     let encode_span = entered_span!("encode_final_codeword");
@@ -168,8 +171,10 @@ pub fn batch_verifier_query_phase<E: ExtensionField, S: EncodingScheme<E>>(
                         &commit.commit(),
                         &dimensions,
                         reduced_index,
-                        &input_proof.opened_values,
-                        &input_proof.opening_proof,
+                        BatchOpeningRef::new(
+                            &input_proof.opened_values,
+                            &input_proof.opening_proof,
+                        ),
                     )
                     .expect("verify mmcs opening proof failed");
 
@@ -239,8 +244,7 @@ pub fn batch_verifier_query_phase<E: ExtensionField, S: EncodingScheme<E>>(
                                 height: 1 << (log2_height - 1),
                             }],
                             leaf_idx,
-                            slice::from_ref(&leafs),
-                            proof,
+                            BatchOpeningRef::new(slice::from_ref(&leafs), proof),
                         )
                         .expect("verify failed");
 
@@ -277,7 +281,7 @@ pub fn batch_verifier_query_phase<E: ExtensionField, S: EncodingScheme<E>>(
                 .iter()
                 .zip(batch_coeffs_iter.by_ref().take(evals.len()))
                 .map(|(eval, coeff)| {
-                    *coeff * (*eval) * E::from_canonical_u64(1 << (max_num_var - num_var) as u64)
+                    *coeff * (*eval) * E::from_u64(1 << (max_num_var - num_var) as u64)
                 })
                 .sum::<E>();
         }

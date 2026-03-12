@@ -161,7 +161,11 @@ pub fn interpolate_over_boolean_hypercube_rmm<F: Field>(evals: &mut RowMajorMatr
     let n = p3::util::log2_strict_usize(evals.height());
 
     evals.par_row_chunks_mut(2).for_each(|mut chunk| {
-        let to_subtract = chunk.row(0).collect::<Vec<_>>();
+        let to_subtract = chunk
+            .row(0)
+            .expect("chunk must have a first row")
+            .into_iter()
+            .collect::<Vec<_>>();
         chunk
             .row_mut(1)
             .iter_mut()
@@ -176,7 +180,11 @@ pub fn interpolate_over_boolean_hypercube_rmm<F: Field>(evals: &mut RowMajorMatr
         evals.par_row_chunks_mut(chunk_size).for_each(|mut chunk| {
             let half_chunk = chunk_size >> 1;
             for j in half_chunk..chunk_size {
-                let to_subtract = chunk.row(j - half_chunk).collect::<Vec<_>>();
+                let to_subtract = chunk
+                    .row(j - half_chunk)
+                    .expect("chunk must have requested row")
+                    .into_iter()
+                    .collect::<Vec<_>>();
                 chunk
                     .row_mut(j)
                     .iter_mut()
@@ -276,7 +284,7 @@ pub fn evaluate_as_univariate<E: ExtensionField>(evals: &[E], points: &[E]) -> V
 #[cfg(test)]
 mod tests {
     use multilinear_extensions::mle::FieldType;
-    use p3::field::FieldAlgebra;
+    use p3::field::PrimeCharacteristicRing;
     use rand::thread_rng;
     use witness::RowMajorMatrix;
 
@@ -295,7 +303,7 @@ mod tests {
         let folding_factor = 3;
         let fold_size = 1 << folding_factor;
         assert_eq!(num % fold_size, 0);
-        let evals: Vec<F> = (0..num as u64).map(F::from_canonical_u64).collect();
+        let evals: Vec<F> = (0..num as u64).map(F::from_u64).collect();
 
         let stacked = stack_evaluations(evals, folding_factor);
         assert_eq!(stacked.len(), num);
@@ -303,10 +311,7 @@ mod tests {
         for (i, fold) in stacked.chunks_exact(fold_size).enumerate() {
             assert_eq!(fold.len(), fold_size);
             for (j, item) in fold.iter().copied().enumerate().take(fold_size) {
-                assert_eq!(
-                    item,
-                    F::from_canonical_u64((i + j * num / fold_size) as u64)
-                );
+                assert_eq!(item, F::from_u64((i + j * num / fold_size) as u64));
             }
         }
     }

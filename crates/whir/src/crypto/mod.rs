@@ -1,6 +1,6 @@
 use ff_ext::{ExtensionField, PoseidonField};
 use p3::{
-    commit::{ExtensionMmcs, Mmcs},
+    commit::{BatchOpeningRef, ExtensionMmcs, Mmcs},
     matrix::{
         Dimensions,
         dense::{DenseMatrix, RowMajorMatrix},
@@ -167,13 +167,23 @@ where
         MerkleTree::Base(merkle_tree) => MultiPath::Base(
             indices
                 .par_iter()
-                .map(|index| hash_params.base_mmcs.open_batch(*index, merkle_tree))
+                .map(|index| {
+                    hash_params
+                        .base_mmcs
+                        .open_batch(*index, merkle_tree)
+                        .unpack()
+                })
                 .collect(),
         ),
         MerkleTree::Ext(merkle_tree) => MultiPath::Ext(
             indices
                 .par_iter()
-                .map(|index| hash_params.ext_mmcs.open_batch(*index, merkle_tree))
+                .map(|index| {
+                    hash_params
+                        .ext_mmcs
+                        .open_batch(*index, merkle_tree)
+                        .unpack()
+                })
                 .collect(),
         ),
     }
@@ -201,17 +211,15 @@ where
                 .par_iter()
                 .zip(proof.par_iter())
                 .map(|(index, path)| {
-                    hash_params.base_mmcs
-                        .verify_batch(
-                            root,
-                            &[Dimensions {
-                                width: leaf_size,
-                                height: 1 << matrix_height,
-                            }],
-                            *index,
-                            &path.0,
-                            &path.1,
-                        )
+                    hash_params.base_mmcs.verify_batch(
+                        root,
+                        &[Dimensions {
+                            width: leaf_size,
+                            height: 1 << matrix_height,
+                        }],
+                        *index,
+                        BatchOpeningRef::new(&path.0, &path.1),
+                    )
                         .map_err(|e| {
                             Error::MmcsError(format!(
                                 "Failed to verify proof for index {}, leaf size {}, matrix height log {}, error: {:?}",
@@ -227,17 +235,15 @@ where
                 .par_iter()
                 .zip(proof.par_iter())
                 .map(|(index, path)| {
-                    hash_params.ext_mmcs
-                        .verify_batch(
-                            root,
-                            &[Dimensions {
-                                width: leaf_size,
-                                height: 1 << matrix_height,
-                            }],
-                            *index,
-                            &path.0,
-                            &path.1,
-                        )
+                    hash_params.ext_mmcs.verify_batch(
+                        root,
+                        &[Dimensions {
+                            width: leaf_size,
+                            height: 1 << matrix_height,
+                        }],
+                        *index,
+                        BatchOpeningRef::new(&path.0, &path.1),
+                    )
                         .map_err(|e| {
                             Error::MmcsError(format!(
                                 "Failed to verify proof for index {}, leaf size {}, matrix height log {}, error: {:?}",

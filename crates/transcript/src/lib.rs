@@ -7,7 +7,7 @@ pub mod basic;
 pub use basic::BasicTranscript;
 use ff_ext::SmallField;
 use itertools::Itertools;
-use p3::{challenger::GrindingChallenger, field::FieldAlgebra};
+use p3::{challenger::GrindingChallenger, field::PrimeCharacteristicRing};
 #[derive(Default, Copy, Clone, Eq, PartialEq, Debug)]
 pub struct Challenge<F> {
     pub elements: F,
@@ -135,7 +135,7 @@ pub trait ForkableTranscript<E: ExtensionField>: Transcript<E> + Sized + Clone {
         (0..n)
             .map(|i| {
                 let mut fork = self.clone();
-                fork.append_field_element(&E::BaseField::from_canonical_u64(i as u64));
+                fork.append_field_element(&E::BaseField::from_u64(i as u64));
                 fork
             })
             .collect()
