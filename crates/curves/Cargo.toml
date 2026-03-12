@@ -20,7 +20,6 @@ k256 = { version = "0.13.3", features = ["expose-field"] }
 num.workspace = true
 p256 = { version = "0.13.2", features = ["expose-field"] }
 p3.workspace = true
-p3-field.workspace = true
 serde = { workspace = true, features = ["derive"] }
 typenum = "1.17.0"
 
