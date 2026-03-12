@@ -2,8 +2,6 @@ use core::{
     fmt::Debug,
     ops::{Add, AddAssign, Mul, Neg, Sub},
 };
-#[allow(unused_imports)]
-use p3::field::PrimeCharacteristicRing;
 use std::slice::Iter;
 
 use itertools::Itertools;

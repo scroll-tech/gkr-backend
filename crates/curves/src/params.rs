@@ -1,5 +1,3 @@
-#[allow(unused_imports)]
-use p3::field::PrimeCharacteristicRing;
 use std::{
     fmt::Debug,
     ops::{Div, Index, IndexMut},
