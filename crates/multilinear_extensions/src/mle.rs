@@ -567,6 +567,76 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
         self.num_vars = nv - partial_point.len();
     }
 
+    /// Reduce the number of variables by 2 in one pass.
+    ///
+    /// This avoids calling `fix_variables` twice and directly computes
+    /// `f(r0, r1, ..)` from 4-point blocks.
+    pub fn fix_two_variables(&self, r0: E, r1: E) -> Self {
+        assert!(self.num_vars() >= 2, "num_vars {} < 2", self.num_vars());
+        let nv = self.num_vars();
+        match self.evaluations() {
+            FieldType::Base(slice) => MultilinearExtension::from_evaluations_ext_vec(
+                nv - 2,
+                slice
+                    .chunks(4)
+                    .map(|buf| {
+                        let y0 = r0 * (buf[1] - buf[0]) + buf[0];
+                        let y1 = r0 * (buf[3] - buf[2]) + buf[2];
+                        y0 + (y1 - y0) * r1
+                    })
+                    .collect(),
+            ),
+            FieldType::Ext(slice) => MultilinearExtension::from_evaluations_ext_vec(
+                nv - 2,
+                slice
+                    .chunks(4)
+                    .map(|buf| {
+                        let y0 = buf[0] + (buf[1] - buf[0]) * r0;
+                        let y1 = buf[2] + (buf[3] - buf[2]) * r0;
+                        y0 + (y1 - y0) * r1
+                    })
+                    .collect(),
+            ),
+            FieldType::Unreachable => unreachable!(),
+        }
+    }
+
+    /// In-place variant of `fix_two_variables`.
+    pub fn fix_two_variables_in_place(&mut self, r0: E, r1: E) {
+        assert!(self.is_mut());
+        assert!(self.num_vars() >= 2, "num_vars {} < 2", self.num_vars());
+        let nv = self.num_vars();
+
+        match &mut self.evaluations {
+            FieldType::Base(slice) => {
+                let slice_ext = slice
+                    .chunks(4)
+                    .map(|buf| {
+                        let y0 = r0 * (buf[1] - buf[0]) + buf[0];
+                        let y1 = r0 * (buf[3] - buf[2]) + buf[2];
+                        y0 + (y1 - y0) * r1
+                    })
+                    .collect();
+                let _ = mem::replace(
+                    &mut self.evaluations,
+                    FieldType::Ext(SmartSlice::Owned(slice_ext)),
+                );
+            }
+            FieldType::Ext(slice) => {
+                let slice_mut = slice.to_mut();
+                (0..slice_mut.len()).step_by(4).for_each(|b| {
+                    let y0 = slice_mut[b] + (slice_mut[b + 1] - slice_mut[b]) * r0;
+                    let y1 = slice_mut[b + 2] + (slice_mut[b + 3] - slice_mut[b + 2]) * r0;
+                    slice_mut[b >> 2] = y0 + (y1 - y0) * r1;
+                });
+                slice.truncate_mut(1 << (nv - 2));
+            }
+            FieldType::Unreachable => unreachable!(),
+        }
+
+        self.num_vars = nv - 2;
+    }
+
     /// Evaluate the MLE at a give point.
     /// Returns an error if the MLE length does not match the point.
     pub fn evaluate(&self, point: &[E]) -> E {

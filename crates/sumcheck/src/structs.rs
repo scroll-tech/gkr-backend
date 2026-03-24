@@ -33,6 +33,8 @@ pub struct IOPProverState<'a, E: ExtensionField> {
     pub is_main_worker: bool,
     /// sampled randomness given by the verifier
     pub challenges: Vec<Challenge<E>>,
+    /// Defer fixing the MLEs until the second-round challenge arrives.
+    pub(crate) pending_r0: Option<E>,
     /// the current round number
     pub(crate) round: usize,
     /// pointer to the virtual polynomial
