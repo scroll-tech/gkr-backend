@@ -1,5 +1,6 @@
 use std::{mem, sync::Arc};
 
+use either::Either;
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use multilinear_extensions::{
@@ -336,7 +337,6 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         //
         // eval g over r_m, and mutate g to g(r_1, ... r_m,, x_{m+1}... x_n)
         let span = entered_span!("fix_variables");
-        let mut build_with_deferred_first_round = None;
         if self.round > 0 {
             assert!(
                 challenge.is_some(),
@@ -349,7 +349,6 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             if self.round == 1 {
                 // Avoid writing round-1 folded MLE evaluations into memory.
                 self.pending_r0 = Some(r.elements);
-                build_with_deferred_first_round = Some(r.elements);
             } else {
                 self.fix_var(r.elements);
             }
@@ -362,7 +361,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         // Step 2: generate sum for the partial evaluated polynomial:
         // f(r_1, ... r_m,, x_{m+1}... x_n)
         let span = entered_span!("build_uni_poly");
-        let AdditiveVec(mut uni_polys) = if let Some(r0) = build_with_deferred_first_round {
+        let AdditiveVec(mut uni_polys) = if let Some(r0) = self.pending_r0 {
             self.build_uni_poly_round2(r0)
         } else {
             self.poly.products.iter().fold(
@@ -426,47 +425,49 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         }
     }
 
-    fn mle_eval_at_index(mle: &Arc<multilinear_extensions::mle::MultilinearExtension<'a, E>>, index: usize) -> E {
-        match mle.evaluations() {
-            FieldType::Base(slice) => E::from(slice[index]),
-            FieldType::Ext(slice) => slice[index],
-            FieldType::Unreachable => unreachable!(),
-        }
-    }
-
-    fn mle_eval_round2_without_cached_first_round(
-        mle: &Arc<multilinear_extensions::mle::MultilinearExtension<'a, E>>,
-        offset: usize,
-        r0: E,
-        x: E,
-    ) -> E {
-        let f00 = Self::mle_eval_at_index(mle, offset); // f(0,0,b)
-        let f10 = Self::mle_eval_at_index(mle, offset + 1); // f(1,0,b)
-        let f01 = Self::mle_eval_at_index(mle, offset + 2); // f(0,1,b)
-        let f11 = Self::mle_eval_at_index(mle, offset + 3); // f(1,1,b)
-
-        let y0 = f00 + (f10 - f00) * r0; // f(r0,0,b)
-        let y1 = f01 + (f11 - f01) * r0; // f(r0,1,b)
+    #[inline(always)]
+    fn mle_eval_round2_ext(block: &[E], r0: E, x: E::BaseField) -> E {
+        let y0 = block[0] + (block[1] - block[0]) * r0; // f(r0,0,b)
+        let y1 = block[2] + (block[3] - block[2]) * r0; // f(r0,1,b)
         y0 + (y1 - y0) * x // f(r0,x,b)
     }
 
-    fn mle_eval_single_var(
-        mle: &Arc<multilinear_extensions::mle::MultilinearExtension<'a, E>>,
-        offset: usize,
-        x: E,
-    ) -> E {
-        let y0 = Self::mle_eval_at_index(mle, offset);
-        let y1 = Self::mle_eval_at_index(mle, offset + 1);
-        y0 + (y1 - y0) * x
+    #[inline(always)]
+    fn mle_eval_round2_base(block: &[E::BaseField], r0: E, x: E::BaseField) -> E {
+        let y0 = r0 * (block[1] - block[0]) + block[0]; // f(r0,0,b)
+        let y1 = r0 * (block[3] - block[2]) + block[2]; // f(r0,1,b)
+        y0 + (y1 - y0) * x // f(r0,x,b)
+    }
+
+    #[inline(always)]
+    fn mle_eval_round2(block: Either<&[E::BaseField], &[E]>, r0: E, x: E::BaseField) -> E {
+        match block {
+            Either::Left(b) => Self::mle_eval_round2_base(b, r0, x),
+            Either::Right(b) => Self::mle_eval_round2_ext(b, r0, x),
+        }
+    }
+
+    #[inline(always)]
+    fn mle_eval_round1_ext(block: &[E], x: E::BaseField) -> E {
+        block[0] + (block[1] - block[0]) * x
+    }
+
+    #[inline(always)]
+    fn mle_eval_round1_base(block: &[E::BaseField], x: E::BaseField) -> E {
+        (block[0] + (block[1] - block[0]) * x).into()
+    }
+
+    #[inline(always)]
+    fn mle_eval_round1(block: Either<&[E::BaseField], &[E]>, x: E::BaseField) -> E {
+        match block {
+            Either::Left(b) => Self::mle_eval_round1_base(b, x),
+            Either::Right(b) => Self::mle_eval_round1_ext(b, x),
+        }
     }
 
     /// build univariate polynomial for round 2 directly from original MLE evaluations
-    /// h(x) = \sum_b f(r0, x, b) 
+    /// h(x) = \sum_b f(r0, x, b)
     ///      = eq(r0,0)*f(0,x,b) + eq(r0,1)*f(1,x,b)
-    ///      = eq(r0,0)*eq(x,0)*f(0,0,b) 
-    ///        + eq(r0,0)*eq(x,1)*f(0,1,b)
-    ///        + eq(r0,1)*eq(x,0)*f(1,0,b)
-    ///        + eq(r0,1)*eq(x,1)*f(1,1,b)
     fn build_uni_poly_round2(&self, r0: E) -> AdditiveVec<E> {
         self.poly.products.iter().fold(
             AdditiveVec::new(self.poly.aux_info.max_degree + 1),
@@ -477,108 +478,84 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                 } in terms
                 {
                     let f = &self.poly.flattened_ml_extensions;
-                    let poly_type = self.poly_meta[prod[0]];
+                    let get_poly_meta = || self.poly_meta[prod[0]];
                     let num_var = f[prod[0]].num_vars();
-                    // `self.round` has already been incremented before this builder runs.
-                    // Conceptually, round-1 has been fixed, so this is the post-fix expected
-                    // variable count used by the existing code path.
-                    let expected_numvars_post_fix = self.expected_numvars_at_round();
-                    // Since we intentionally deferred the first-round fix, in-memory MLEs still
-                    // carry one extra variable for the max-numvar branch.
-                    let expected_numvars_unfixed = expected_numvars_post_fix + 1;
 
                     let mut uni_variate = vec![E::ZERO; self.poly.aux_info.max_degree + 1];
                     let degree = prod.len();
 
-                    let one_term_product_at = |idx: usize| {
-                        prod.iter()
-                            .map(|&poly_idx| Self::mle_eval_at_index(&f[poly_idx], idx))
-                            .product::<E>()
-                    };
-
-                    match poly_type {
-                        PolyMeta::Phase2Only => {
-                            if self.is_main_worker {
-                                let eval_len = f[prod[0]].evaluations().len();
-                                let mut sum = if eval_len == 1 {
-                                    one_term_product_at(0)
-                                } else {
-                                    (0..largest_even_below(eval_len))
-                                        .map(one_term_product_at)
-                                        .sum()
-                                };
-                                let multiplicity = self
-                                    .expected_numvars_at_round()
-                                    .saturating_add(self.phase2_numvar.unwrap_or(0))
-                                    .saturating_sub(1)
-                                    .saturating_sub(num_var);
-                                if multiplicity > 0 {
-                                    let factor = 1u64
-                                        .checked_shl(multiplicity as u32)
-                                        .expect("phase2 multiplicity overflow");
-                                    sum *= E::from_canonical_u64(factor);
-                                }
-                                uni_variate.iter_mut().take(degree + 1).for_each(|v| *v = sum);
-                            }
+                    if num_var == self.max_num_variables {
+                        // fi(r0,x,b)
+                        let evals_len = f[prod[0]].evaluations().len();
+                        for (x, uni_variate_eval) in
+                            uni_variate.iter_mut().enumerate().take(degree + 1)
+                        {
+                            let x_felt = E::BaseField::from_canonical_u32(x as u32);
+                            let sum = (0..evals_len)
+                                .step_by(4)
+                                .map(|b| {
+                                    prod.iter()
+                                        .map(|&poly_idx| {
+                                            Self::mle_eval_round2(
+                                                f[poly_idx]
+                                                    .as_ref()
+                                                    .evaluations()
+                                                    .as_slice(b..b + 4),
+                                                r0,
+                                                x_felt,
+                                            )
+                                        })
+                                        .product::<E>()
+                                })
+                                .sum();
+                            *uni_variate_eval = sum;
                         }
-                        PolyMeta::Normal if num_var + 1 == expected_numvars_unfixed => {
-                            let eval_len = f[prod[0]].evaluations().len();
-                            for x_idx in 0..=degree {
-                                let x = E::from_canonical_u64(x_idx as u64);
-                                let sum = (0..eval_len)
-                                    .step_by(2)
-                                    .map(|b| {
-                                        prod.iter()
-                                            .map(|&poly_idx| {
-                                                Self::mle_eval_single_var(&f[poly_idx], b, x)
-                                            })
-                                            .product::<E>()
-                                    })
-                                    .sum();
-                                uni_variate[x_idx] = sum;
-                            }
+                    } else if num_var + 1 == self.max_num_variables {
+                        // fi(x,b)
+                        let evals_len = f[prod[0]].evaluations().len();
+                        for (x, uni_variate_eval) in
+                            uni_variate.iter_mut().enumerate().take(degree + 1)
+                        {
+                            let x_felt = E::BaseField::from_canonical_u32(x as u32);
+                            let sum = (0..evals_len)
+                                .step_by(2)
+                                .map(|b| {
+                                    prod.iter()
+                                        .map(|&poly_idx| {
+                                            Self::mle_eval_round1(
+                                                f[poly_idx]
+                                                    .as_ref()
+                                                    .evaluations()
+                                                    .as_slice(b..b + 2),
+                                                x_felt,
+                                            )
+                                        })
+                                        .product::<E>()
+                                })
+                                .sum();
+                            *uni_variate_eval = sum;
                         }
-                        PolyMeta::Normal if num_var + 1 < expected_numvars_unfixed => {
-                            let eval_len = f[prod[0]].evaluations().len();
-                            let mut sum = if eval_len == 1 {
-                                one_term_product_at(0)
-                            } else {
-                                (0..largest_even_below(eval_len)).map(one_term_product_at).sum()
-                            };
-                            let multiplicity = expected_numvars_post_fix
-                                .saturating_sub(1)
-                                .saturating_sub(num_var);
-                            if multiplicity > 0 {
-                                let factor = 1u64
-                                    .checked_shl(multiplicity as u32)
-                                    .expect("normal multiplicity overflow");
-                                sum *= E::from_canonical_u64(factor);
-                            }
-                            uni_variate.iter_mut().take(degree + 1).for_each(|v| *v = sum);
-                        }
-                        PolyMeta::Normal => {
-                            debug_assert_eq!(num_var, expected_numvars_unfixed);
-                            let eval_len = f[prod[0]].evaluations().len();
-                            for x_idx in 0..=degree {
-                                let x = E::from_canonical_u64(x_idx as u64);
-                                let sum = (0..eval_len)
-                                    .step_by(4)
-                                    .map(|b| {
-                                        prod.iter()
-                                            .map(|&poly_idx| {
-                                                Self::mle_eval_round2_without_cached_first_round(
-                                                    &f[poly_idx],
-                                                    b,
-                                                    r0,
-                                                    x,
-                                                )
-                                            })
-                                            .product::<E>()
-                                    })
-                                    .sum();
-                                uni_variate[x_idx] = sum;
-                            }
-                        }
+                    } else {
+                        let uni_variate_monomial: Vec<E> = match prod.len() {
+                            1 => sumcheck_code_gen!(1, false, |i| &f[prod[i]], || get_poly_meta())
+                                .to_vec(),
+                            2 => sumcheck_code_gen!(2, false, |i| &f[prod[i]], || get_poly_meta())
+                                .to_vec(),
+                            3 => sumcheck_code_gen!(3, false, |i| &f[prod[i]], || get_poly_meta())
+                                .to_vec(),
+                            4 => sumcheck_code_gen!(4, false, |i| &f[prod[i]], || get_poly_meta())
+                                .to_vec(),
+                            5 => sumcheck_code_gen!(5, false, |i| &f[prod[i]], || get_poly_meta())
+                                .to_vec(),
+                            6 => sumcheck_code_gen!(6, false, |i| &f[prod[i]], || get_poly_meta())
+                                .to_vec(),
+                            _ => unimplemented!("do not support degree {} > 6", prod.len()),
+                        };
+                        uni_variate
+                            .iter_mut()
+                            .zip(uni_variate_monomial)
+                            .take(degree + 1)
+                            .for_each(|(eval, monomial_eval)| *eval = monomial_eval);
                     }
 
                     uni_variate

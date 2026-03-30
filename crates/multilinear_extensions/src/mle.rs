@@ -1,4 +1,4 @@
-use std::{any::TypeId, borrow::Cow, mem, sync::Arc};
+use std::{any::TypeId, borrow::Cow, mem, ops::Range, sync::Arc};
 
 use crate::{
     field_type_mut_map,
@@ -228,6 +228,14 @@ impl<'a, E: ExtensionField> FieldType<'a, E> {
         match self {
             FieldType::Base(slice) => Either::Left(slice[index]),
             FieldType::Ext(slice) => Either::Right(slice[index]),
+            FieldType::Unreachable => unreachable!(),
+        }
+    }
+
+    pub fn as_slice(&self, range: Range<usize>) -> Either<&[E::BaseField], &[E]> {
+        match self {
+            FieldType::Base(slice) => Either::Left(&slice[range]),
+            FieldType::Ext(slice) => Either::Right(&slice[range]),
             FieldType::Unreachable => unreachable!(),
         }
     }
@@ -567,6 +575,27 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
         self.num_vars = nv - partial_point.len();
     }
 
+    // compute f(r0,r1,b) from block { f(0,0,b), f(1,0,b), f(0,1,b), f(1,1,b) }
+    #[inline(always)]
+    fn eval_block_2_vars_base(block: &[E::BaseField], r0: E, r1: E) -> E {
+        // f(r0,r1,b) = (1 - r1) * f(r0,0,b) + r1 * f(r0,1,b)
+        // f(r0,0,b) = (1 - r0) * f(0,0,b) + r0 * f(1,0,b)
+        // f(r0,1,b) = (1 - r0) * f(0,1,b) + r0 * f(1,1,b)
+        let y0: E = r0 * (block[1] - block[0]) + block[0];
+        let y1: E = r0 * (block[3] - block[2]) + block[2];
+        y0 + (y1 - y0) * r1
+    }
+
+    #[inline(always)]
+    fn eval_block_2_vars_ext(block: &[E], r0: E, r1: E) -> E {
+        // f(r0,r1,b) = (1 - r1) * f(r0,0,b) + r1 * f(r0,1,b)
+        // f(r0,0,b) = (1 - r0) * f(0,0,b) + r0 * f(1,0,b)
+        // f(r0,1,b) = (1 - r0) * f(0,1,b) + r0 * f(1,1,b)
+        let y0: E = block[0] + (block[1] - block[0]) * r0;
+        let y1: E = block[2] + (block[3] - block[2]) * r0;
+        y0 + (y1 - y0) * r1
+    }
+
     /// Reduce the number of variables by 2 in one pass.
     ///
     /// This avoids calling `fix_variables` twice and directly computes
@@ -579,22 +608,14 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
                 nv - 2,
                 slice
                     .chunks(4)
-                    .map(|buf| {
-                        let y0 = r0 * (buf[1] - buf[0]) + buf[0];
-                        let y1 = r0 * (buf[3] - buf[2]) + buf[2];
-                        y0 + (y1 - y0) * r1
-                    })
+                    .map(|buf| Self::eval_block_2_vars_base(buf, r0, r1))
                     .collect(),
             ),
             FieldType::Ext(slice) => MultilinearExtension::from_evaluations_ext_vec(
                 nv - 2,
                 slice
                     .chunks(4)
-                    .map(|buf| {
-                        let y0 = buf[0] + (buf[1] - buf[0]) * r0;
-                        let y1 = buf[2] + (buf[3] - buf[2]) * r0;
-                        y0 + (y1 - y0) * r1
-                    })
+                    .map(|buf| Self::eval_block_2_vars_ext(buf, r0, r1))
                     .collect(),
             ),
             FieldType::Unreachable => unreachable!(),
@@ -609,27 +630,23 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
 
         match &mut self.evaluations {
             FieldType::Base(slice) => {
-                let slice_ext = slice
+                let ext_vec = slice
                     .chunks(4)
-                    .map(|buf| {
-                        let y0 = r0 * (buf[1] - buf[0]) + buf[0];
-                        let y1 = r0 * (buf[3] - buf[2]) + buf[2];
-                        y0 + (y1 - y0) * r1
-                    })
+                    .map(|buf| Self::eval_block_2_vars_base(buf, r0, r1))
                     .collect();
-                let _ = mem::replace(
+                let _ = std::mem::replace(
                     &mut self.evaluations,
-                    FieldType::Ext(SmartSlice::Owned(slice_ext)),
+                    FieldType::Ext(SmartSlice::Owned(ext_vec)),
                 );
             }
             FieldType::Ext(slice) => {
                 let slice_mut = slice.to_mut();
-                (0..slice_mut.len()).step_by(4).for_each(|b| {
-                    let y0 = slice_mut[b] + (slice_mut[b + 1] - slice_mut[b]) * r0;
-                    let y1 = slice_mut[b + 2] + (slice_mut[b + 3] - slice_mut[b + 2]) * r0;
-                    slice_mut[b >> 2] = y0 + (y1 - y0) * r1;
-                });
-                slice.truncate_mut(1 << (nv - 2));
+                let new_len = 1 << (nv - 2);
+                for i in 0..new_len {
+                    let b = i << 2;
+                    slice_mut[i] = Self::eval_block_2_vars_ext(&slice_mut[b..b + 4], r0, r1);
+                }
+                slice.truncate_mut(new_len);
             }
             FieldType::Unreachable => unreachable!(),
         }
