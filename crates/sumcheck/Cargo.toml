@@ -31,6 +31,7 @@ rand.workspace = true
 [features]
 nightly-features = ["ff_ext/nightly-features"]
 parallel = ["p3/parallel", "multilinear_extensions/parallel"]
+reduce-peak-memory = []
 
 
 [[bench]]

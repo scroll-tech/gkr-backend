@@ -130,7 +130,12 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         virtual_poly: VirtualPolynomials<'a, E>,
         transcript: &mut impl Transcript<E>,
     ) -> (IOPProof<E>, IOPProverState<'a, E>) {
-        Self::prove_with_mode(virtual_poly, transcript, SumcheckProverMode::LegacyStable)
+        #[cfg(feature = "reduce-peak-memory")]
+        let mode = SumcheckProverMode::ReducedPeakMemory;
+        #[cfg(not(feature = "reduce-peak-memory"))]
+        let mode = SumcheckProverMode::LegacyStable;
+
+        Self::prove_with_mode(virtual_poly, transcript, mode)
     }
 
     #[tracing::instrument(
@@ -556,7 +561,9 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                     let mut uni_variate = vec![E::ZERO; self.poly.aux_info.max_degree + 1];
                     let degree = prod.len();
 
-                    if num_var == self.max_num_variables {
+                    if num_var == self.max_num_variables
+                        && matches!(get_poly_meta(), PolyMeta::Normal)
+                    {
                         // Batch all x-evaluations per block b.
                         // For each b, compute (y0_i, dy_i) = (fi(r0,0,b), fi(r0,1,b)-fi(r0,0,b))
                         // once, then evaluate fi(r0,x,b) = y0_i + dy_i*x for every x.
@@ -580,7 +587,9 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                                     .product::<E>();
                             }
                         }
-                    } else if num_var + 1 == self.max_num_variables {
+                    } else if num_var + 1 == self.max_num_variables
+                        && matches!(get_poly_meta(), PolyMeta::Normal)
+                    {
                         // Same batch trick for the phase-1 case fi(x,b):
                         // compute (y0_i, dy_i) = (fi(0,b), fi(1,b)-fi(0,b)) once per b,
                         // then evaluate for all x.
