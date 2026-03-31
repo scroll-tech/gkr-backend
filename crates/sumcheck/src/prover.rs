@@ -492,43 +492,48 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         )
     }
 
+    /// Returns `(y0, dy)` where `y0 = fi(r0, 0, b)` and `dy = fi(r0, 1, b) - y0`,
+    /// so that `fi(r0, x, b) = y0 + dy * x` for any `x`.
+    /// Computing these once per block amortises the r0 multiplications across all x values.
     #[inline(always)]
-    fn mle_eval_round2_ext(block: &[E], r0: E, x: E::BaseField) -> E {
-        let y0 = block[0] + (block[1] - block[0]) * r0; // f(r0,0,b)
-        let y1 = block[2] + (block[3] - block[2]) * r0; // f(r0,1,b)
-        y0 + (y1 - y0) * x // f(r0,x,b)
+    fn mle_eval_round2_endpoints_ext(block: &[E], r0: E) -> (E, E) {
+        let y0 = block[0] + (block[1] - block[0]) * r0;
+        let y1 = block[2] + (block[3] - block[2]) * r0;
+        (y0, y1 - y0)
     }
 
     #[inline(always)]
-    fn mle_eval_round2_base(block: &[E::BaseField], r0: E, x: E::BaseField) -> E {
-        let y0 = r0 * (block[1] - block[0]) + block[0]; // f(r0,0,b)
-        let y1 = r0 * (block[3] - block[2]) + block[2]; // f(r0,1,b)
-        y0 + (y1 - y0) * x // f(r0,x,b)
+    fn mle_eval_round2_endpoints_base(block: &[E::BaseField], r0: E) -> (E, E) {
+        let y0 = r0 * (block[1] - block[0]) + block[0];
+        let y1 = r0 * (block[3] - block[2]) + block[2];
+        (y0, y1 - y0)
     }
 
     #[inline(always)]
-    fn mle_eval_round2(block: Either<&[E::BaseField], &[E]>, r0: E, x: E::BaseField) -> E {
+    fn mle_eval_round2_endpoints(block: Either<&[E::BaseField], &[E]>, r0: E) -> (E, E) {
         match block {
-            Either::Left(b) => Self::mle_eval_round2_base(b, r0, x),
-            Either::Right(b) => Self::mle_eval_round2_ext(b, r0, x),
+            Either::Left(b) => Self::mle_eval_round2_endpoints_base(b, r0),
+            Either::Right(b) => Self::mle_eval_round2_endpoints_ext(b, r0),
         }
     }
 
+    /// Returns `(y0, dy)` where `y0 = fi(0, b)` and `dy = fi(1, b) - y0`,
+    /// so that `fi(x, b) = y0 + dy * x` for any `x`.
     #[inline(always)]
-    fn mle_eval_round1_ext(block: &[E], x: E::BaseField) -> E {
-        block[0] + (block[1] - block[0]) * x
+    fn mle_eval_round1_endpoints_ext(block: &[E]) -> (E, E) {
+        (block[0], block[1] - block[0])
     }
 
     #[inline(always)]
-    fn mle_eval_round1_base(block: &[E::BaseField], x: E::BaseField) -> E {
-        (block[0] + (block[1] - block[0]) * x).into()
+    fn mle_eval_round1_endpoints_base(block: &[E::BaseField]) -> (E, E) {
+        (block[0].into(), (block[1] - block[0]).into())
     }
 
     #[inline(always)]
-    fn mle_eval_round1(block: Either<&[E::BaseField], &[E]>, x: E::BaseField) -> E {
+    fn mle_eval_round1_endpoints(block: Either<&[E::BaseField], &[E]>) -> (E, E) {
         match block {
-            Either::Left(b) => Self::mle_eval_round1_base(b, x),
-            Either::Right(b) => Self::mle_eval_round1_ext(b, x),
+            Either::Left(b) => Self::mle_eval_round1_endpoints_base(b),
+            Either::Right(b) => Self::mle_eval_round1_endpoints_ext(b),
         }
     }
 
@@ -552,55 +557,50 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                     let degree = prod.len();
 
                     if num_var == self.max_num_variables {
-                        // fi(r0,x,b)
+                        // Batch all x-evaluations per block b.
+                        // For each b, compute (y0_i, dy_i) = (fi(r0,0,b), fi(r0,1,b)-fi(r0,0,b))
+                        // once, then evaluate fi(r0,x,b) = y0_i + dy_i*x for every x.
+                        // This amortises the r0 multiplications across all x values.
                         let evals_len = f[prod[0]].evaluations().len();
-                        for (x, uni_variate_eval) in
-                            uni_variate.iter_mut().enumerate().take(degree + 1)
-                        {
-                            let x_felt = E::BaseField::from_canonical_u32(x as u32);
-                            let sum = (0..evals_len)
-                                .step_by(4)
-                                .map(|b| {
-                                    prod.iter()
-                                        .map(|&poly_idx| {
-                                            Self::mle_eval_round2(
-                                                f[poly_idx]
-                                                    .as_ref()
-                                                    .evaluations()
-                                                    .as_slice(b..b + 4),
-                                                r0,
-                                                x_felt,
-                                            )
-                                        })
-                                        .product::<E>()
-                                })
-                                .sum();
-                            *uni_variate_eval = sum;
+                        let x_felts: Vec<E::BaseField> = (0..=degree)
+                            .map(|x| E::BaseField::from_canonical_u32(x as u32))
+                            .collect();
+                        let mut endpoints = vec![(E::ZERO, E::ZERO); degree];
+                        for b in (0..evals_len).step_by(4) {
+                            for (k, &poly_idx) in prod.iter().enumerate() {
+                                endpoints[k] = Self::mle_eval_round2_endpoints(
+                                    f[poly_idx].as_ref().evaluations().as_slice(b..b + 4),
+                                    r0,
+                                );
+                            }
+                            for (x, &x_felt) in x_felts.iter().enumerate() {
+                                uni_variate[x] += endpoints
+                                    .iter()
+                                    .map(|&(y0, dy)| y0 + dy * x_felt)
+                                    .product::<E>();
+                            }
                         }
                     } else if num_var + 1 == self.max_num_variables {
-                        // fi(x,b)
+                        // Same batch trick for the phase-1 case fi(x,b):
+                        // compute (y0_i, dy_i) = (fi(0,b), fi(1,b)-fi(0,b)) once per b,
+                        // then evaluate for all x.
                         let evals_len = f[prod[0]].evaluations().len();
-                        for (x, uni_variate_eval) in
-                            uni_variate.iter_mut().enumerate().take(degree + 1)
-                        {
-                            let x_felt = E::BaseField::from_canonical_u32(x as u32);
-                            let sum = (0..evals_len)
-                                .step_by(2)
-                                .map(|b| {
-                                    prod.iter()
-                                        .map(|&poly_idx| {
-                                            Self::mle_eval_round1(
-                                                f[poly_idx]
-                                                    .as_ref()
-                                                    .evaluations()
-                                                    .as_slice(b..b + 2),
-                                                x_felt,
-                                            )
-                                        })
-                                        .product::<E>()
-                                })
-                                .sum();
-                            *uni_variate_eval = sum;
+                        let x_felts: Vec<E::BaseField> = (0..=degree)
+                            .map(|x| E::BaseField::from_canonical_u32(x as u32))
+                            .collect();
+                        let mut endpoints = vec![(E::ZERO, E::ZERO); degree];
+                        for b in (0..evals_len).step_by(2) {
+                            for (k, &poly_idx) in prod.iter().enumerate() {
+                                endpoints[k] = Self::mle_eval_round1_endpoints(
+                                    f[poly_idx].as_ref().evaluations().as_slice(b..b + 2),
+                                );
+                            }
+                            for (x, &x_felt) in x_felts.iter().enumerate() {
+                                uni_variate[x] += endpoints
+                                    .iter()
+                                    .map(|&(y0, dy)| y0 + dy * x_felt)
+                                    .product::<E>();
+                            }
                         }
                     } else {
                         let uni_variate_monomial: Vec<E> = match prod.len() {
