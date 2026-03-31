@@ -206,8 +206,14 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             }
             let span = entered_span!("merged_poly", profiling_6 = true);
             let poly = merge_sumcheck_prover_state(&prover_states);
-            let mut phase2_sumcheck_state =
-                Self::prover_init_with_extrapolation_aux_with_mode(true, poly, None, None, mode);
+            // phase 2 always use legacy mode
+            let mut phase2_sumcheck_state = Self::prover_init_with_extrapolation_aux_with_mode(
+                true,
+                poly,
+                None,
+                None,
+                SumcheckProverMode::LegacyStable,
+            );
             phase2_sumcheck_state.push_challenges(prover_states[0].challenges.clone());
             exit_span!(span);
             (phase2_sumcheck_state, prover_msgs)
