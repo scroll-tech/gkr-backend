@@ -1,8 +1,10 @@
 #![allow(clippy::manual_memcpy)]
 #![allow(clippy::needless_range_loop)]
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    alloc::{GlobalAlloc, Layout, System},
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use either::Either;
 use ff_ext::{BabyBearExt4, ExtensionField};
@@ -128,11 +130,8 @@ fn main() {
                         }],
                     );
 
-                    let _ = IOPProverState::<E>::prove_with_mode(
-                        virtual_poly,
-                        &mut transcript,
-                        mode,
-                    );
+                    let _ =
+                        IOPProverState::<E>::prove_with_mode(virtual_poly, &mut transcript, mode);
                 });
 
                 peaks.push(peak);
