@@ -36,3 +36,7 @@ parallel = ["p3/parallel", "multilinear_extensions/parallel"]
 [[bench]]
 harness = false
 name = "devirgo_sumcheck"
+
+[[bench]]
+harness = false
+name = "memory_usage"
