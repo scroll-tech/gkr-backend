@@ -267,6 +267,8 @@ pub use basefold::{
     Basefold, BasefoldCommitment, BasefoldCommitmentWithWitness, BasefoldDefault, BasefoldParams,
     BasefoldRSParams, BasefoldSpec, EncodingScheme, RSCode, RSCodeDefaultSpec,
 };
+pub mod jagged;
+pub use jagged::{JaggedCommitment, JaggedCommitmentWithWitness, jagged_commit};
 #[cfg(feature = "whir")]
 extern crate whir as whir_external;
 #[cfg(feature = "whir")]
