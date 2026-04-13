@@ -30,6 +30,7 @@ witness.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+tracing-forest = "0.1"
 
 [features]
 nightly-features = ["ff_ext/nightly-features"]
