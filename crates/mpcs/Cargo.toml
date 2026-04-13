@@ -54,3 +54,7 @@ name = "interpolate"
 harness = false
 name = "whir"
 required-features = ["whir"]
+
+[[bench]]
+harness = false
+name = "jagged_sumcheck"
