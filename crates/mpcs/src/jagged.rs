@@ -244,6 +244,9 @@ pub fn jagged_commit<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
 // Jagged Sumcheck Prover (M-table streaming algorithm)
 // ---------------------------------------------------------------------------
 
+// Streaming sumcheck prover using the M-table algorithm from
+// "Time-Space Trade-Offs for Sumcheck" (eprint 2025/1473), Section 4.
+
 /// Number of streaming rounds before switching to standard sumcheck.
 /// Determined by the epoch schedule: 1 + 2 + 4 + 8 = 15.
 #[allow(dead_code)]
