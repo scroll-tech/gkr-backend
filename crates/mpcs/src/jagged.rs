@@ -285,6 +285,31 @@ impl<'a, E: ExtensionField> JaggedSumcheckInput<'a, E> {
         let j = self.cumulative_heights.partition_point(|&t| t <= giga_idx) - 1;
         (j, giga_idx - self.cumulative_heights[j])
     }
+
+    /// Brute-force MLE evaluation of q'(rb) and f(rb) at the given point.
+    /// O(2^n) time and memory — only for debugging and tests.
+    /// Returns `(q_at_point, f_at_point)`.
+    fn final_evaluations_slow(&self, point: &[E]) -> (E, E) {
+        let n = self.num_giga_vars;
+        let total_evals = self.total_evaluations();
+
+        // Build q' MLE (padded with zeros) and evaluate at point.
+        let mut q_padded: Vec<E::BaseField> = self.q_evals.to_vec();
+        q_padded.resize(1 << n, Default::default());
+        let q_mle = MultilinearExtension::from_evaluations_vec(n, q_padded);
+        let q_at_point = q_mle.evaluate(point);
+
+        // Build f MLE from eq tables and evaluate at point.
+        let mut f_evals = vec![E::ZERO; 1 << n];
+        for b in 0..total_evals {
+            let (col, row) = self.col_row(b);
+            f_evals[b] = self.eq_row[row] * self.eq_col[col];
+        }
+        let f_mle = MultilinearExtension::from_evaluations_ext_vec(n, f_evals);
+        let f_at_point = f_mle.evaluate(point);
+
+        (q_at_point, f_at_point)
+    }
 }
 
 /// Run the full jagged sumcheck: streaming phase (rounds 1..K) + standard phase (rounds K+1..n).
@@ -437,7 +462,7 @@ fn build_m_table<E: ExtensionField>(
                                 return (q_acc, f_acc);
                             }
                             let (col, row) = input.col_row(giga_idx);
-                            let q_val: E = input.q_evals[giga_idx].into();
+                            let q_val = input.q_evals[giga_idx];
                             let f_val = input.eq_row[row] * input.eq_col[col];
                             (q_acc + eq_r_a * q_val, f_acc + eq_r_a * f_val)
                         },
@@ -774,24 +799,7 @@ mod tests {
         }
 
         // Verify the final evaluation: q'(point) * f(point) == expected_evaluation
-        // Build the full MLE of q' and f, evaluate at the subclaim point.
-        let mut q_padded = q_evals.clone();
-        q_padded.resize(1 << num_giga_vars, F::ZERO);
-        let q_mle = MultilinearExtension::<E>::from_evaluations_vec(num_giga_vars, q_padded);
-        let q_at_point = q_mle.evaluate(&challenges);
-
-        // f is defined piecewise; compute its MLE evaluations then evaluate at point.
-        let eq_row_table = build_eq_x_r_vec(&z_row);
-        let eq_col_table = build_eq_x_r_vec(&z_col);
-        let mut f_evals = vec![E::ZERO; 1 << num_giga_vars];
-        for b in 0..total_evals {
-            let j = cumulative_heights.partition_point(|&t| t <= b) - 1;
-            let local = b - cumulative_heights[j];
-            f_evals[b] = eq_row_table[local] * eq_col_table[j];
-        }
-        let f_mle = MultilinearExtension::<E>::from_evaluations_ext_vec(num_giga_vars, f_evals);
-        let f_at_point = f_mle.evaluate(&challenges);
-
+        let (q_at_point, f_at_point) = input.final_evaluations_slow(&challenges);
         assert_eq!(
             q_at_point * f_at_point,
             subclaim.expected_evaluation,
@@ -905,5 +913,13 @@ mod tests {
         for (sc, ch) in subclaim.point.iter().zip(challenges.iter()) {
             assert_eq!(sc.elements, *ch);
         }
+
+        // Verify the final evaluation: q'(point) * f(point) == expected_evaluation
+        let (q_at_point, f_at_point) = input.final_evaluations_slow(&challenges);
+        assert_eq!(
+            q_at_point * f_at_point,
+            subclaim.expected_evaluation,
+            "final evaluation mismatch"
+        );
     }
 }
