@@ -274,30 +274,69 @@ pub struct JaggedSumcheckInput<'a, E: ExtensionField> {
     pub eq_col: Vec<E>,
 }
 
+/// Iterator that yields `(col, row)` pairs for consecutive giga indices.
+/// Uses one binary search at construction, then O(1) per step.
+struct ColRowIter<'a> {
+    cumulative_heights: &'a [usize],
+    col: usize,
+    row: usize,
+    num_polys: usize,
+}
+
+impl<'a> Iterator for ColRowIter<'a> {
+    type Item = (usize, usize);
+
+    fn next(&mut self) -> Option<(usize, usize)> {
+        if self.col >= self.num_polys {
+            return None;
+        }
+        let result = (self.col, self.row);
+        self.row += 1;
+        let poly_height = self.cumulative_heights[self.col + 1] - self.cumulative_heights[self.col];
+        if self.row >= poly_height {
+            self.row = 0;
+            self.col += 1;
+        }
+        Some(result)
+    }
+}
+
 impl<'a, E: ExtensionField> JaggedSumcheckInput<'a, E> {
     fn total_evaluations(&self) -> usize {
         *self.cumulative_heights.last().unwrap_or(&0)
     }
 
-    /// Find which polynomial giga_idx belongs to. Returns (poly_index, local_offset).
-    fn col_row(&self, giga_idx: usize) -> (usize, usize) {
-        // Binary search: find j such that t[j] <= giga_idx < t[j+1]
-        let j = self.cumulative_heights.partition_point(|&t| t <= giga_idx) - 1;
-        (j, giga_idx - self.cumulative_heights[j])
+    /// Return an iterator yielding `(col, row)` for consecutive giga indices
+    /// starting from `start`. One binary search at construction, O(1) per step.
+    fn col_row_iter(&self, start: usize) -> ColRowIter<'_> {
+        let num_polys = self.cumulative_heights.len() - 1;
+        if start >= self.total_evaluations() {
+            return ColRowIter {
+                cumulative_heights: self.cumulative_heights,
+                col: num_polys,
+                row: 0,
+                num_polys,
+            };
+        }
+        let j = self.cumulative_heights.partition_point(|&t| t <= start) - 1;
+        ColRowIter {
+            cumulative_heights: self.cumulative_heights,
+            col: j,
+            row: start - self.cumulative_heights[j],
+            num_polys,
+        }
     }
 
     /// Brute-force computation of sum_b q'(b) * f(b).
     /// O(2^n) time — only for debugging and tests.
     #[cfg(test)]
     fn compute_claimed_sum(&self) -> E {
-        let total_evals = self.total_evaluations();
-        let mut sum = E::ZERO;
-        for b in 0..total_evals {
-            let (col, row) = self.col_row(b);
-            let f_val = self.eq_row[row] * self.eq_col[col];
-            sum += f_val * self.q_evals[b];
-        }
-        sum
+        self.q_evals[..self.total_evaluations()]
+            .iter()
+            .zip(self.col_row_iter(0))
+            .fold(E::ZERO, |sum, (&q, (col, row))| {
+                sum + (self.eq_row[row] * self.eq_col[col]) * q
+            })
     }
 
     /// Brute-force MLE evaluation of q'(rb) and f(rb) at the given point.
@@ -316,8 +355,7 @@ impl<'a, E: ExtensionField> JaggedSumcheckInput<'a, E> {
 
         // Build f MLE from eq tables and evaluate at point.
         let mut f_evals = vec![E::ZERO; 1 << n];
-        for (b, f_eval) in f_evals.iter_mut().enumerate().take(total_evals) {
-            let (col, row) = self.col_row(b);
+        for (f_eval, (col, row)) in f_evals[..total_evals].iter_mut().zip(self.col_row_iter(0)) {
             *f_eval = self.eq_row[row] * self.eq_col[col];
         }
         let f_mle = MultilinearExtension::from_evaluations_ext_vec(n, f_evals);
@@ -436,7 +474,6 @@ fn build_m_table<E: ExtensionField>(
     epoch_size: usize, // j'
 ) -> Vec<E> {
     let n = input.num_giga_vars;
-    let total_evals = input.total_evaluations();
     let bound_vars = epoch_size - 1; // j' - 1
 
     let eq_r = if bound_vars > 0 {
@@ -479,16 +516,17 @@ fn build_m_table<E: ExtensionField>(
                         let base = chunk_start + beta * a_count;
                         let (q_acc, f_acc) = eq_r
                             .iter()
-                            .enumerate()
-                            .take_while(|&(a, _)| base + a < total_evals)
-                            .fold((E::ZERO, E::ZERO), |(q_acc, f_acc), (a, &eq_r_a)| {
-                                let giga_idx = base + a;
-                                let (col, row) = input.col_row(giga_idx);
-                                (
-                                    q_acc + eq_r_a * input.q_evals[giga_idx],
-                                    f_acc + eq_r_a * (input.eq_row[row] * input.eq_col[col]),
-                                )
-                            });
+                            .zip(input.q_evals.get(base..).unwrap_or(&[]))
+                            .zip(input.col_row_iter(base))
+                            .fold(
+                                (E::ZERO, E::ZERO),
+                                |(q_acc, f_acc), ((&eq_r_a, &q), (col, row))| {
+                                    (
+                                        q_acc + eq_r_a * q,
+                                        f_acc + eq_r_a * (input.eq_row[row] * input.eq_col[col]),
+                                    )
+                                },
+                            );
                         *q_b = q_acc;
                         *f_b = f_acc;
                     });
@@ -601,7 +639,6 @@ fn bind_and_materialize<E: ExtensionField>(
 ) -> (Vec<E>, Vec<E>) {
     let n = input.num_giga_vars;
     let k = challenges.len();
-    let total_evals = input.total_evaluations();
     let remaining_size = 1usize << (n - k);
     let a_count = 1usize << k;
 
@@ -611,21 +648,19 @@ fn bind_and_materialize<E: ExtensionField>(
     let results: Vec<(E, E)> = (0..remaining_size)
         .into_par_iter()
         .map(|idx| {
-            let mut q_acc = E::ZERO;
-            let mut f_acc = E::ZERO;
-            for (a, &eq_r_a) in eq_r.iter().enumerate().take(a_count) {
-                let giga_idx = a + idx * a_count;
-                if giga_idx >= total_evals {
-                    continue;
-                }
-
-                let (col, row) = input.col_row(giga_idx);
-                let f_val = input.eq_row[row] * input.eq_col[col];
-
-                q_acc += eq_r_a * input.q_evals[giga_idx];
-                f_acc += eq_r_a * f_val;
-            }
-            (q_acc, f_acc)
+            let base = idx * a_count;
+            eq_r.iter()
+                .zip(input.q_evals.get(base..).unwrap_or(&[]))
+                .zip(input.col_row_iter(base))
+                .fold(
+                    (E::ZERO, E::ZERO),
+                    |(q_acc, f_acc), ((&eq_r_a, &q), (col, row))| {
+                        (
+                            q_acc + eq_r_a * q,
+                            f_acc + eq_r_a * (input.eq_row[row] * input.eq_col[col]),
+                        )
+                    },
+                )
         })
         .collect();
 
