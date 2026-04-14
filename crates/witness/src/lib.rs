@@ -9,6 +9,7 @@ use rayon::{
     prelude::ParallelSliceMut,
 };
 use std::{
+    any::Any,
     ops::{Deref, DerefMut, Index},
     slice::{Chunks, ChunksMut},
     sync::Arc,
@@ -41,6 +42,19 @@ pub struct RowMajorMatrix<T: Sized + Sync + Clone + Send + Copy> {
     log2_num_rotation: usize,
     is_padded: bool,
     padding_strategy: InstancePaddingStrategy,
+    device_backing: Option<DeviceMatrixBacking>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceMatrixLayout {
+    RowMajor,
+    ColMajor,
+}
+
+#[derive(Clone)]
+struct DeviceMatrixBacking {
+    storage: Arc<dyn Any + Send + Sync>,
+    layout: DeviceMatrixLayout,
 }
 
 impl<T: Sized + Sync + Clone + Send + Copy + Default + FieldAlgebra> RowMajorMatrix<T> {
@@ -56,6 +70,7 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + FieldAlgebra> RowMajorMat
             is_padded: true,
             log2_num_rotation: 0,
             padding_strategy: InstancePaddingStrategy::Default,
+            device_backing: None,
         }
     }
     pub fn empty() -> Self {
@@ -65,6 +80,7 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + FieldAlgebra> RowMajorMat
             log2_num_rotation: 0,
             is_padded: true,
             padding_strategy: InstancePaddingStrategy::Default,
+            device_backing: None,
         }
     }
 
@@ -130,6 +146,7 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + FieldAlgebra> RowMajorMat
             log2_num_rotation,
             is_padded: matches!(padding_strategy, InstancePaddingStrategy::Default),
             padding_strategy,
+            device_backing: None,
         }
     }
 
@@ -148,6 +165,7 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + FieldAlgebra> RowMajorMat
             log2_num_rotation: 0,
             is_padded: matches!(padding_strategy, InstancePaddingStrategy::Default),
             padding_strategy,
+            device_backing: None,
         }
     }
 
@@ -164,6 +182,35 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + FieldAlgebra> RowMajorMat
 
     pub fn num_padding_instances(&self) -> usize {
         next_pow2_instance_padding(self.num_instances()) - self.num_instances()
+    }
+
+    pub fn set_device_backing<D: Any + Send + Sync + 'static>(
+        &mut self,
+        storage: D,
+        layout: DeviceMatrixLayout,
+    ) {
+        self.device_backing = Some(DeviceMatrixBacking {
+            storage: Arc::new(storage),
+            layout,
+        });
+    }
+
+    pub fn clear_device_backing(&mut self) {
+        self.device_backing = None;
+    }
+
+    pub fn has_device_backing(&self) -> bool {
+        self.device_backing.is_some()
+    }
+
+    pub fn device_backing_layout(&self) -> Option<DeviceMatrixLayout> {
+        self.device_backing.as_ref().map(|backing| backing.layout)
+    }
+
+    pub fn device_backing_ref<D: Any + 'static>(&self) -> Option<&D> {
+        self.device_backing
+            .as_ref()
+            .and_then(|backing| backing.storage.downcast_ref::<D>())
     }
 
     // return raw num_instances without rotation
