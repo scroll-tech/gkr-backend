@@ -29,6 +29,12 @@ When reviewing a PR/diff, respond in this order:
 
 **Do not commit, push, or propose code changes.** Provide review comments and findings only; authors will implement fixes.
 
+Prefer line-level review comments over an overall summary:
+
+- For each actionable finding, attach an inline comment to the most relevant changed line when the review surface supports inline comments.
+- If inline comments are not supported in the current surface, include an explicit location in the finding header as `path:line` and symbol.
+- Do not return summary-only reviews when actionable findings exist.
+
 Before reviewing code, check PR metadata:
 
 - Verify the pull request description is non-empty.
@@ -41,6 +47,7 @@ For each finding:
 - Explain impact (what can break and under what conditions).
 - Propose a concrete fix or mitigation.
 - Mention what test would catch it if no test currently covers it.
+- Keep one finding per location; split multi-location issues into separate findings.
 
 If there are no findings, say that explicitly and note residual risk/testing gaps.
 
