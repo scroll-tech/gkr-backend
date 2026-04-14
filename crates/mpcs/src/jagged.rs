@@ -294,9 +294,8 @@ impl<'a, E: ExtensionField> JaggedSumcheckInput<'a, E> {
         let mut sum = E::ZERO;
         for b in 0..total_evals {
             let (col, row) = self.col_row(b);
-            let q_val: E = self.q_evals[b].into();
             let f_val = self.eq_row[row] * self.eq_col[col];
-            sum += q_val * f_val;
+            sum += f_val * self.q_evals[b];
         }
         sum
     }
@@ -621,10 +620,9 @@ fn bind_and_materialize<E: ExtensionField>(
                 }
 
                 let (col, row) = input.col_row(giga_idx);
-                let q_val: E = input.q_evals[giga_idx].into();
                 let f_val = input.eq_row[row] * input.eq_col[col];
 
-                q_acc += eq_r_a * q_val;
+                q_acc += eq_r_a * input.q_evals[giga_idx];
                 f_acc += eq_r_a * f_val;
             }
             (q_acc, f_acc)
