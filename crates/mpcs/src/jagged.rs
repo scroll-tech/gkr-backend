@@ -56,15 +56,21 @@ use std::iter::once;
 use crate::{Error, PolynomialCommitmentScheme};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use multilinear_extensions::{mle::MultilinearExtension, virtual_poly::build_eq_x_r_vec};
+use multilinear_extensions::{
+    mle::MultilinearExtension, util::max_usable_threads, virtual_poly::build_eq_x_r_vec,
+};
 use p3::{
     matrix::{Matrix, bitrev::BitReversableMatrix},
     maybe_rayon::prelude::{
-        IndexedParallelIterator, IntoParallelIterator, ParallelIterator, ParallelSliceMut,
+        IndexedParallelIterator, IntoParallelIterator, ParallelIterator, ParallelSlice,
+        ParallelSliceMut,
     },
 };
 use serde::{Deserialize, Serialize};
-use sumcheck::structs::{IOPProof, IOPProverMessage, IOPProverState};
+use sumcheck::{
+    macros::{entered_span, exit_span},
+    structs::{IOPProof, IOPProverMessage, IOPProverState},
+};
 use transcript::Transcript;
 use witness::{InstancePaddingStrategy, RowMajorMatrix};
 
@@ -262,10 +268,37 @@ pub struct JaggedSumcheckInput<'a, E: ExtensionField> {
     pub num_giga_vars: usize,
     /// Cumulative height sequence t[j], length num_polys + 1.
     pub cumulative_heights: &'a [usize],
-    /// Shared row evaluation point (s components).
-    pub z_row: &'a [E],
-    /// Column challenge point.
-    pub z_col: &'a [E],
+    /// Precomputed eq table for the row evaluation point: `build_eq_x_r_vec(z_row)`.
+    pub eq_row: Vec<E>,
+    /// Precomputed eq table for the column challenge point: `build_eq_x_r_vec(z_col)`.
+    pub eq_col: Vec<E>,
+}
+
+/// Iterator that yields `(col, row)` pairs for consecutive giga indices.
+/// Uses one binary search at construction, then O(1) per step.
+struct ColRowIter<'a> {
+    cumulative_heights: &'a [usize],
+    col: usize,
+    row: usize,
+    num_polys: usize,
+}
+
+impl<'a> Iterator for ColRowIter<'a> {
+    type Item = (usize, usize);
+
+    fn next(&mut self) -> Option<(usize, usize)> {
+        if self.col >= self.num_polys {
+            return None;
+        }
+        let result = (self.col, self.row);
+        self.row += 1;
+        let poly_height = self.cumulative_heights[self.col + 1] - self.cumulative_heights[self.col];
+        if self.row >= poly_height {
+            self.row = 0;
+            self.col += 1;
+        }
+        Some(result)
+    }
 }
 
 impl<'a, E: ExtensionField> JaggedSumcheckInput<'a, E> {
@@ -273,11 +306,62 @@ impl<'a, E: ExtensionField> JaggedSumcheckInput<'a, E> {
         *self.cumulative_heights.last().unwrap_or(&0)
     }
 
-    /// Find which polynomial giga_idx belongs to. Returns (poly_index, local_offset).
-    fn col_row(&self, giga_idx: usize) -> (usize, usize) {
-        // Binary search: find j such that t[j] <= giga_idx < t[j+1]
-        let j = self.cumulative_heights.partition_point(|&t| t <= giga_idx) - 1;
-        (j, giga_idx - self.cumulative_heights[j])
+    /// Return an iterator yielding `(col, row)` for consecutive giga indices
+    /// starting from `start`. One binary search at construction, O(1) per step.
+    fn col_row_iter(&self, start: usize) -> ColRowIter<'_> {
+        let num_polys = self.cumulative_heights.len() - 1;
+        if start >= self.total_evaluations() {
+            return ColRowIter {
+                cumulative_heights: self.cumulative_heights,
+                col: num_polys,
+                row: 0,
+                num_polys,
+            };
+        }
+        let j = self.cumulative_heights.partition_point(|&t| t <= start) - 1;
+        ColRowIter {
+            cumulative_heights: self.cumulative_heights,
+            col: j,
+            row: start - self.cumulative_heights[j],
+            num_polys,
+        }
+    }
+
+    /// Brute-force computation of sum_b q'(b) * f(b).
+    /// O(2^n) time — only for debugging and tests.
+    #[cfg(test)]
+    fn compute_claimed_sum(&self) -> E {
+        self.q_evals[..self.total_evaluations()]
+            .iter()
+            .zip(self.col_row_iter(0))
+            .fold(E::ZERO, |sum, (&q, (col, row))| {
+                sum + (self.eq_row[row] * self.eq_col[col]) * q
+            })
+    }
+
+    /// Brute-force MLE evaluation of q'(rb) and f(rb) at the given point.
+    /// O(2^n) time and memory — only for debugging and tests.
+    /// Returns `(q_at_point, f_at_point)`.
+    #[cfg(test)]
+    fn final_evaluations_slow(&self, point: &[E]) -> (E, E) {
+        let n = self.num_giga_vars;
+        let total_evals = self.total_evaluations();
+
+        // Build q' MLE (padded with zeros) and evaluate at point.
+        let mut q_padded: Vec<E::BaseField> = self.q_evals.to_vec();
+        q_padded.resize(1 << n, Default::default());
+        let q_mle = MultilinearExtension::from_evaluations_vec(n, q_padded);
+        let q_at_point = q_mle.evaluate(point);
+
+        // Build f MLE from eq tables and evaluate at point.
+        let mut f_evals = vec![E::ZERO; 1 << n];
+        for (f_eval, (col, row)) in f_evals[..total_evals].iter_mut().zip(self.col_row_iter(0)) {
+            *f_eval = self.eq_row[row] * self.eq_col[col];
+        }
+        let f_mle = MultilinearExtension::from_evaluations_ext_vec(n, f_evals);
+        let f_at_point = f_mle.evaluate(point);
+
+        (q_at_point, f_at_point)
     }
 }
 
@@ -290,10 +374,6 @@ pub fn jagged_sumcheck_prove<E: ExtensionField>(
 ) -> (IOPProof<E>, Vec<E>) {
     let n = input.num_giga_vars;
     let max_degree: usize = 2;
-
-    // Precompute eq tables (once).
-    let eq_row = build_eq_x_r_vec(input.z_row);
-    let eq_col = build_eq_x_r_vec(input.z_col);
 
     let mut challenges: Vec<E> = Vec::with_capacity(n);
     let mut proof_messages: Vec<IOPProverMessage<E>> = Vec::with_capacity(n);
@@ -310,9 +390,12 @@ pub fn jagged_sumcheck_prove<E: ExtensionField>(
         }
 
         // Build M-table for this epoch.
-        let m_table = build_m_table(input, &eq_row, &eq_col, &challenges, epoch_size);
+        let span = entered_span!("build_m_table", epoch = epoch_size);
+        let m_table = build_m_table(input, &challenges, epoch_size);
+        exit_span!(span);
 
         // Extract rounds j = epoch_size .. min(2*epoch_size - 1, n)
+        let span = entered_span!("compute_rounds_from_m", epoch = epoch_size);
         for j in epoch_size..(2 * epoch_size).min(n + 1) {
             let d = j - epoch_size; // intra-epoch offset
             let intra_challenges = challenges[epoch_size - 1..epoch_size - 1 + d].to_vec();
@@ -331,12 +414,15 @@ pub fn jagged_sumcheck_prove<E: ExtensionField>(
             });
             challenges.push(challenge);
         }
+        exit_span!(span);
     }
 
     // --- Phase 2: Bind and materialize, then standard sumcheck ---
     let k = challenges.len(); // actual number of streaming rounds completed
     if k < n {
-        let (q_bound, f_bound) = bind_and_materialize(input, &eq_row, &eq_col, &challenges);
+        let span = entered_span!("bind_and_materialize");
+        let (q_bound, f_bound) = bind_and_materialize(input, &challenges);
+        exit_span!(span);
 
         let remaining_vars = n - k;
         let q_mle = MultilinearExtension::from_evaluations_ext_vec(remaining_vars, q_bound);
@@ -349,6 +435,7 @@ pub fn jagged_sumcheck_prove<E: ExtensionField>(
         let f_arc = Arc::new(f_mle);
         let vp = VirtualPolynomial::new_from_product(vec![q_arc, f_arc], E::ONE);
 
+        let span = entered_span!("standard_sumcheck", rounds = remaining_vars);
         let mut prover_state =
             IOPProverState::prover_init_with_extrapolation_aux(true, vp, None, None);
         let mut challenge = None;
@@ -363,6 +450,7 @@ pub fn jagged_sumcheck_prove<E: ExtensionField>(
             challenges.push(challenge.unwrap().elements);
             proof_messages.push(prover_msg);
         }
+        exit_span!(span);
     }
 
     (
@@ -382,13 +470,10 @@ pub fn jagged_sumcheck_prove<E: ExtensionField>(
 /// - F_bound(beta, b) = sum_{a in {0,1}^{j'-1}} eq(R, a) * f[a || beta || b]
 fn build_m_table<E: ExtensionField>(
     input: &JaggedSumcheckInput<E>,
-    eq_row: &[E],
-    eq_col: &[E],
     challenges: &[E],  // R_{j'} = (r_1, ..., r_{j'-1})
     epoch_size: usize, // j'
 ) -> Vec<E> {
     let n = input.num_giga_vars;
-    let total_evals = input.total_evaluations();
     let bound_vars = epoch_size - 1; // j' - 1
 
     let eq_r = if bound_vars > 0 {
@@ -404,45 +489,84 @@ fn build_m_table<E: ExtensionField>(
     let n_chunks = 1usize << n.saturating_sub(2 * epoch_size - 1); // 2^{max(0, n - 2j' + 1)}
 
     let m_size = beta_count * beta_count; // 2^{2j'}
-    let mut m_table = vec![E::ZERO; m_size];
 
-    let mut q_bound = vec![E::ZERO; beta_count];
-    let mut f_bound = vec![E::ZERO; beta_count];
+    // Step 1: Each thread processes a batch of b-chunks, producing a local M-table.
+    let span = entered_span!(
+        "streaming_pass",
+        n_chunks = n_chunks,
+        beta_count = beta_count
+    );
+    let indices: Vec<usize> = (0..n_chunks).collect();
+    let n_threads = max_usable_threads();
+    let batch_size = (n_chunks / n_threads).max(1);
+    let partial_tables: Vec<Vec<E>> = indices
+        .par_chunks(batch_size)
+        .map(|batch| {
+            let mut local_m = vec![E::ZERO; m_size];
+            let mut q_bound = vec![E::ZERO; beta_count];
+            let mut f_bound = vec![E::ZERO; beta_count];
 
-    for b_idx in 0..n_chunks {
-        let chunk_start = b_idx * chunk_size;
+            for &b_idx in batch {
+                let chunk_start = b_idx * chunk_size;
+                q_bound
+                    .iter_mut()
+                    .zip(f_bound.iter_mut())
+                    .enumerate()
+                    .for_each(|(beta, (q_b, f_b))| {
+                        let base = chunk_start + beta * a_count;
+                        let (q_acc, f_acc) = eq_r
+                            .iter()
+                            .zip(input.q_evals.get(base..).unwrap_or(&[]))
+                            .zip(input.col_row_iter(base))
+                            .fold(
+                                (E::ZERO, E::ZERO),
+                                |(q_acc, f_acc), ((&eq_r_a, &q), (col, row))| {
+                                    (
+                                        q_acc + eq_r_a * q,
+                                        f_acc + eq_r_a * (input.eq_row[row] * input.eq_col[col]),
+                                    )
+                                },
+                            );
+                        *q_b = q_acc;
+                        *f_b = f_acc;
+                    });
 
-        // Reset per-chunk accumulators.
-        q_bound.iter_mut().for_each(|v| *v = E::ZERO);
-        f_bound.iter_mut().for_each(|v| *v = E::ZERO);
-
-        for beta in 0..beta_count {
-            for (a, &eq_r_a) in eq_r.iter().enumerate().take(a_count) {
-                let giga_idx = chunk_start + beta * a_count + a;
-                if giga_idx >= total_evals {
-                    continue;
+                // Outer product accumulation into local M-table.
+                for b1 in 0..beta_count {
+                    if q_bound[b1] == E::ZERO {
+                        continue;
+                    }
+                    for b2 in 0..beta_count {
+                        local_m[b1 * beta_count + b2] += q_bound[b1] * f_bound[b2];
+                    }
                 }
-
-                let (col, row) = input.col_row(giga_idx);
-                let q_val: E = input.q_evals[giga_idx].into();
-                let f_val = eq_row[row] * eq_col[col];
-
-                q_bound[beta] += eq_r_a * q_val;
-                f_bound[beta] += eq_r_a * f_val;
             }
-        }
+            local_m
+        })
+        .collect();
+    exit_span!(span);
 
-        // Outer product accumulation.
-        for b1 in 0..beta_count {
-            if q_bound[b1] == E::ZERO {
-                continue;
-            }
-            for b2 in 0..beta_count {
-                m_table[b1 * beta_count + b2] += q_bound[b1] * f_bound[b2];
-            }
-        }
+    // Step 2: Sum partial M-tables in parallel, each thread handles a slice of cells.
+    let span = entered_span!("reduce_partial_tables", n_partials = partial_tables.len());
+    let n_partials = partial_tables.len();
+    if n_partials == 0 {
+        exit_span!(span);
+        return vec![E::ZERO; m_size];
     }
-
+    let mut m_table = partial_tables[0].clone();
+    let cell_batch = (m_size / n_threads).max(1);
+    m_table
+        .par_chunks_mut(cell_batch)
+        .enumerate()
+        .for_each(|(ci, cells)| {
+            let start = ci * cell_batch;
+            for partial in &partial_tables[1..] {
+                for (j, cell) in cells.iter_mut().enumerate() {
+                    *cell += partial[start + j];
+                }
+            }
+        });
+    exit_span!(span);
     m_table
 }
 
@@ -511,38 +635,36 @@ fn compute_round_from_m<E: ExtensionField>(
 /// f_bound[idx] = sum_{a in {0,1}^K} eq(R, a) * f[a + idx * 2^K]
 fn bind_and_materialize<E: ExtensionField>(
     input: &JaggedSumcheckInput<E>,
-    eq_row: &[E],
-    eq_col: &[E],
     challenges: &[E], // R_K = (r_1, ..., r_K)
 ) -> (Vec<E>, Vec<E>) {
     let n = input.num_giga_vars;
     let k = challenges.len();
-    let total_evals = input.total_evaluations();
     let remaining_size = 1usize << (n - k);
     let a_count = 1usize << k;
 
     let eq_r = build_eq_x_r_vec(challenges);
 
-    let mut q_bound = vec![E::ZERO; remaining_size];
-    let mut f_bound = vec![E::ZERO; remaining_size];
+    // Each output index is independent — parallelize over idx.
+    let results: Vec<(E, E)> = (0..remaining_size)
+        .into_par_iter()
+        .map(|idx| {
+            let base = idx * a_count;
+            eq_r.iter()
+                .zip(input.q_evals.get(base..).unwrap_or(&[]))
+                .zip(input.col_row_iter(base))
+                .fold(
+                    (E::ZERO, E::ZERO),
+                    |(q_acc, f_acc), ((&eq_r_a, &q), (col, row))| {
+                        (
+                            q_acc + eq_r_a * q,
+                            f_acc + eq_r_a * (input.eq_row[row] * input.eq_col[col]),
+                        )
+                    },
+                )
+        })
+        .collect();
 
-    for idx in 0..remaining_size {
-        for (a, &eq_r_a) in eq_r.iter().enumerate().take(a_count) {
-            let giga_idx = a + idx * a_count;
-            if giga_idx >= total_evals {
-                continue;
-            }
-
-            let (col, row) = input.col_row(giga_idx);
-            let q_val: E = input.q_evals[giga_idx].into();
-            let f_val = eq_row[row] * eq_col[col];
-
-            q_bound[idx] += eq_r_a * q_val;
-            f_bound[idx] += eq_r_a * f_val;
-        }
-    }
-
-    (q_bound, f_bound)
+    results.into_iter().unzip()
 }
 
 #[cfg(test)]
@@ -650,33 +772,6 @@ mod tests {
     use sumcheck::structs::IOPVerifierState;
     use transcript::basic::BasicTranscript;
 
-    /// Compute v = sum_b q'(b) * f(b) directly (brute force).
-    fn compute_claimed_sum(
-        q_evals: &[F],
-        cumulative_heights: &[usize],
-        z_row: &[E],
-        z_col: &[E],
-        num_giga_vars: usize,
-    ) -> E {
-        let eq_row = build_eq_x_r_vec(z_row);
-        let eq_col = build_eq_x_r_vec(z_col);
-        let total_evals = *cumulative_heights.last().unwrap();
-        let giga_size = 1usize << num_giga_vars;
-
-        let mut sum = E::ZERO;
-        for b in 0..giga_size {
-            if b >= total_evals {
-                break; // padding region: q'(b) = 0
-            }
-            let j = cumulative_heights.partition_point(|&t| t <= b) - 1;
-            let local = b - cumulative_heights[j];
-            let q_val: E = q_evals[b].into();
-            let f_val = eq_row[local] * eq_col[j];
-            sum += q_val * f_val;
-        }
-        sum
-    }
-
     #[test]
     fn test_jagged_sumcheck_small() {
         use ff_ext::FromUniformBytes;
@@ -700,16 +795,15 @@ mod tests {
         // z_col needs ceil(log2(num_polys)) = 2 variables
         let z_col: Vec<E> = (0..2).map(|_| E::random(&mut rng)).collect();
 
-        let claimed_sum =
-            compute_claimed_sum(&q_evals, &cumulative_heights, &z_row, &z_col, num_giga_vars);
-
         let input = JaggedSumcheckInput {
             q_evals: &q_evals,
             num_giga_vars,
             cumulative_heights: &cumulative_heights,
-            z_row: &z_row,
-            z_col: &z_col,
+            eq_row: build_eq_x_r_vec(&z_row),
+            eq_col: build_eq_x_r_vec(&z_col),
         };
+
+        let claimed_sum = input.compute_claimed_sum();
 
         let mut transcript = BasicTranscript::<E>::new(b"jagged_sumcheck_test");
         let (proof, challenges) = jagged_sumcheck_prove(&input, &mut transcript);
@@ -733,24 +827,7 @@ mod tests {
         }
 
         // Verify the final evaluation: q'(point) * f(point) == expected_evaluation
-        // Build the full MLE of q' and f, evaluate at the subclaim point.
-        let mut q_padded = q_evals.clone();
-        q_padded.resize(1 << num_giga_vars, F::ZERO);
-        let q_mle = MultilinearExtension::<E>::from_evaluations_vec(num_giga_vars, q_padded);
-        let q_at_point = q_mle.evaluate(&challenges);
-
-        // f is defined piecewise; compute its MLE evaluations then evaluate at point.
-        let eq_row_table = build_eq_x_r_vec(&z_row);
-        let eq_col_table = build_eq_x_r_vec(&z_col);
-        let mut f_evals = vec![E::ZERO; 1 << num_giga_vars];
-        for b in 0..total_evals {
-            let j = cumulative_heights.partition_point(|&t| t <= b) - 1;
-            let local = b - cumulative_heights[j];
-            f_evals[b] = eq_row_table[local] * eq_col_table[j];
-        }
-        let f_mle = MultilinearExtension::<E>::from_evaluations_ext_vec(num_giga_vars, f_evals);
-        let f_at_point = f_mle.evaluate(&challenges);
-
+        let (q_at_point, f_at_point) = input.final_evaluations_slow(&challenges);
         assert_eq!(
             q_at_point * f_at_point,
             subclaim.expected_evaluation,
@@ -780,16 +857,15 @@ mod tests {
         let z_row: Vec<E> = (0..s).map(|_| E::random(&mut rng)).collect();
         let z_col: Vec<E> = (0..3).map(|_| E::random(&mut rng)).collect(); // ceil(log2(8))=3
 
-        let claimed_sum =
-            compute_claimed_sum(&q_evals, &cumulative_heights, &z_row, &z_col, num_giga_vars);
-
         let input = JaggedSumcheckInput {
             q_evals: &q_evals,
             num_giga_vars,
             cumulative_heights: &cumulative_heights,
-            z_row: &z_row,
-            z_col: &z_col,
+            eq_row: build_eq_x_r_vec(&z_row),
+            eq_col: build_eq_x_r_vec(&z_col),
         };
+
+        let claimed_sum = input.compute_claimed_sum();
 
         let mut transcript = BasicTranscript::<E>::new(b"jagged_test_16");
         let (proof, challenges) = jagged_sumcheck_prove(&input, &mut transcript);
@@ -816,6 +892,8 @@ mod tests {
         // n=25: 2^25 = 33M evaluations. Exercises all epochs + 10 rounds of standard sumcheck.
         use ff_ext::FromUniformBytes;
 
+        tracing_forest::init();
+
         let mut rng = thread_rng();
 
         let num_polys = 1 << 10; // 1024 polynomials
@@ -833,16 +911,15 @@ mod tests {
         let z_row: Vec<E> = (0..s).map(|_| E::random(&mut rng)).collect();
         let z_col: Vec<E> = (0..10).map(|_| E::random(&mut rng)).collect(); // ceil(log2(1024))=10
 
-        let claimed_sum =
-            compute_claimed_sum(&q_evals, &cumulative_heights, &z_row, &z_col, num_giga_vars);
-
         let input = JaggedSumcheckInput {
             q_evals: &q_evals,
             num_giga_vars,
             cumulative_heights: &cumulative_heights,
-            z_row: &z_row,
-            z_col: &z_col,
+            eq_row: build_eq_x_r_vec(&z_row),
+            eq_col: build_eq_x_r_vec(&z_col),
         };
+
+        let claimed_sum = input.compute_claimed_sum();
 
         let mut transcript = BasicTranscript::<E>::new(b"jagged_test_25");
         let (proof, challenges) = jagged_sumcheck_prove(&input, &mut transcript);
@@ -862,5 +939,13 @@ mod tests {
         for (sc, ch) in subclaim.point.iter().zip(challenges.iter()) {
             assert_eq!(sc.elements, *ch);
         }
+
+        // Verify the final evaluation: q'(point) * f(point) == expected_evaluation
+        let (q_at_point, f_at_point) = input.final_evaluations_slow(&challenges);
+        assert_eq!(
+            q_at_point * f_at_point,
+            subclaim.expected_evaluation,
+            "final evaluation mismatch"
+        );
     }
 }
