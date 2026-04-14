@@ -27,6 +27,8 @@ When reviewing a PR/diff, respond in this order:
 2. Open questions/assumptions.
 3. Brief change summary.
 
+**Do not commit, push, or propose code changes.** Provide review comments and findings only; authors will implement fixes.
+
 Before reviewing code, check PR metadata:
 
 - Verify the pull request description is non-empty.
