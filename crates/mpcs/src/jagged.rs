@@ -472,24 +472,27 @@ fn build_m_table<E: ExtensionField>(
 
             for &b_idx in batch {
                 let chunk_start = b_idx * chunk_size;
-                for beta in 0..beta_count {
-                    let base = chunk_start + beta * a_count;
-                    let (q_acc, f_acc) = eq_r.iter().enumerate().take(a_count).fold(
-                        (E::ZERO, E::ZERO),
-                        |(q_acc, f_acc), (a, &eq_r_a)| {
-                            let giga_idx = base + a;
-                            if giga_idx >= total_evals {
-                                return (q_acc, f_acc);
-                            }
-                            let (col, row) = input.col_row(giga_idx);
-                            let q_val = input.q_evals[giga_idx];
-                            let f_val = input.eq_row[row] * input.eq_col[col];
-                            (q_acc + eq_r_a * q_val, f_acc + eq_r_a * f_val)
-                        },
-                    );
-                    q_bound[beta] = q_acc;
-                    f_bound[beta] = f_acc;
-                }
+                q_bound
+                    .iter_mut()
+                    .zip(f_bound.iter_mut())
+                    .enumerate()
+                    .for_each(|(beta, (q_b, f_b))| {
+                        let base = chunk_start + beta * a_count;
+                        let (q_acc, f_acc) = eq_r
+                            .iter()
+                            .enumerate()
+                            .take_while(|&(a, _)| base + a < total_evals)
+                            .fold((E::ZERO, E::ZERO), |(q_acc, f_acc), (a, &eq_r_a)| {
+                                let giga_idx = base + a;
+                                let (col, row) = input.col_row(giga_idx);
+                                (
+                                    q_acc + eq_r_a * input.q_evals[giga_idx],
+                                    f_acc + eq_r_a * (input.eq_row[row] * input.eq_col[col]),
+                                )
+                            });
+                        *q_b = q_acc;
+                        *f_b = f_acc;
+                    });
 
                 // Outer product accumulation into local M-table.
                 for b1 in 0..beta_count {
