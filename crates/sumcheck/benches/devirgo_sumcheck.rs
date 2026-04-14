@@ -9,7 +9,7 @@ use ff_ext::{ExtensionField, GoldilocksExt2};
 use itertools::Itertools;
 use p3::field::FieldAlgebra;
 use rand::thread_rng;
-use sumcheck::structs::IOPProverState;
+use sumcheck::structs::{IOPProverState, SumcheckProverMode};
 
 use multilinear_extensions::{
     mle::MultilinearExtension, monomial::Term, op_mle, util::max_usable_threads,
@@ -17,7 +17,12 @@ use multilinear_extensions::{
 };
 use transcript::BasicTranscript as Transcript;
 
-criterion_group!(benches, sumcheck_fn, devirgo_sumcheck_fn,);
+criterion_group!(
+    benches,
+    sumcheck_fn,
+    devirgo_sumcheck_fn,
+    devirgo_sumcheck_reduced_peak_memory_fn,
+);
 criterion_main!(benches);
 
 const NUM_SAMPLES: usize = 10;
@@ -214,6 +219,141 @@ fn devirgo_sumcheck_fn(c: &mut Criterion) {
                             IOPProverState::<E>::prove(virtual_poly_v2, &mut prover_transcript);
                         let elapsed = instant.elapsed();
                         time += elapsed;
+                    }
+                    time
+                });
+            },
+        );
+
+        group.finish();
+    }
+}
+
+fn devirgo_sumcheck_reduced_peak_memory_fn(c: &mut Criterion) {
+    type E = GoldilocksExt2;
+
+    let threads = max_usable_threads();
+    for nv in NV {
+        let mut group = c.benchmark_group(format!("devirgo_reduced_peak_memory_nv_{}", nv));
+        group.sample_size(NUM_SAMPLES);
+
+        group.bench_function(
+            BenchmarkId::new(
+                "prove_sumcheck",
+                format!("devirgo_reduced_peak_memory_nv_{}", nv),
+            ),
+            |b| {
+                b.iter_custom(|iters| {
+                    let mut time = Duration::new(0, 0);
+                    for _ in 0..iters {
+                        let mut prover_transcript = Transcript::new(b"test");
+                        let (_, fs) = { prepare_input(nv) };
+
+                        let virtual_poly = VirtualPolynomials::new_from_monimials(
+                            threads,
+                            nv,
+                            vec![Term {
+                                scalar: Either::Right(E::ONE),
+                                product: fs.iter().map(Either::Left).collect_vec(),
+                            }],
+                        );
+                        let instant = std::time::Instant::now();
+                        let _ = IOPProverState::<E>::prove_with_mode(
+                            virtual_poly,
+                            &mut prover_transcript,
+                            SumcheckProverMode::ReducedPeakMemory,
+                        );
+                        time += instant.elapsed();
+                    }
+                    time
+                });
+            },
+        );
+
+        group.bench_function(
+            BenchmarkId::new(
+                "prove_sumcheck_ext",
+                format!("devirgo_reduced_peak_memory_nv_{}", nv),
+            ),
+            |b| {
+                b.iter_custom(|iters| {
+                    let mut time = Duration::new(0, 0);
+                    for _ in 0..iters {
+                        let mut prover_transcript = Transcript::new(b"test");
+                        let (_, fs) = { prepare_input(nv) };
+                        let fs = fs
+                            .into_iter()
+                            .map(|mle: MultilinearExtension<'_, E>| {
+                                MultilinearExtension::from_evaluation_vec_smart(
+                                    mle.num_vars(),
+                                    mle.get_base_field_vec()
+                                        .iter()
+                                        .map(E::from_ref_base)
+                                        .collect_vec(),
+                                )
+                            })
+                            .collect_vec();
+
+                        let virtual_poly = VirtualPolynomials::new_from_monimials(
+                            threads,
+                            nv,
+                            vec![Term {
+                                scalar: Either::Right(E::ONE),
+                                product: fs.iter().map(Either::Left).collect_vec(),
+                            }],
+                        );
+                        let instant = std::time::Instant::now();
+                        let _ = IOPProverState::<E>::prove_with_mode(
+                            virtual_poly,
+                            &mut prover_transcript,
+                            SumcheckProverMode::ReducedPeakMemory,
+                        );
+                        time += instant.elapsed();
+                    }
+                    time
+                });
+            },
+        );
+
+        group.bench_function(
+            BenchmarkId::new(
+                "prove_sumcheck_ext_in_place",
+                format!("devirgo_reduced_peak_memory_nv_{}", nv),
+            ),
+            |b| {
+                b.iter_custom(|iters| {
+                    let mut time = Duration::new(0, 0);
+                    for _ in 0..iters {
+                        let mut prover_transcript = Transcript::new(b"test");
+                        let (_, fs) = { prepare_input(nv) };
+                        let mut fs = fs
+                            .into_iter()
+                            .map(|mle: MultilinearExtension<'_, E>| {
+                                MultilinearExtension::from_evaluation_vec_smart(
+                                    mle.num_vars(),
+                                    mle.get_base_field_vec()
+                                        .iter()
+                                        .map(E::from_ref_base)
+                                        .collect_vec(),
+                                )
+                            })
+                            .collect_vec();
+
+                        let virtual_poly = VirtualPolynomials::new_from_monimials(
+                            threads,
+                            nv,
+                            vec![Term {
+                                scalar: Either::Right(E::ONE),
+                                product: fs.iter_mut().map(Either::Right).collect_vec(),
+                            }],
+                        );
+                        let instant = std::time::Instant::now();
+                        let _ = IOPProverState::<E>::prove_with_mode(
+                            virtual_poly,
+                            &mut prover_transcript,
+                            SumcheckProverMode::ReducedPeakMemory,
+                        );
+                        time += instant.elapsed();
                     }
                     time
                 });

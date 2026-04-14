@@ -1,5 +1,5 @@
 use crate::{
-    structs::{IOPProverState, IOPVerifierState},
+    structs::{IOPProverState, IOPVerifierState, SumcheckProverMode},
     util::extrapolate_uni_poly,
 };
 use either::Either;
@@ -81,6 +81,74 @@ fn test_sumcheck_with_different_degree_helper<E: ExtensionField>(num_threads: us
     let mut transcript = BasicTranscript::<E>::new(b"test");
     let (proof_mut, _) = IOPProverState::<E>::prove(poly, &mut transcript);
     assert_eq!(proof, proof_mut, "different proof");
+}
+
+#[test]
+fn test_runtime_prover_modes_are_compatible() {
+    test_runtime_prover_modes_are_compatible_helper::<GoldilocksExt2>();
+    test_runtime_prover_modes_are_compatible_helper::<BabyBearExt4>();
+}
+
+fn test_runtime_prover_modes_are_compatible_helper<E: ExtensionField>() {
+    let mut rng = thread_rng();
+    let nv = vec![8];
+    let degree = 4;
+    let num_products = 4;
+
+    let max_num_variables = *nv.iter().max().unwrap();
+    let (mut monimials, asserted_sum) = VirtualPolynomials::<E>::random_monimials(
+        &nv,
+        (degree, degree + 1),
+        num_products,
+        &mut rng,
+    );
+    let poly = VirtualPolynomials::<E>::new_from_monimials(
+        1,
+        max_num_variables,
+        monimials
+            .iter_mut()
+            .map(|Term { scalar, product }| Term {
+                scalar: Either::Right(*scalar),
+                product: product.iter_mut().map(Either::Right).collect_vec(),
+            })
+            .collect_vec(),
+    );
+
+    let mut transcript_legacy = BasicTranscript::<E>::new(b"mode-test");
+    let (proof_legacy, _) = IOPProverState::<E>::prove(poly.as_view(), &mut transcript_legacy);
+
+    let mut transcript_reduced = BasicTranscript::<E>::new(b"mode-test");
+    let (proof_reduced, _) = IOPProverState::<E>::prove_with_mode(
+        poly.as_view(),
+        &mut transcript_reduced,
+        SumcheckProverMode::ReducedPeakMemory,
+    );
+
+    let mut verifier_transcript_legacy = BasicTranscript::<E>::new(b"mode-test");
+    let legacy_subclaim = IOPVerifierState::<E>::verify(
+        asserted_sum,
+        &proof_legacy,
+        &VPAuxInfo {
+            max_degree: degree,
+            max_num_variables,
+            ..Default::default()
+        },
+        &mut verifier_transcript_legacy,
+    );
+
+    let mut verifier_transcript_reduced = BasicTranscript::<E>::new(b"mode-test");
+    let reduced_subclaim = IOPVerifierState::<E>::verify(
+        asserted_sum,
+        &proof_reduced,
+        &VPAuxInfo {
+            max_degree: degree,
+            max_num_variables,
+            ..Default::default()
+        },
+        &mut verifier_transcript_reduced,
+    );
+
+    assert_eq!(legacy_subclaim, reduced_subclaim);
 }
 
 fn test_sumcheck<E: ExtensionField>(
