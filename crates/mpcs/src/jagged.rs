@@ -367,13 +367,20 @@ impl<'a, E: ExtensionField> JaggedSumcheckInput<'a, E> {
 
 /// Run the full jagged sumcheck: streaming phase (rounds 1..K) + standard phase (rounds K+1..n).
 ///
+/// `epoch_sizes` controls the epoch schedule for the streaming phase.  Pass `None` to use the
+/// default schedule `EPOCH_SIZES = [1, 2, 4, 8]`.  Each entry `j'` must be a power of two and
+/// the sequence must be strictly increasing powers of two.
+///
 /// Returns the proof and the full list of challenges (r_1, ..., r_n).
 pub fn jagged_sumcheck_prove<E: ExtensionField>(
     input: &JaggedSumcheckInput<E>,
     transcript: &mut impl Transcript<E>,
+    epoch_sizes: Option<&[usize]>,
 ) -> (IOPProof<E>, Vec<E>) {
     let n = input.num_giga_vars;
     let max_degree: usize = 2;
+
+    let epoch_sizes = epoch_sizes.unwrap_or(&EPOCH_SIZES);
 
     let mut challenges: Vec<E> = Vec::with_capacity(n);
     let mut proof_messages: Vec<IOPProverMessage<E>> = Vec::with_capacity(n);
@@ -383,7 +390,7 @@ pub fn jagged_sumcheck_prove<E: ExtensionField>(
     transcript.append_message(&max_degree.to_le_bytes());
 
     // --- Streaming phase: epochs j' = 1, 2, 4, 8 ---
-    for &epoch_size in &EPOCH_SIZES {
+    for &epoch_size in epoch_sizes {
         // Epoch j' handles rounds j'..2j'-1. Skip if all rounds are done.
         if epoch_size > n {
             break;
@@ -806,7 +813,7 @@ mod tests {
         let claimed_sum = input.compute_claimed_sum();
 
         let mut transcript = BasicTranscript::<E>::new(b"jagged_sumcheck_test");
-        let (proof, challenges) = jagged_sumcheck_prove(&input, &mut transcript);
+        let (proof, challenges) = jagged_sumcheck_prove(&input, &mut transcript, None);
 
         assert_eq!(proof.proofs.len(), num_giga_vars);
         assert_eq!(challenges.len(), num_giga_vars);
@@ -868,7 +875,7 @@ mod tests {
         let claimed_sum = input.compute_claimed_sum();
 
         let mut transcript = BasicTranscript::<E>::new(b"jagged_test_16");
-        let (proof, challenges) = jagged_sumcheck_prove(&input, &mut transcript);
+        let (proof, challenges) = jagged_sumcheck_prove(&input, &mut transcript, None);
 
         assert_eq!(proof.proofs.len(), num_giga_vars);
         assert_eq!(challenges.len(), num_giga_vars);
@@ -922,7 +929,7 @@ mod tests {
         let claimed_sum = input.compute_claimed_sum();
 
         let mut transcript = BasicTranscript::<E>::new(b"jagged_test_25");
-        let (proof, challenges) = jagged_sumcheck_prove(&input, &mut transcript);
+        let (proof, challenges) = jagged_sumcheck_prove(&input, &mut transcript, None);
 
         assert_eq!(proof.proofs.len(), num_giga_vars);
         assert_eq!(challenges.len(), num_giga_vars);

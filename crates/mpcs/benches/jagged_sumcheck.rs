@@ -52,7 +52,7 @@ fn bench_jagged_sumcheck(c: &mut Criterion) {
             |b| {
                 b.iter(|| {
                     let mut transcript = BasicTranscript::<E>::new(b"jagged_bench");
-                    jagged_sumcheck_prove(black_box(&input), &mut transcript)
+                    jagged_sumcheck_prove(black_box(&input), &mut transcript, None)
                 })
             },
         );
