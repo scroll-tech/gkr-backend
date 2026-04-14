@@ -367,9 +367,9 @@ impl<'a, E: ExtensionField> JaggedSumcheckInput<'a, E> {
 
 /// Run the full jagged sumcheck: streaming phase (rounds 1..K) + standard phase (rounds K+1..n).
 ///
-/// `epoch_sizes` controls the epoch schedule for the streaming phase.  Pass `None` to use the
-/// default schedule `EPOCH_SIZES = [1, 2, 4, 8]`.  Each entry `j'` must be a power of two and
-/// the sequence must be strictly increasing powers of two.
+/// `epoch_sizes` controls the epoch schedule for the streaming phase. Pass `None` to use the
+/// default schedule `EPOCH_SIZES = [1, 2, 4, 8]`. Each entry `j'` must be a power of two and
+/// the sequence must be strictly increasing powers of two (caller's responsibility).
 ///
 /// Returns the proof and the full list of challenges (r_1, ..., r_n).
 pub fn jagged_sumcheck_prove<E: ExtensionField>(
@@ -381,6 +381,12 @@ pub fn jagged_sumcheck_prove<E: ExtensionField>(
     let max_degree: usize = 2;
 
     let epoch_sizes = epoch_sizes.unwrap_or(&EPOCH_SIZES);
+
+    debug_assert!(
+        epoch_sizes.windows(2).all(|w| w[0] < w[1] && w[1].is_power_of_two())
+            && epoch_sizes.iter().all(|&e| e.is_power_of_two()),
+        "epoch_sizes must be strictly increasing powers of two"
+    );
 
     let mut challenges: Vec<E> = Vec::with_capacity(n);
     let mut proof_messages: Vec<IOPProverMessage<E>> = Vec::with_capacity(n);
