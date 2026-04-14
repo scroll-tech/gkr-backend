@@ -289,6 +289,7 @@ impl<'a, E: ExtensionField> JaggedSumcheckInput<'a, E> {
     /// Brute-force MLE evaluation of q'(rb) and f(rb) at the given point.
     /// O(2^n) time and memory — only for debugging and tests.
     /// Returns `(q_at_point, f_at_point)`.
+    #[cfg(test)]
     fn final_evaluations_slow(&self, point: &[E]) -> (E, E) {
         let n = self.num_giga_vars;
         let total_evals = self.total_evaluations();
@@ -726,21 +727,16 @@ mod tests {
         cumulative_heights: &[usize],
         z_row: &[E],
         z_col: &[E],
-        num_giga_vars: usize,
     ) -> E {
         let eq_row = build_eq_x_r_vec(z_row);
         let eq_col = build_eq_x_r_vec(z_col);
         let total_evals = *cumulative_heights.last().unwrap();
-        let giga_size = 1usize << num_giga_vars;
 
         let mut sum = E::ZERO;
-        for b in 0..giga_size {
-            if b >= total_evals {
-                break; // padding region: q'(b) = 0
-            }
+        for (b, &q_b) in q_evals.iter().enumerate().take(total_evals) {
             let j = cumulative_heights.partition_point(|&t| t <= b) - 1;
             let local = b - cumulative_heights[j];
-            let q_val: E = q_evals[b].into();
+            let q_val: E = q_b.into();
             let f_val = eq_row[local] * eq_col[j];
             sum += q_val * f_val;
         }
@@ -771,7 +767,7 @@ mod tests {
         let z_col: Vec<E> = (0..2).map(|_| E::random(&mut rng)).collect();
 
         let claimed_sum =
-            compute_claimed_sum(&q_evals, &cumulative_heights, &z_row, &z_col, num_giga_vars);
+            compute_claimed_sum(&q_evals, &cumulative_heights, &z_row, &z_col);
 
         let input = JaggedSumcheckInput {
             q_evals: &q_evals,
@@ -834,7 +830,7 @@ mod tests {
         let z_col: Vec<E> = (0..3).map(|_| E::random(&mut rng)).collect(); // ceil(log2(8))=3
 
         let claimed_sum =
-            compute_claimed_sum(&q_evals, &cumulative_heights, &z_row, &z_col, num_giga_vars);
+            compute_claimed_sum(&q_evals, &cumulative_heights, &z_row, &z_col);
 
         let input = JaggedSumcheckInput {
             q_evals: &q_evals,
@@ -889,7 +885,7 @@ mod tests {
         let z_col: Vec<E> = (0..10).map(|_| E::random(&mut rng)).collect(); // ceil(log2(1024))=10
 
         let claimed_sum =
-            compute_claimed_sum(&q_evals, &cumulative_heights, &z_row, &z_col, num_giga_vars);
+            compute_claimed_sum(&q_evals, &cumulative_heights, &z_row, &z_col);
 
         let input = JaggedSumcheckInput {
             q_evals: &q_evals,
