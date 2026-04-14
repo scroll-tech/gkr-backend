@@ -286,6 +286,21 @@ impl<'a, E: ExtensionField> JaggedSumcheckInput<'a, E> {
         (j, giga_idx - self.cumulative_heights[j])
     }
 
+    /// Brute-force computation of sum_b q'(b) * f(b).
+    /// O(2^n) time — only for debugging and tests.
+    #[cfg(test)]
+    fn compute_claimed_sum(&self) -> E {
+        let total_evals = self.total_evaluations();
+        let mut sum = E::ZERO;
+        for b in 0..total_evals {
+            let (col, row) = self.col_row(b);
+            let q_val: E = self.q_evals[b].into();
+            let f_val = self.eq_row[row] * self.eq_col[col];
+            sum += q_val * f_val;
+        }
+        sum
+    }
+
     /// Brute-force MLE evaluation of q'(rb) and f(rb) at the given point.
     /// O(2^n) time and memory — only for debugging and tests.
     /// Returns `(q_at_point, f_at_point)`.
@@ -721,28 +736,6 @@ mod tests {
     use sumcheck::structs::IOPVerifierState;
     use transcript::basic::BasicTranscript;
 
-    /// Compute v = sum_b q'(b) * f(b) directly (brute force).
-    fn compute_claimed_sum(
-        q_evals: &[F],
-        cumulative_heights: &[usize],
-        z_row: &[E],
-        z_col: &[E],
-    ) -> E {
-        let eq_row = build_eq_x_r_vec(z_row);
-        let eq_col = build_eq_x_r_vec(z_col);
-        let total_evals = *cumulative_heights.last().unwrap();
-
-        let mut sum = E::ZERO;
-        for (b, &q_b) in q_evals.iter().enumerate().take(total_evals) {
-            let j = cumulative_heights.partition_point(|&t| t <= b) - 1;
-            let local = b - cumulative_heights[j];
-            let q_val: E = q_b.into();
-            let f_val = eq_row[local] * eq_col[j];
-            sum += q_val * f_val;
-        }
-        sum
-    }
-
     #[test]
     fn test_jagged_sumcheck_small() {
         use ff_ext::FromUniformBytes;
@@ -766,9 +759,6 @@ mod tests {
         // z_col needs ceil(log2(num_polys)) = 2 variables
         let z_col: Vec<E> = (0..2).map(|_| E::random(&mut rng)).collect();
 
-        let claimed_sum =
-            compute_claimed_sum(&q_evals, &cumulative_heights, &z_row, &z_col);
-
         let input = JaggedSumcheckInput {
             q_evals: &q_evals,
             num_giga_vars,
@@ -776,6 +766,8 @@ mod tests {
             eq_row: build_eq_x_r_vec(&z_row),
             eq_col: build_eq_x_r_vec(&z_col),
         };
+
+        let claimed_sum = input.compute_claimed_sum();
 
         let mut transcript = BasicTranscript::<E>::new(b"jagged_sumcheck_test");
         let (proof, challenges) = jagged_sumcheck_prove(&input, &mut transcript);
@@ -829,9 +821,6 @@ mod tests {
         let z_row: Vec<E> = (0..s).map(|_| E::random(&mut rng)).collect();
         let z_col: Vec<E> = (0..3).map(|_| E::random(&mut rng)).collect(); // ceil(log2(8))=3
 
-        let claimed_sum =
-            compute_claimed_sum(&q_evals, &cumulative_heights, &z_row, &z_col);
-
         let input = JaggedSumcheckInput {
             q_evals: &q_evals,
             num_giga_vars,
@@ -839,6 +828,8 @@ mod tests {
             eq_row: build_eq_x_r_vec(&z_row),
             eq_col: build_eq_x_r_vec(&z_col),
         };
+
+        let claimed_sum = input.compute_claimed_sum();
 
         let mut transcript = BasicTranscript::<E>::new(b"jagged_test_16");
         let (proof, challenges) = jagged_sumcheck_prove(&input, &mut transcript);
@@ -884,9 +875,6 @@ mod tests {
         let z_row: Vec<E> = (0..s).map(|_| E::random(&mut rng)).collect();
         let z_col: Vec<E> = (0..10).map(|_| E::random(&mut rng)).collect(); // ceil(log2(1024))=10
 
-        let claimed_sum =
-            compute_claimed_sum(&q_evals, &cumulative_heights, &z_row, &z_col);
-
         let input = JaggedSumcheckInput {
             q_evals: &q_evals,
             num_giga_vars,
@@ -894,6 +882,8 @@ mod tests {
             eq_row: build_eq_x_r_vec(&z_row),
             eq_col: build_eq_x_r_vec(&z_col),
         };
+
+        let claimed_sum = input.compute_claimed_sum();
 
         let mut transcript = BasicTranscript::<E>::new(b"jagged_test_25");
         let (proof, challenges) = jagged_sumcheck_prove(&input, &mut transcript);
