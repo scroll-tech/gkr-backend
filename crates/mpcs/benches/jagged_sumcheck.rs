@@ -1,11 +1,11 @@
 use criterion::*;
-use ff_ext::{ExtensionField, FieldFrom, FromUniformBytes, GoldilocksExt2};
+use ff_ext::{BabyBearExt4, ExtensionField, FieldFrom, FromUniformBytes};
 use mpcs::{JaggedSumcheckInput, jagged_sumcheck_prove};
 use multilinear_extensions::virtual_poly::build_eq_x_r_vec;
 use rand::thread_rng;
 use transcript::BasicTranscript;
 
-type E = GoldilocksExt2;
+type E = BabyBearExt4;
 type F = <E as ExtensionField>::BaseField;
 
 const NUM_SAMPLES: usize = 10;
