@@ -301,9 +301,9 @@ impl<'a, E: ExtensionField> JaggedSumcheckInput<'a, E> {
 
         // Build f MLE from eq tables and evaluate at point.
         let mut f_evals = vec![E::ZERO; 1 << n];
-        for b in 0..total_evals {
+        for (b, f_eval) in f_evals.iter_mut().enumerate().take(total_evals) {
             let (col, row) = self.col_row(b);
-            f_evals[b] = self.eq_row[row] * self.eq_col[col];
+            *f_eval = self.eq_row[row] * self.eq_col[col];
         }
         let f_mle = MultilinearExtension::from_evaluations_ext_vec(n, f_evals);
         let f_at_point = f_mle.evaluate(point);
@@ -439,7 +439,11 @@ fn build_m_table<E: ExtensionField>(
     let m_size = beta_count * beta_count; // 2^{2j'}
 
     // Step 1: Each thread processes a batch of b-chunks, producing a local M-table.
-    let span = entered_span!("streaming_pass", n_chunks = n_chunks, beta_count = beta_count);
+    let span = entered_span!(
+        "streaming_pass",
+        n_chunks = n_chunks,
+        beta_count = beta_count
+    );
     let indices: Vec<usize> = (0..n_chunks).collect();
     let n_threads = max_usable_threads();
     let batch_size = (n_chunks / n_threads).max(1);
