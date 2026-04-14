@@ -253,12 +253,10 @@ pub fn jagged_commit<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
 // Streaming sumcheck prover using the M-table algorithm from
 // "Time-Space Trade-Offs for Sumcheck" (eprint 2025/1473), Section 4.
 
-/// Number of streaming rounds before switching to standard sumcheck.
-/// Determined by the epoch schedule: 1 + 2 + 4 + 8 = 15.
-#[allow(dead_code)]
-const STREAMING_ROUNDS: usize = 15;
-/// Epoch sizes used in the streaming phase: j' = 1, 2, 4, 8.
-const EPOCH_SIZES: [usize; 4] = [1, 2, 4, 8];
+/// Default log2 of the maximum epoch size for the streaming phase.
+/// Epoch sizes are `[2^0, 2^1, ..., 2^LOG2_MAX_EPOCH]` = `[1, 2, 4, 8]`,
+/// covering 1 + 2 + 4 + 8 = 15 streaming rounds before switching to standard sumcheck.
+const LOG2_MAX_EPOCH: u32 = 3;
 
 /// All inputs needed for the jagged sumcheck.
 pub struct JaggedSumcheckInput<'a, E: ExtensionField> {
@@ -367,13 +365,21 @@ impl<'a, E: ExtensionField> JaggedSumcheckInput<'a, E> {
 
 /// Run the full jagged sumcheck: streaming phase (rounds 1..K) + standard phase (rounds K+1..n).
 ///
+/// `log2_max_epoch` controls the streaming phase epoch schedule. Epoch sizes are
+/// `[1, 2, 4, ..., 2^k]` where `k = log2_max_epoch`. Pass `None` to use the default
+/// `LOG2_MAX_EPOCH = 3`, giving epoch sizes `[1, 2, 4, 8]` and 15 streaming rounds.
+///
 /// Returns the proof and the full list of challenges (r_1, ..., r_n).
 pub fn jagged_sumcheck_prove<E: ExtensionField>(
     input: &JaggedSumcheckInput<E>,
     transcript: &mut impl Transcript<E>,
+    log2_max_epoch: Option<u32>,
 ) -> (IOPProof<E>, Vec<E>) {
     let n = input.num_giga_vars;
     let max_degree: usize = 2;
+
+    let k = log2_max_epoch.unwrap_or(LOG2_MAX_EPOCH);
+    let epoch_sizes: Vec<usize> = (0..=k).map(|i| 1usize << i).collect();
 
     let mut challenges: Vec<E> = Vec::with_capacity(n);
     let mut proof_messages: Vec<IOPProverMessage<E>> = Vec::with_capacity(n);
@@ -382,8 +388,8 @@ pub fn jagged_sumcheck_prove<E: ExtensionField>(
     transcript.append_message(&n.to_le_bytes());
     transcript.append_message(&max_degree.to_le_bytes());
 
-    // --- Streaming phase: epochs j' = 1, 2, 4, 8 ---
-    for &epoch_size in &EPOCH_SIZES {
+    // --- Streaming phase: epochs j' = 1, 2, 4, ..., 2^k ---
+    for &epoch_size in &epoch_sizes {
         // Epoch j' handles rounds j'..2j'-1. Skip if all rounds are done.
         if epoch_size > n {
             break;
@@ -806,7 +812,7 @@ mod tests {
         let claimed_sum = input.compute_claimed_sum();
 
         let mut transcript = BasicTranscript::<E>::new(b"jagged_sumcheck_test");
-        let (proof, challenges) = jagged_sumcheck_prove(&input, &mut transcript);
+        let (proof, challenges) = jagged_sumcheck_prove(&input, &mut transcript, None);
 
         assert_eq!(proof.proofs.len(), num_giga_vars);
         assert_eq!(challenges.len(), num_giga_vars);
@@ -868,7 +874,7 @@ mod tests {
         let claimed_sum = input.compute_claimed_sum();
 
         let mut transcript = BasicTranscript::<E>::new(b"jagged_test_16");
-        let (proof, challenges) = jagged_sumcheck_prove(&input, &mut transcript);
+        let (proof, challenges) = jagged_sumcheck_prove(&input, &mut transcript, None);
 
         assert_eq!(proof.proofs.len(), num_giga_vars);
         assert_eq!(challenges.len(), num_giga_vars);
@@ -922,7 +928,7 @@ mod tests {
         let claimed_sum = input.compute_claimed_sum();
 
         let mut transcript = BasicTranscript::<E>::new(b"jagged_test_25");
-        let (proof, challenges) = jagged_sumcheck_prove(&input, &mut transcript);
+        let (proof, challenges) = jagged_sumcheck_prove(&input, &mut transcript, None);
 
         assert_eq!(proof.proofs.len(), num_giga_vars);
         assert_eq!(challenges.len(), num_giga_vars);
