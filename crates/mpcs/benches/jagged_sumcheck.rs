@@ -15,10 +15,13 @@ fn bench_jagged_sumcheck(c: &mut Criterion) {
     group.sample_size(NUM_SAMPLES);
 
     // (num_giga_vars, num_polys, poly_height_log2)
-    let configs: Vec<(usize, usize, usize)> = vec![
-        (20, 1 << 5, 15),  // n=20: 32 polys * 2^15 = 2^20
-        (25, 1 << 10, 15), // n=25: 1024 polys * 2^15 = 2^25
-    ];
+    let configs: Vec<(usize, usize, usize)> = (25..=31)
+        .map(|n| {
+            let s = 21usize;
+            let num_polys = 1usize << (n - s);
+            (n, num_polys, s)
+        })
+        .collect();
 
     for (num_giga_vars, num_polys, s) in configs {
         let poly_height = 1usize << s;
