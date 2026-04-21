@@ -43,7 +43,8 @@ pub struct RowMajorMatrix<T: Sized + Sync + Clone + Send + Copy> {
     padding_strategy: InstancePaddingStrategy,
     // Optional opaque handle to device-resident storage that mirrors `inner.values`.
     // This lets GPU-side code keep an associated buffer/layout without forcing witness
-    // to depend on a concrete device runtime. Host-side mutation invalidates this cache.
+    // to depend on a concrete device runtime. There is no automatic host<->device sync:
+    // host-side mutation invalidates this cache.
     device_backing: Option<DeviceMatrixBacking>,
 }
 
@@ -198,8 +199,9 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + FieldAlgebra> RowMajorMat
     /// on accelerators. Witness keeps only metadata here so GPU integrations can cache a
     /// buffer next to the host matrix without introducing device-specific dependencies.
     ///
-    /// The backing is only valid while the host-side matrix contents and shape remain
-    /// unchanged. Any mutable access to the matrix clears this metadata conservatively.
+    /// There is no automatic host<->device synchronization. The backing is only valid
+    /// while the host-side matrix contents and shape remain unchanged. Any mutable access
+    /// to the matrix clears this metadata conservatively.
     pub fn set_device_backing<D: Any + Send + Sync + 'static>(
         &mut self,
         storage: D,
