@@ -272,6 +272,8 @@ pub use jagged::{
     JaggedCommitment, JaggedCommitmentWithWitness, JaggedSumcheckInput, jagged_commit,
     jagged_sumcheck_prove,
 };
+pub mod jagged_evaluator;
+pub use jagged_evaluator::{evaluate_g, evaluate_g_backward, evaluate_g_forward};
 #[cfg(feature = "whir")]
 extern crate whir as whir_external;
 #[cfg(feature = "whir")]
