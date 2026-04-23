@@ -269,8 +269,8 @@ pub use basefold::{
 };
 pub mod jagged;
 pub use jagged::{
-    JaggedCommitment, JaggedCommitmentWithWitness, JaggedSumcheckInput, jagged_commit,
-    jagged_sumcheck_prove,
+    JaggedBatchOpenProof, JaggedCommitment, JaggedCommitmentWithWitness, JaggedSumcheckInput,
+    jagged_batch_open, jagged_batch_verify, jagged_commit, jagged_sumcheck_prove,
 };
 pub mod jagged_evaluator;
 pub use jagged_evaluator::{evaluate_g, evaluate_g_backward, evaluate_g_forward};

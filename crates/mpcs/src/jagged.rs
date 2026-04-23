@@ -51,25 +51,26 @@
 //! 4. Pad `cat` to the next power of two (required for MLE representation).
 //! 5. Commit to the padded `cat` as a single-column matrix using the inner PCS.
 
-use std::iter::once;
+use std::{iter::once, marker::PhantomData};
 
-use crate::{Error, PolynomialCommitmentScheme};
+use crate::{Error, PolynomialCommitmentScheme, jagged_evaluator::evaluate_g};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use multilinear_extensions::{
-    mle::MultilinearExtension, util::max_usable_threads, virtual_poly::build_eq_x_r_vec,
+    mle::{FieldType, MultilinearExtension},
+    util::max_usable_threads,
+    virtual_poly::{VPAuxInfo, build_eq_x_r_vec},
 };
 use p3::{
     matrix::{Matrix, bitrev::BitReversableMatrix},
     maybe_rayon::prelude::{
-        IndexedParallelIterator, IntoParallelIterator, ParallelIterator, ParallelSlice,
-        ParallelSliceMut,
+        IntoParallelIterator, ParallelIterator, ParallelSlice, ParallelSliceMut,
     },
 };
 use serde::{Deserialize, Serialize};
 use sumcheck::{
     macros::{entered_span, exit_span},
-    structs::{IOPProof, IOPProverMessage, IOPProverState},
+    structs::{IOPProof, IOPProverMessage, IOPProverState, IOPVerifierState},
 };
 use transcript::Transcript;
 use witness::{InstancePaddingStrategy, RowMajorMatrix};
@@ -673,6 +674,240 @@ fn bind_and_materialize<E: ExtensionField>(
     results.into_iter().unzip()
 }
 
+// ---------------------------------------------------------------------------
+// Jagged Batch Open / Verify
+// ---------------------------------------------------------------------------
+
+/// Proof for the jagged batch opening protocol.
+///
+/// Contains a sumcheck proof (reducing K column evaluation claims to a single
+/// point on q'), the evaluation q'(ρ), and an inner PCS opening proof.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "", deserialize = ""))]
+pub struct JaggedBatchOpenProof<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>> {
+    pub sumcheck_proof: IOPProof<E>,
+    pub q_eval: E,
+    pub inner_proof: Pcs::Proof,
+}
+
+/// Convert a `usize` to its little-endian binary representation as field elements.
+fn int_to_field_bits<E: ExtensionField>(val: usize, num_bits: usize) -> Vec<E> {
+    (0..num_bits)
+        .map(|i| if (val >> i) & 1 == 1 { E::ONE } else { E::ZERO })
+        .collect()
+}
+
+/// Evaluate f̂(ρ) using the ROBP evaluator.
+///
+/// f̂(ρ) = Σ_{y} eq_col[y] · ĝ(z_row_padded, ρ, bits(t_y), bits(t_{y+1}))
+fn compute_f_at_point<E: ExtensionField>(
+    z_row_padded: &[E],
+    rho_padded: &[E],
+    eq_col: &[E],
+    cumulative_heights: &[usize],
+    n_robp: usize,
+) -> E {
+    let num_polys = cumulative_heights.len() - 1;
+    let mut f_val = E::ZERO;
+    for y in 0..num_polys {
+        if eq_col[y] == E::ZERO {
+            continue;
+        }
+        let t_lo = int_to_field_bits::<E>(cumulative_heights[y], n_robp);
+        let t_hi = int_to_field_bits::<E>(cumulative_heights[y + 1], n_robp);
+        let g_val = evaluate_g(z_row_padded, rho_padded, &t_lo, &t_hi);
+        f_val += eq_col[y] * g_val;
+    }
+    f_val
+}
+
+/// Prove that evaluation claims `evals[i] = p_i(point)` are consistent with a
+/// jagged commitment.
+///
+/// All polynomials must have the same height. `point` is the common evaluation
+/// point (a suffix `r[s..]` of the GKR challenge, length `s = log2(poly_height)`).
+///
+/// The protocol:
+/// 1. Batch the K column claims via a random column challenge `z_col`.
+/// 2. Run the jagged sumcheck to reduce to a single evaluation of q'.
+/// 3. Open q' at the sumcheck output point via the inner PCS.
+pub fn jagged_batch_open<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
+    pp: &Pcs::ProverParam,
+    comm: &JaggedCommitmentWithWitness<E, Pcs>,
+    point: &[E],
+    evals: &[E],
+    transcript: &mut impl Transcript<E>,
+) -> Result<JaggedBatchOpenProof<E, Pcs>, Error> {
+    let num_polys = comm.num_polys();
+    if evals.len() != num_polys {
+        return Err(Error::InvalidPcsParam(format!(
+            "jagged_batch_open: expected {} evals, got {}",
+            num_polys,
+            evals.len()
+        )));
+    }
+
+    let s = point.len();
+    let expected_height = 1usize << s;
+    for (i, &h) in comm.poly_heights.iter().enumerate() {
+        if h != expected_height {
+            return Err(Error::InvalidPcsParam(format!(
+                "jagged_batch_open: poly {} has height {}, expected {}",
+                i, h, expected_height
+            )));
+        }
+    }
+
+    let total_evals = comm.total_evaluations();
+    let num_giga_vars = total_evals.next_power_of_two().trailing_zeros() as usize;
+
+    // z_row = reverse(point) to account for bit-reversal in jagged_commit.
+    let z_row: Vec<E> = point.iter().rev().cloned().collect();
+
+    // Write evals to transcript, then sample z_col.
+    transcript.append_field_element_exts(evals);
+    let num_col_vars = (num_polys.next_power_of_two().trailing_zeros() as usize).max(1);
+    let z_col: Vec<E> = transcript.sample_and_append_vec(b"jagged_z_col", num_col_vars);
+
+    let eq_col = build_eq_x_r_vec(&z_col);
+
+    // Extract q' base-field evaluations from the inner PCS witness.
+    let q_mles = Pcs::get_arc_mle_witness_from_commitment(&comm.inner);
+    assert_eq!(
+        q_mles.len(),
+        1,
+        "jagged commit produces exactly one polynomial"
+    );
+    let q_mle = &q_mles[0];
+    let q_evals_base: &[E::BaseField] = match q_mle.evaluations() {
+        FieldType::Base(slice) => slice,
+        _ => {
+            return Err(Error::InvalidPcsParam(
+                "jagged_batch_open: expected base-field evaluations for q'".into(),
+            ));
+        }
+    };
+
+    // Run the jagged sumcheck.
+    let eq_row = build_eq_x_r_vec(&z_row);
+    let input = JaggedSumcheckInput {
+        q_evals: q_evals_base,
+        num_giga_vars,
+        cumulative_heights: &comm.cumulative_heights,
+        eq_row,
+        eq_col,
+    };
+    let (sumcheck_proof, challenges) = jagged_sumcheck_prove(&input, transcript, None);
+
+    // Evaluate q'(ρ).
+    let q_eval = q_mle.evaluate(&challenges);
+
+    // Write q_eval to transcript before inner PCS open.
+    transcript.append_field_element_ext(&q_eval);
+
+    // Open q' at ρ via inner PCS batch_open.
+    let inner_proof = Pcs::batch_open(
+        pp,
+        vec![(&comm.inner, vec![(challenges, vec![q_eval])])],
+        transcript,
+    )?;
+
+    Ok(JaggedBatchOpenProof {
+        sumcheck_proof,
+        q_eval,
+        inner_proof,
+    })
+}
+
+/// Verify that evaluation claims `evals[i] = p_i(point)` are consistent with a
+/// jagged commitment.
+pub fn jagged_batch_verify<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
+    vp: &Pcs::VerifierParam,
+    comm: &JaggedCommitment<E, Pcs>,
+    point: &[E],
+    evals: &[E],
+    proof: &JaggedBatchOpenProof<E, Pcs>,
+    transcript: &mut impl Transcript<E>,
+) -> Result<(), Error> {
+    let num_polys = comm.cumulative_heights.len() - 1;
+    if evals.len() != num_polys {
+        return Err(Error::InvalidPcsOpen(format!(
+            "jagged_batch_verify: expected {} evals, got {}",
+            num_polys,
+            evals.len()
+        )));
+    }
+
+    let total_evals = *comm.cumulative_heights.last().unwrap();
+    let num_giga_vars = total_evals.next_power_of_two().trailing_zeros() as usize;
+
+    // z_row = reverse(point)
+    let z_row: Vec<E> = point.iter().rev().cloned().collect();
+
+    // Replay transcript: write evals, sample z_col.
+    transcript.append_field_element_exts(evals);
+    let num_col_vars = (num_polys.next_power_of_two().trailing_zeros() as usize).max(1);
+    let z_col: Vec<E> = transcript.sample_and_append_vec(b"jagged_z_col", num_col_vars);
+
+    // claimed_sum = Σ_j eq_col[j] · evals[j]
+    let eq_col = build_eq_x_r_vec(&z_col);
+    let claimed_sum: E = eq_col[..num_polys]
+        .iter()
+        .zip(evals.iter())
+        .map(|(&eq, &ev)| eq * ev)
+        .sum();
+
+    // Verify the jagged sumcheck.
+    let aux_info = VPAuxInfo {
+        max_degree: 2,
+        max_num_variables: num_giga_vars,
+        phantom: PhantomData::<E>,
+    };
+    let subclaim =
+        IOPVerifierState::<E>::verify(claimed_sum, &proof.sumcheck_proof, &aux_info, transcript);
+    let rho: Vec<E> = subclaim.point.iter().map(|c| c.elements).collect();
+
+    // The ROBP needs enough bits to represent the max cumulative height (= total_evals).
+    // When total_evals is an exact power of 2, num_giga_vars bits can't represent it.
+    let n_robp = num_giga_vars + if total_evals.is_power_of_two() { 1 } else { 0 };
+
+    // Compute f̂(ρ) via the ROBP evaluator.
+    let mut z_row_padded = z_row;
+    z_row_padded.resize(n_robp, E::ZERO);
+    let mut rho_padded = rho.clone();
+    rho_padded.resize(n_robp, E::ZERO);
+    let f_at_rho = compute_f_at_point(
+        &z_row_padded,
+        &rho_padded,
+        &eq_col,
+        &comm.cumulative_heights,
+        n_robp,
+    );
+
+    // Write q_eval to transcript (must match prover).
+    transcript.append_field_element_ext(&proof.q_eval);
+
+    // Check subclaim: q'(ρ) · f̂(ρ) == expected_evaluation.
+    if proof.q_eval * f_at_rho != subclaim.expected_evaluation {
+        return Err(Error::InvalidPcsOpen(
+            "jagged_batch_verify: q_eval * f(rho) != subclaim expected evaluation".into(),
+        ));
+    }
+
+    // Verify the inner PCS opening.
+    Pcs::batch_verify(
+        vp,
+        vec![(
+            comm.inner.clone(),
+            vec![(num_giga_vars, (rho, vec![proof.q_eval]))],
+        )],
+        &proof.inner_proof,
+        transcript,
+    )?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -953,5 +1188,161 @@ mod tests {
             subclaim.expected_evaluation,
             "final evaluation mismatch"
         );
+    }
+
+    // --- Batch open/verify tests ---
+
+    use ff_ext::FromUniformBytes;
+
+    /// Evaluate a single column polynomial at `point` (the original, non-bit-reversed poly).
+    /// `col_evals` are the raw evaluations of the column (before bit-reversal).
+    fn eval_column_poly_at_point(col_evals: &[F], point: &[E]) -> E {
+        let s = point.len();
+        assert_eq!(col_evals.len(), 1 << s);
+        let mle = MultilinearExtension::from_evaluations_vec(s, col_evals.to_vec());
+        mle.evaluate(point)
+    }
+
+    #[test]
+    fn test_jagged_batch_open_verify_small() {
+        let mut rng = thread_rng();
+
+        let num_rows = 1024usize; // s=10
+        let num_cols = 3usize;
+        let s = 10;
+        let total_evals = num_rows * num_cols;
+        let num_giga_vars = total_evals.next_power_of_two().trailing_zeros() as usize;
+
+        let (pp, vp) = setup_pcs::<E, Pcs>(num_giga_vars);
+        let rmm = make_rmm(num_rows, num_cols);
+
+        // Extract column polynomials (before bit-reversal) for computing true evaluations.
+        let col_polys: Vec<Vec<F>> = (0..num_cols)
+            .map(|c| {
+                (0..num_rows)
+                    .map(|r| rmm.values[r * num_cols + c])
+                    .collect()
+            })
+            .collect();
+
+        // Commit.
+        let mut transcript_p = BasicTranscript::<E>::new(b"jagged_batch_test");
+        let comm = jagged_commit::<E, Pcs>(&pp, vec![rmm]).expect("commit should succeed");
+        Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_p).unwrap();
+
+        // Random evaluation point of length s.
+        let point: Vec<E> = (0..s).map(|_| E::random(&mut rng)).collect();
+
+        // Compute true evaluations.
+        let evals: Vec<E> = col_polys
+            .iter()
+            .map(|col| eval_column_poly_at_point(col, &point))
+            .collect();
+
+        // Prover: batch open.
+        let proof = jagged_batch_open::<E, Pcs>(&pp, &comm, &point, &evals, &mut transcript_p)
+            .expect("batch open should succeed");
+
+        // Verifier: batch verify.
+        let mut transcript_v = BasicTranscript::<E>::new(b"jagged_batch_test");
+        Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_v).unwrap();
+
+        jagged_batch_verify::<E, Pcs>(
+            &vp,
+            &comm.to_commitment(),
+            &point,
+            &evals,
+            &proof,
+            &mut transcript_v,
+        )
+        .expect("batch verify should succeed");
+    }
+
+    #[test]
+    fn test_jagged_batch_open_verify_single_poly() {
+        let mut rng = thread_rng();
+
+        let num_rows = 1024usize; // s=10
+        let num_cols = 1usize;
+        let s = 10;
+        let num_giga_vars = (num_rows * num_cols).next_power_of_two().trailing_zeros() as usize;
+
+        let (pp, vp) = setup_pcs::<E, Pcs>(num_giga_vars);
+        let rmm = make_rmm(num_rows, num_cols);
+
+        let col_poly: Vec<F> = (0..num_rows).map(|r| rmm.values[r]).collect();
+
+        let mut transcript_p = BasicTranscript::<E>::new(b"jagged_single");
+        let comm = jagged_commit::<E, Pcs>(&pp, vec![rmm]).expect("commit");
+        Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_p).unwrap();
+
+        let point: Vec<E> = (0..s).map(|_| E::random(&mut rng)).collect();
+        let evals = vec![eval_column_poly_at_point(&col_poly, &point)];
+
+        let proof = jagged_batch_open::<E, Pcs>(&pp, &comm, &point, &evals, &mut transcript_p)
+            .expect("batch open");
+
+        let mut transcript_v = BasicTranscript::<E>::new(b"jagged_single");
+        Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_v).unwrap();
+
+        jagged_batch_verify::<E, Pcs>(
+            &vp,
+            &comm.to_commitment(),
+            &point,
+            &evals,
+            &proof,
+            &mut transcript_v,
+        )
+        .expect("batch verify");
+    }
+
+    #[test]
+    fn test_jagged_batch_open_verify_soundness() {
+        let mut rng = thread_rng();
+
+        let num_rows = 1024usize;
+        let num_cols = 3usize;
+        let s = 10;
+        let num_giga_vars = (num_rows * num_cols).next_power_of_two().trailing_zeros() as usize;
+
+        let (pp, vp) = setup_pcs::<E, Pcs>(num_giga_vars);
+        let rmm = make_rmm(num_rows, num_cols);
+
+        let col_polys: Vec<Vec<F>> = (0..num_cols)
+            .map(|c| {
+                (0..num_rows)
+                    .map(|r| rmm.values[r * num_cols + c])
+                    .collect()
+            })
+            .collect();
+
+        let mut transcript_p = BasicTranscript::<E>::new(b"jagged_soundness");
+        let comm = jagged_commit::<E, Pcs>(&pp, vec![rmm]).expect("commit");
+        Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_p).unwrap();
+
+        let point: Vec<E> = (0..s).map(|_| E::random(&mut rng)).collect();
+        let mut evals: Vec<E> = col_polys
+            .iter()
+            .map(|col| eval_column_poly_at_point(col, &point))
+            .collect();
+
+        // Tamper with one evaluation.
+        evals[1] += E::ONE;
+
+        let proof = jagged_batch_open::<E, Pcs>(&pp, &comm, &point, &evals, &mut transcript_p)
+            .expect("batch open with wrong evals still produces a proof");
+
+        let mut transcript_v = BasicTranscript::<E>::new(b"jagged_soundness");
+        Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_v).unwrap();
+
+        let result = jagged_batch_verify::<E, Pcs>(
+            &vp,
+            &comm.to_commitment(),
+            &point,
+            &evals,
+            &proof,
+            &mut transcript_v,
+        );
+        assert!(result.is_err(), "verify should reject tampered evaluations");
     }
 }
