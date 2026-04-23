@@ -1,12 +1,15 @@
 use ff_ext::{ExtensionField, FromUniformBytes};
-use p3::{field::extension::BinomialExtensionField, goldilocks::Goldilocks};
+use p3::{
+    field::{FieldAlgebra, extension::BinomialExtensionField},
+    goldilocks::Goldilocks,
+};
 use rand::thread_rng;
 
 type F = Goldilocks;
 type E = BinomialExtensionField<F, 2>;
 
 use crate::{
-    mle::{ArcMultilinearExtension, MultilinearExtension},
+    mle::{ArcMultilinearExtension, FieldType, MultilinearExtension},
     util::bit_decompose,
     virtual_poly::build_eq_x_r,
 };
@@ -20,6 +23,56 @@ fn test_eq_xr() {
         let eq_x_r2 = build_eq_x_r_for_test(r.as_ref());
         assert_eq!(eq_x_r, eq_x_r2);
     }
+}
+
+#[test]
+fn test_compact_fix_variables_matches_zero_padded() {
+    let eval = vec![
+        E::from_canonical_u32(3),
+        E::from_canonical_u32(5),
+        E::from_canonical_u32(7),
+        E::from_canonical_u32(11),
+        E::from_canonical_u32(13),
+    ];
+    let compact = MultilinearExtension::from_evaluations_ext_vec_compact(3, eval.clone());
+    let mut padded = eval;
+    padded.resize(1 << 3, E::ZERO);
+    let padded = MultilinearExtension::from_evaluations_ext_vec(3, padded);
+    let point = [E::from_canonical_u32(9)];
+
+    let compact_fixed = compact.fix_variables(&point);
+    let padded_fixed = padded.fix_variables(&point);
+    let compact_fixed_eval = match compact_fixed.evaluations() {
+        FieldType::Ext(values) => values.to_vec(),
+        value => panic!("unexpected field type {value:?}"),
+    };
+    let padded_fixed_eval = match padded_fixed.evaluations() {
+        FieldType::Ext(values) => values.to_vec(),
+        value => panic!("unexpected field type {value:?}"),
+    };
+    assert_eq!(
+        compact_fixed_eval,
+        padded_fixed_eval[..compact_fixed.occupied_len()]
+    );
+    assert_eq!(compact_fixed.num_vars(), padded_fixed.num_vars());
+
+    let r0 = E::from_canonical_u32(4);
+    let r1 = E::from_canonical_u32(6);
+    let compact_fixed_2 = compact.fix_two_variables(r0, r1);
+    let padded_fixed_2 = padded.fix_two_variables(r0, r1);
+    let compact_fixed_2_eval = match compact_fixed_2.evaluations() {
+        FieldType::Ext(values) => values.to_vec(),
+        value => panic!("unexpected field type {value:?}"),
+    };
+    let padded_fixed_2_eval = match padded_fixed_2.evaluations() {
+        FieldType::Ext(values) => values.to_vec(),
+        value => panic!("unexpected field type {value:?}"),
+    };
+    assert_eq!(
+        compact_fixed_2_eval,
+        padded_fixed_2_eval[..compact_fixed_2.occupied_len()]
+    );
+    assert_eq!(compact_fixed_2.num_vars(), padded_fixed_2.num_vars());
 }
 
 /// Naive method to build eq(x, r).

@@ -522,6 +522,30 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         }
     }
 
+    #[inline(always)]
+    fn mle_eval_round2_endpoints_partial(block: Either<&[E::BaseField], &[E]>, r0: E) -> (E, E) {
+        match block {
+            Either::Left(b) => {
+                let v0 = b.first().copied().map(E::from).unwrap_or(E::ZERO);
+                let v1 = b.get(1).copied().map(E::from).unwrap_or(E::ZERO);
+                let v2 = b.get(2).copied().map(E::from).unwrap_or(E::ZERO);
+                let v3 = b.get(3).copied().map(E::from).unwrap_or(E::ZERO);
+                let y0 = v0 + (v1 - v0) * r0;
+                let y1 = v2 + (v3 - v2) * r0;
+                (y0, y1 - y0)
+            }
+            Either::Right(b) => {
+                let v0 = b.first().copied().unwrap_or(E::ZERO);
+                let v1 = b.get(1).copied().unwrap_or(E::ZERO);
+                let v2 = b.get(2).copied().unwrap_or(E::ZERO);
+                let v3 = b.get(3).copied().unwrap_or(E::ZERO);
+                let y0 = v0 + (v1 - v0) * r0;
+                let y1 = v2 + (v3 - v2) * r0;
+                (y0, y1 - y0)
+            }
+        }
+    }
+
     /// Returns `(y0, dy)` where `y0 = fi(0, b)` and `dy = fi(1, b) - y0`,
     /// so that `fi(x, b) = y0 + dy * x` for any `x`.
     #[inline(always)]
@@ -539,6 +563,22 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         match block {
             Either::Left(b) => Self::mle_eval_round1_endpoints_base(b),
             Either::Right(b) => Self::mle_eval_round1_endpoints_ext(b),
+        }
+    }
+
+    #[inline(always)]
+    fn mle_eval_round1_endpoints_partial(block: Either<&[E::BaseField], &[E]>) -> (E, E) {
+        match block {
+            Either::Left(b) => {
+                let lo = b.first().copied().map(E::from).unwrap_or(E::ZERO);
+                let hi = b.get(1).copied().map(E::from).unwrap_or(E::ZERO);
+                (lo, hi - lo)
+            }
+            Either::Right(b) => {
+                let lo = b.first().copied().unwrap_or(E::ZERO);
+                let hi = b.get(1).copied().unwrap_or(E::ZERO);
+                (lo, hi - lo)
+            }
         }
     }
 
@@ -573,12 +613,26 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                             .map(|x| E::BaseField::from_canonical_u32(x as u32))
                             .collect();
                         let mut endpoints = vec![(E::ZERO, E::ZERO); degree];
-                        for b in (0..evals_len).step_by(4) {
+                        let quad_len = evals_len / 4 * 4;
+                        for b in (0..quad_len).step_by(4) {
                             for (k, &poly_idx) in prod.iter().enumerate() {
-                                endpoints[k] = Self::mle_eval_round2_endpoints(
-                                    f[poly_idx].as_ref().evaluations().as_slice(b..b + 4),
-                                    r0,
-                                );
+                                let block = f[poly_idx].as_ref().evaluations().as_slice(b..b + 4);
+                                endpoints[k] = Self::mle_eval_round2_endpoints(block, r0);
+                            }
+                            for (x, &x_felt) in x_felts.iter().enumerate() {
+                                uni_variate[x] += endpoints
+                                    .iter()
+                                    .map(|&(y0, dy)| y0 + dy * x_felt)
+                                    .product::<E>();
+                            }
+                        }
+                        if quad_len < evals_len {
+                            for (k, &poly_idx) in prod.iter().enumerate() {
+                                let block = f[poly_idx]
+                                    .as_ref()
+                                    .evaluations()
+                                    .as_slice(quad_len..evals_len);
+                                endpoints[k] = Self::mle_eval_round2_endpoints_partial(block, r0);
                             }
                             for (x, &x_felt) in x_felts.iter().enumerate() {
                                 uni_variate[x] += endpoints
@@ -598,11 +652,26 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                             .map(|x| E::BaseField::from_canonical_u32(x as u32))
                             .collect();
                         let mut endpoints = vec![(E::ZERO, E::ZERO); degree];
-                        for b in (0..evals_len).step_by(2) {
+                        let pair_len = largest_even_below(evals_len);
+                        for b in (0..pair_len).step_by(2) {
                             for (k, &poly_idx) in prod.iter().enumerate() {
-                                endpoints[k] = Self::mle_eval_round1_endpoints(
-                                    f[poly_idx].as_ref().evaluations().as_slice(b..b + 2),
-                                );
+                                let block = f[poly_idx].as_ref().evaluations().as_slice(b..b + 2);
+                                endpoints[k] = Self::mle_eval_round1_endpoints(block);
+                            }
+                            for (x, &x_felt) in x_felts.iter().enumerate() {
+                                uni_variate[x] += endpoints
+                                    .iter()
+                                    .map(|&(y0, dy)| y0 + dy * x_felt)
+                                    .product::<E>();
+                            }
+                        }
+                        if pair_len < evals_len {
+                            for (k, &poly_idx) in prod.iter().enumerate() {
+                                let block = f[poly_idx]
+                                    .as_ref()
+                                    .evaluations()
+                                    .as_slice(pair_len..evals_len);
+                                endpoints[k] = Self::mle_eval_round1_endpoints_partial(block);
                             }
                             for (x, &x_felt) in x_felts.iter().enumerate() {
                                 uni_variate[x] += endpoints
