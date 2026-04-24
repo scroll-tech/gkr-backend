@@ -9,7 +9,7 @@
 //! chips into a single "giga" multilinear polynomial `q'`:
 //!
 //! ```text
-//! q' = bitrev(p_0) || bitrev(p_1) || ... || bitrev(p_N)
+//! q' = bitrev(p_0) || bitrev(p_1) || ... || bitrev(p_{N-1})
 //! ```
 //!
 //! where each `p_i` is a column polynomial extracted from the input trace matrices, and
@@ -17,7 +17,7 @@
 //!
 //! ## Suffix-to-Prefix Transformation
 //!
-//! The main sumcheck prover outputs evaluations `v_i = p_i(r[(n-s)..n])` — i.e., at the
+//! The main sumcheck prover outputs evaluations `v_i = p_i(r[(m-s)..m])` — i.e., at the
 //! **suffix** of the random challenge point. To make these evaluations compatible with the
 //! jagged sumcheck (which operates on prefix-aligned polynomials), we apply a bit-reversal
 //! permutation to each polynomial's evaluations:
@@ -26,7 +26,7 @@
 //! p_i'[j] = p_i[bitrev_s(j)]   (for j in 0..2^s)
 //! ```
 //!
-//! After bit-reversal, `v_i = p_i(r[(n-s)..n]) = p_i'(reverse(r[(n-s)..n]))`.
+//! After bit-reversal, `v_i = p_i(r[(m-s)..m]) = p_i'(reverse(r[(m-s)..m]))`.
 //!
 //! ## Cumulative Heights
 //!
@@ -35,11 +35,11 @@
 //! - `t[i+1] = t[i] + h_i`   where `h_i = 2^(num_vars of p_i)` is the number of evaluations
 //!
 //! Given a position `b` in `q'`, the verifier can locate the corresponding `(i, r)` pair via:
-//! - `t[i-1] <= b < t[i]`
-//! - `r = b - t[i-1]`
+//! - `t[i] <= b < t[i+1]`
+//! - `r = b - t[i]`
 //!
 //! The cumulative heights allow the verifier to succinctly evaluate the indicator function
-//! `g(z_r, z_b, t[i-1], t[i])` needed for the jagged sumcheck.
+//! `g(z_r, z_b, t[i], t[i+1])` needed for the jagged sumcheck.
 //!
 //! ## Commit Protocol
 //!
