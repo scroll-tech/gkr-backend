@@ -22,22 +22,21 @@
 //!
 //! ## Suffix-to-Prefix Transformation
 //!
-//! Each `p_i` has `s` variables (where `s` varies per polynomial; we write `s` instead
-//! of `s_i` for brevity). Let `m` be the length of `z_r`. The main sumcheck prover
-//! outputs evaluations `v_i = p_i(z_r[(m-s)..m])` — i.e., at the suffix of the
+//! Each `p_i` has `s_i` variables and let `m` be the length of `z_r`. The main sumcheck prover
+//! outputs evaluations `v_i = p_i(z_r[(m-s_i)..m])` — i.e., at the suffix of the
 //! random challenge point.
 //! To make these evaluations compatible with the jagged sumcheck (which operates on
 //! prefix-aligned polynomials), we apply a bit-reversal permutation to each polynomial's
 //! evaluations:
 //!
 //! ```text
-//! p_i'[j] = p_i[bitrev_s(j)]   (for j in 0..2^s)
+//! p_i'[j] = p_i[bitrev_s_i(j)]   (for j in 0..2^s_i)
 //! ```
 //!
 //! After bit-reversal,
 //! ```text
-//! v_i = p_i(z_r[(m-s)..m])
-//!     = p_i'(z_r'[..s])
+//! v_i = p_i(z_r[(m-s_i)..m])
+//!     = p_i'(z_r'[..s_i])
 //! ```
 //! where `z_r' = reverse(z_r)`.
 //!
@@ -45,7 +44,8 @@
 //!
 //! The cumulative height sequence `t` tracks the starting position of each polynomial in `q'`:
 //! - `t[0] = 0`
-//! - `t[i+1] = t[i] + h_i`   where `h_i = 2^(num_vars of p_i)` is the number of evaluations
+//! - `t[i+1] = t[i] + h_i`   where `h_i` is the number of evaluations of `p_i`
+//!   (`s_i = ceil_log2(h_i)` variables, so `h_i <= 2^{s_i}`)
 //!
 //! Given a position `b` in `q'`, the inverse mapping `inv(b) = (i, r)` is defined by:
 //! - `t[i] <= b < t[i+1]`
@@ -67,16 +67,44 @@
 //! ## Batch Open Protocol
 //!
 //! For notational simplicity, we write `p_i` and `z_r` instead of `p_i'` and `z_r'`
-//! (the bit-reversed variants) throughout this section.
+//! (the bit-reversed variants) throughout this section. Let `s_i` denote the number
+//! of variables of `p_i` and let `m = max(s_i)`.
 //!
-//! Each column opening `v_i = p_i(z_r[..s])` requires its own sumcheck. We batch all K
-//! openings into one using `eq(z_c, ·)` weights (soundness loss: `log2(N) / |E|`):
+//! Each column opening `v_i = p_i(z_r[..s_i])` requires its own sumcheck. We batch
+//! all K openings into one using `eq(z_c, ·)` weights (soundness loss: `log2(N) / |E|`).
+//!
+//! ### Correction factors for different-height polynomials
+//!
+//! In the giga polynomial `q'`, each `p_i` occupies only `h_i` slots (padded to
+//! `2^{s_i}` for MLE representation). When `s_i < m`, this is equivalent to
+//! zero-padding `p_i` to `m` variables:
 //!
 //! ```text
-//! v = Σ_i eq(z_c, i) · p_i(z_r[..s])
+//! p_i^pad(r, b) = p_i(r)   if b = 0    (r ∈ {0,1}^{s_i}, b ∈ {0,1}^{m - s_i})
+//!                 0         if b ≠ 0
+//! ```
+//!
+//! The MLE of this zero-padded polynomial evaluates to:
+//!
+//! ```text
+//! p_i^pad(z_r) = eq(z_r[s_i..], 0) · p_i(z_r[..s_i])
+//! ```
+//!
+//! where `eq(z_r[s_i..], 0) = Π_{j=s_i}^{m-1} (1 - z_r[j])` is the correction
+//! factor `C_i` arising from the zero-padded positions. The batched claim becomes:
+//!
+//! ```text
+//! v = Σ_i eq(z_c, i) · C_i · p_i(z_r[..s_i])
 //!   = Σ_{i,r} eq(z_c, i) · eq(z_r, r) · p_i(r)
 //!   = Σ_{i,r} f(i, r) · p_i(r)     where f(i, r) = eq(z_c, i) · eq(z_r, r)
 //! ```
+//!
+//! Here `eq(z_r, r)` uses the full `z_r` of length `m`. For `r < 2^{s_i}`, the
+//! high bits of `r` are zero, so `eq(z_r, r) = eq(z_r[..s_i], r) · C_i`.
+//! This means a single precomputed eq table of size `2^m` naturally incorporates
+//! the correction factors — no per-polynomial tables are needed.
+//!
+//! ### Rewriting via the inverse mapping
 //!
 //! We apply `inv(b)` to rewrite `f` in terms of the giga-index `b`:
 //!
@@ -116,6 +144,7 @@ use ff_ext::ExtensionField;
 use itertools::Itertools;
 use multilinear_extensions::{
     mle::FieldType,
+    util::ceil_log2,
     virtual_poly::{VPAuxInfo, build_eq_x_r_vec},
 };
 use p3::{
@@ -278,11 +307,12 @@ fn compute_f_at_point<E: ExtensionField>(
     f_val
 }
 
-/// Prove that evaluation claims `evals[i] = p_i(point)` are consistent with a
+/// Prove that evaluation claims `evals[i] = p_i(point_i)` are consistent with a
 /// jagged commitment.
 ///
-/// All polynomials must have the same height. `point` is the common evaluation
-/// point (a suffix `r[s..]` of the GKR challenge, length `s = log2(poly_height)`).
+/// Polynomials may have different heights. `point` is the evaluation point of
+/// length `max_s = max(log2(h_i))`. Polynomial `i` with `s_i` variables is
+/// evaluated at the suffix `point[(max_s - s_i)..]`.
 ///
 /// The protocol:
 /// 1. Batch the K column claims via a random column challenge `z_col`.
@@ -304,26 +334,29 @@ pub fn jagged_batch_open<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
         )));
     }
 
-    let s = point.len();
-    let expected_height = 1usize << s;
-    for (i, &h) in comm.poly_heights.iter().enumerate() {
-        if h != expected_height {
-            return Err(Error::InvalidPcsParam(format!(
-                "jagged_batch_open: poly {} has height {}, expected {}",
-                i, h, expected_height
-            )));
-        }
+    let max_s = comm
+        .poly_heights
+        .iter()
+        .map(|&h| ceil_log2(h))
+        .max()
+        .unwrap_or(0);
+    if point.len() != max_s {
+        return Err(Error::InvalidPcsParam(format!(
+            "jagged_batch_open: point length {} != max poly log-height {}",
+            point.len(),
+            max_s
+        )));
     }
 
     let total_evals = comm.total_evaluations();
-    let num_giga_vars = total_evals.next_power_of_two().trailing_zeros() as usize;
+    let num_giga_vars = ceil_log2(total_evals);
 
     // z_row = reverse(point) to account for bit-reversal in jagged_commit.
     let z_row: Vec<E> = point.iter().rev().cloned().collect();
 
     // Write evals to transcript, then sample z_col.
     transcript.append_field_element_exts(evals);
-    let num_col_vars = (num_polys.next_power_of_two().trailing_zeros() as usize).max(1);
+    let num_col_vars = ceil_log2(num_polys).max(1);
     let z_col: Vec<E> = transcript.sample_and_append_vec(b"jagged_z_col", num_col_vars);
 
     let eq_col = build_eq_x_r_vec(&z_col);
@@ -376,8 +409,11 @@ pub fn jagged_batch_open<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
     })
 }
 
-/// Verify that evaluation claims `evals[i] = p_i(point)` are consistent with a
+/// Verify that evaluation claims `evals[i] = p_i(point_i)` are consistent with a
 /// jagged commitment.
+///
+/// Polynomials may have different heights. `point` has length `max_s`. Polynomial
+/// `i` with `s_i` variables is evaluated at the suffix `point[(max_s - s_i)..]`.
 pub fn jagged_batch_verify<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
     vp: &Pcs::VerifierParam,
     comm: &JaggedCommitment<E, Pcs>,
@@ -396,22 +432,31 @@ pub fn jagged_batch_verify<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>
     }
 
     let total_evals = *comm.cumulative_heights.last().unwrap();
-    let num_giga_vars = total_evals.next_power_of_two().trailing_zeros() as usize;
+    let num_giga_vars = ceil_log2(total_evals);
+    let max_s = point.len();
 
     // z_row = reverse(point)
     let z_row: Vec<E> = point.iter().rev().cloned().collect();
 
     // Replay transcript: write evals, sample z_col.
     transcript.append_field_element_exts(evals);
-    let num_col_vars = (num_polys.next_power_of_two().trailing_zeros() as usize).max(1);
+    let num_col_vars = ceil_log2(num_polys).max(1);
     let z_col: Vec<E> = transcript.sample_and_append_vec(b"jagged_z_col", num_col_vars);
 
-    // claimed_sum = Σ_j eq_col[j] · evals[j]
+    // claimed_sum = Σ_i eq_col[i] · C_i · evals[i]
+    // where C_i = eq(z_row[s_i..], 0) = Π_{j=s_i}^{max_s-1} (1 - z_row[j]) is the
+    // correction factor from zero-padding p_i to max_s variables (see module docs).
     let eq_col = build_eq_x_r_vec(&z_col);
-    let claimed_sum: E = eq_col[..num_polys]
-        .iter()
-        .zip(evals.iter())
-        .map(|(&eq, &ev)| eq * ev)
+    let mut suffix_prod = vec![E::ONE; max_s + 1];
+    for j in (0..max_s).rev() {
+        suffix_prod[j] = suffix_prod[j + 1] * (E::ONE - z_row[j]);
+    }
+    let claimed_sum: E = (0..num_polys)
+        .map(|i| {
+            let h_i = comm.cumulative_heights[i + 1] - comm.cumulative_heights[i];
+            let s_i = ceil_log2(h_i);
+            eq_col[i] * suffix_prod[s_i] * evals[i]
+        })
         .sum();
 
     // Verify the jagged sumcheck.
@@ -582,36 +627,35 @@ mod tests {
     fn test_jagged_batch_open_verify_small() {
         let mut rng = thread_rng();
 
-        let num_rows = 1024usize; // s=10
-        let num_cols = 3usize;
-        let s = 10;
-        let total_evals = num_rows * num_cols;
-        let num_giga_vars = total_evals.next_power_of_two().trailing_zeros() as usize;
+        // 3 matrices with different heights: 2^10, 2^11, 2^9 (each 1 column).
+        let log_heights = [10usize, 11, 9];
+        let heights: Vec<usize> = log_heights.iter().map(|&s| 1 << s).collect();
+        let max_s = *log_heights.iter().max().unwrap();
+        let total_evals: usize = heights.iter().sum();
+        let num_giga_vars = ceil_log2(total_evals);
 
         let (pp, vp) = setup_pcs::<E, Pcs>(num_giga_vars);
-        let rmm = make_rmm(num_rows, num_cols);
+        let rmms: Vec<_> = heights.iter().map(|&h| make_rmm(h, 1)).collect();
 
-        // Extract column polynomials (before bit-reversal) for computing true evaluations.
-        let col_polys: Vec<Vec<F>> = (0..num_cols)
-            .map(|c| {
-                (0..num_rows)
-                    .map(|r| rmm.values[r * num_cols + c])
-                    .collect()
-            })
+        // Extract each column polynomial (before bit-reversal).
+        let col_polys: Vec<Vec<F>> = rmms
+            .iter()
+            .map(|rmm| (0..rmm.height()).map(|r| rmm.values[r]).collect())
             .collect();
 
         // Commit.
         let mut transcript_p = BasicTranscript::<E>::new(b"jagged_batch_test");
-        let comm = jagged_commit::<E, Pcs>(&pp, vec![rmm]).expect("commit should succeed");
+        let comm = jagged_commit::<E, Pcs>(&pp, rmms).expect("commit should succeed");
         Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_p).unwrap();
 
-        // Random evaluation point of length s.
-        let point: Vec<E> = (0..s).map(|_| E::random(&mut rng)).collect();
+        // Random evaluation point of length max_s.
+        // Poly i with s_i variables is evaluated at the suffix point[(max_s - s_i)..].
+        let point: Vec<E> = (0..max_s).map(|_| E::random(&mut rng)).collect();
 
-        // Compute true evaluations.
         let evals: Vec<E> = col_polys
             .iter()
-            .map(|col| eval_column_poly_at_point(col, &point))
+            .zip(log_heights.iter())
+            .map(|(col, &s_i)| eval_column_poly_at_point(col, &point[(max_s - s_i)..]))
             .collect();
 
         // Prover: batch open.
@@ -640,7 +684,7 @@ mod tests {
         let num_rows = 1024usize; // s=10
         let num_cols = 1usize;
         let s = 10;
-        let num_giga_vars = (num_rows * num_cols).next_power_of_two().trailing_zeros() as usize;
+        let num_giga_vars = ceil_log2(num_rows * num_cols);
 
         let (pp, vp) = setup_pcs::<E, Pcs>(num_giga_vars);
         let rmm = make_rmm(num_rows, num_cols);
@@ -678,7 +722,7 @@ mod tests {
         let num_rows = 1024usize;
         let num_cols = 3usize;
         let s = 10;
-        let num_giga_vars = (num_rows * num_cols).next_power_of_two().trailing_zeros() as usize;
+        let num_giga_vars = ceil_log2(num_rows * num_cols);
 
         let (pp, vp) = setup_pcs::<E, Pcs>(num_giga_vars);
         let rmm = make_rmm(num_rows, num_cols);
