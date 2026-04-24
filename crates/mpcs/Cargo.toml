@@ -30,6 +30,7 @@ witness.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+tracing-forest = "0.1"
 
 [features]
 nightly-features = ["ff_ext/nightly-features"]
@@ -54,3 +55,7 @@ name = "interpolate"
 harness = false
 name = "whir"
 required-features = ["whir"]
+
+[[bench]]
+harness = false
+name = "jagged_sumcheck"
