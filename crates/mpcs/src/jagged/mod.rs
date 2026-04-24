@@ -42,10 +42,19 @@
 //!
 //! ## Cumulative Heights
 //!
+//! Each polynomial `p_i` has `s_i = ceil_log2(h_i)` variables, where `h_i` is the
+//! original (unpadded) number of evaluations. Before bit-reversal, `p_i` is
+//! zero-padded to `2^{s_i}` entries. **After bit-reversal, these zeros are scattered
+//! throughout the block** (not contiguous at the end), so each polynomial occupies
+//! a full `2^{s_i}`-entry block in `q'`.
+//!
+//! **Note:** Unlike SP1's jagged PCS (which uses raw `h_i`), our `q'` contains
+//! `Σ (2^{s_i} - h_i)` extra zeros from this padding — the cost of the
+//! suffix-to-prefix bit-reversal required by Ceno's main sumcheck.
+//!
 //! The cumulative height sequence `t` tracks the starting position of each polynomial in `q'`:
 //! - `t[0] = 0`
-//! - `t[i+1] = t[i] + h_i`   where `h_i` is the number of evaluations of `p_i`
-//!   (`s_i = ceil_log2(h_i)` variables, so `h_i <= 2^{s_i}`)
+//! - `t[i+1] = t[i] + 2^{s_i}`   (the padded height, not the original `h_i`)
 //!
 //! Given a position `b` in `q'`, the inverse mapping `inv(b) = (i, r)` is defined by:
 //! - `t[i] <= b < t[i+1]`
@@ -57,8 +66,10 @@
 //! ## Commit Protocol
 //!
 //! 1. For each input matrix `M_k` (with `h_k` rows and `w_k` columns):
-//!    a. Extract each column as a polynomial with `h_k` evaluations.
-//!    b. Apply bit-reversal to the evaluations.
+//!    a. Zero-pad `M_k` to `2^{s_k}` rows (where `s_k = ceil_log2(h_k)`).
+//!    b. Apply bit-reversal to the rows. Note: after bit-reversal the zero-padding
+//!    is scattered throughout the block, not contiguous at the end.
+//!    c. Extract each column as a polynomial with `2^{s_k}` evaluations.
 //! 2. Concatenate all bit-reversed polynomials: `cat = bitrev(p_0) || bitrev(p_1) || ...`
 //! 3. Compute cumulative heights `t[i]`.
 //! 4. Pad `cat` to the next power of two (required for MLE representation).
