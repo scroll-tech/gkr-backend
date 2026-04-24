@@ -1,7 +1,9 @@
-//! Jagged PCS Commit Adaptor
+//! Jagged PCS
 //!
-//! This module implements the commit protocol for the Jagged PCS as described in
-//! the SP1 Jagged PCS paper (<https://eprint.iacr.org/2025/917.pdf>) and Ceno issues #1272 / #1288.
+//! Implements the Jagged PCS protocol (commit, batch open, batch verify) tailored to
+//! Ceno's scenario, based on the SP1 Jagged PCS paper
+//! (<https://eprint.iacr.org/2025/917.pdf>) and Ceno issue
+//! [#1272](https://github.com/scroll-tech/ceno/issues/1272).
 //!
 //! ## Overview
 //!
@@ -12,21 +14,31 @@
 //! q' = bitrev(p_0) || bitrev(p_1) || ... || bitrev(p_{N-1})
 //! ```
 //!
-//! where each `p_i` is a column polynomial extracted from the input trace matrices, and
-//! `bitrev` is the suffix-to-prefix bit-reversal transformation.
+//! where each `p_i` is a column polynomial extracted from the input trace matrices.
+//! We cannot use the naive `q = p_0 || ... || p_{N-1}` because the jagged sumcheck
+//! requires prefix-aligned evaluation points, but Ceno's main sumcheck evaluates
+//! polynomials at a **suffix** of the challenge point. The `bitrev` (suffix-to-prefix
+//! bit-reversal) bridges the two, making the jagged PCS applicable (see below).
 //!
 //! ## Suffix-to-Prefix Transformation
 //!
-//! The main sumcheck prover outputs evaluations `v_i = p_i(r[(m-s)..m])` — i.e., at the
-//! **suffix** of the random challenge point. To make these evaluations compatible with the
-//! jagged sumcheck (which operates on prefix-aligned polynomials), we apply a bit-reversal
-//! permutation to each polynomial's evaluations:
+//! Each `p_i` has `s` variables (where `s` varies per polynomial; we write `s` instead
+//! of `s_i` for brevity). The main sumcheck prover outputs evaluations
+//! `v_i = p_i(z_r[(m-s)..m])` — i.e., at the suffix of the random challenge point.
+//! To make these evaluations compatible with the jagged sumcheck (which operates on
+//! prefix-aligned polynomials), we apply a bit-reversal permutation to each polynomial's
+//! evaluations:
 //!
 //! ```text
 //! p_i'[j] = p_i[bitrev_s(j)]   (for j in 0..2^s)
 //! ```
 //!
-//! After bit-reversal, `v_i = p_i(r[(m-s)..m]) = p_i'(reverse(r[(m-s)..m]))`.
+//! After bit-reversal, 
+//! ```text
+//! v_i = p_i(z_r[(m-s)..m]) 
+//!     = p_i'(z_r'[..s])
+//! ```
+//! where `z_r' = reverse(z_r)`.
 //!
 //! ## Cumulative Heights
 //!
@@ -34,12 +46,12 @@
 //! - `t[0] = 0`
 //! - `t[i+1] = t[i] + h_i`   where `h_i = 2^(num_vars of p_i)` is the number of evaluations
 //!
-//! Given a position `b` in `q'`, the verifier can locate the corresponding `(i, r)` pair via:
+//! Given a position `b` in `q'`, the inverse mapping `inv(b) = (i, r)` is defined by:
 //! - `t[i] <= b < t[i+1]`
 //! - `r = b - t[i]`
 //!
-//! The cumulative heights allow the verifier to succinctly evaluate the indicator function
-//! `g(z_r, z_b, t[i], t[i+1])` needed for the jagged sumcheck.
+//! Using the indicator `g(r, b, t[i], t[i+1]) = [r + t[i] = b ∧ b < t[i+1]]`, this has
+//! the closed form: `inv(b) = Σ_{i,r} (i, r) · g(r, b, t[i], t[i+1])`.
 //!
 //! ## Commit Protocol
 //!
@@ -50,6 +62,42 @@
 //! 3. Compute cumulative heights `t[i]`.
 //! 4. Pad `cat` to the next power of two (required for MLE representation).
 //! 5. Commit to the padded `cat` as a single-column matrix using the inner PCS.
+//!
+//! ## Batch Open Protocol
+//!
+//! For notational simplicity, we write `p_i` and `z_r` instead of `p_i'` and `z_r'`
+//! (the bit-reversed variants) throughout this section.
+//!
+//! Each column opening `v_i = p_i(z_r[..s])` requires its own sumcheck. We batch all K
+//! openings into one using `eq(z_c, ·)` weights (soundness loss: `log2(K) / |E|`):
+//!
+//! ```text
+//! v = Σ_i eq(z_c, i) · p_i(z_r[..s])
+//!   = Σ_i eq(z_c, i) · Σ_r eq(z_r, r) · p_i(r)
+//!   = Σ_{i,r} f(i, r) · p_i(r)     where f(i, r) = eq(z_c, i) · eq(z_r, r)
+//! ```
+//!
+//! We apply `inv(b)` to rewrite `f` in terms of the giga-index `b`:
+//!
+//! ```text
+//! f(inv(b)) = Σ_{i,r} f(i, r) · g(r, b, t[i], t[i+1])
+//!           = Σ_i eq(z_c, i) · ĝ(z_r, b, t[i], t[i+1])
+//! ```
+//!
+//! where `ĝ(z_r, b, ·) = Σ_r eq(z_r, r) · g(r, b, ·)` absorbs the row weight.
+//!
+//! Since summation over (i,r) is equivalent to summation over b, we can rewrite the batch opening claim as
+//!
+//! ```text
+//! v = Σ_b q'(b) · f(inv(b))
+//!   = Σ_b q'(b) · Σ_i eq(z_c, i) · ĝ(z_r, b, t[i], t[i+1])
+//! ```
+//!
+//! Defining `h(b) = f(inv(b)) = Σ_i eq(z_c, i) · ĝ(z_r, b, t[i], t[i+1])` (multilinear in `b`):
+//!
+//! The sumcheck reduces this to a single opening of `q'(ρ)` plus a verifier check of
+//! `h(ρ)`. The ROBP makes `ĝ` efficiently evaluable, so the verifier computes
+//! `h(ρ) = Σ_i eq(z_c, i) · ĝ(z_r, ρ, t[i], t[i+1])` in `O(K·n)` time.
 
 use std::{iter::once, marker::PhantomData};
 
