@@ -23,8 +23,9 @@
 //! ## Suffix-to-Prefix Transformation
 //!
 //! Each `p_i` has `s` variables (where `s` varies per polynomial; we write `s` instead
-//! of `s_i` for brevity). The main sumcheck prover outputs evaluations
-//! `v_i = p_i(z_r[(m-s)..m])` — i.e., at the suffix of the random challenge point.
+//! of `s_i` for brevity). Let `m` be the length of `z_r`. The main sumcheck prover
+//! outputs evaluations `v_i = p_i(z_r[(m-s)..m])` — i.e., at the suffix of the
+//! random challenge point.
 //! To make these evaluations compatible with the jagged sumcheck (which operates on
 //! prefix-aligned polynomials), we apply a bit-reversal permutation to each polynomial's
 //! evaluations:
@@ -33,7 +34,7 @@
 //! p_i'[j] = p_i[bitrev_s(j)]   (for j in 0..2^s)
 //! ```
 //!
-//! After bit-reversal, 
+//! After bit-reversal,
 //! ```text
 //! v_i = p_i(z_r[(m-s)..m]) 
 //!     = p_i'(z_r'[..s])
@@ -69,11 +70,11 @@
 //! (the bit-reversed variants) throughout this section.
 //!
 //! Each column opening `v_i = p_i(z_r[..s])` requires its own sumcheck. We batch all K
-//! openings into one using `eq(z_c, ·)` weights (soundness loss: `log2(K) / |E|`):
+//! openings into one using `eq(z_c, ·)` weights (soundness loss: `log2(N) / |E|`):
 //!
 //! ```text
 //! v = Σ_i eq(z_c, i) · p_i(z_r[..s])
-//!   = Σ_i eq(z_c, i) · Σ_r eq(z_r, r) · p_i(r)
+//!   = Σ_{i,r} eq(z_c, i) · eq(z_r, r) · p_i(r)
 //!   = Σ_{i,r} f(i, r) · p_i(r)     where f(i, r) = eq(z_c, i) · eq(z_r, r)
 //! ```
 //!
