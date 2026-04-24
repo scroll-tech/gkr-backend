@@ -120,7 +120,9 @@ use multilinear_extensions::{
 };
 use p3::{
     matrix::{Matrix, bitrev::BitReversableMatrix},
-    maybe_rayon::prelude::{IntoParallelIterator, ParallelSliceMut},
+    maybe_rayon::prelude::{
+        IndexedParallelIterator, IntoParallelIterator, ParallelIterator, ParallelSliceMut,
+    },
 };
 use transcript::Transcript;
 use types::int_to_field_bits;

@@ -8,7 +8,8 @@ use multilinear_extensions::{
     mle::MultilinearExtension, util::max_usable_threads, virtual_poly::build_eq_x_r_vec,
 };
 use p3::maybe_rayon::prelude::{
-    IntoParallelIterator, ParallelIterator, ParallelSlice, ParallelSliceMut,
+    IndexedParallelIterator, IntoParallelIterator, ParallelIterator, ParallelSlice,
+    ParallelSliceMut,
 };
 use sumcheck::{
     macros::{entered_span, exit_span},
