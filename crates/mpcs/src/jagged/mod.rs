@@ -165,19 +165,19 @@ use witness::{InstancePaddingStrategy, RowMajorMatrix};
 ///    column polynomial occupies a contiguous region in memory.
 /// 3. Concatenate all column polynomials: `q' = col_0 || col_1 || ...`
 /// 4. Compute the cumulative height sequence `t`.
-/// 5. Commit to `q'` as a single-column matrix using `Pcs::batch_commit`.
+/// 5. Commit to `q'` as a single-column matrix using `InnerPcs::batch_commit`.
 ///
 /// # Arguments
-/// * `pp` — Prover parameters for `Pcs`.
+/// * `pp` — Prover parameters for `InnerPcs`.
 /// * `rmms` — Non-empty sequence of row-major matrices. This function uses each matrix's height exactly as given.
 ///
 /// # Errors
 /// Returns `Error::InvalidPcsParam` if `rmms` is empty or all matrices are empty.
-/// Any error from the inner `Pcs::batch_commit` is propagated as-is.
-pub fn jagged_commit<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
-    pp: &Pcs::ProverParam,
+/// Any error from the inner `InnerPcs::batch_commit` is propagated as-is.
+pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>(
+    pp: &InnerPcs::ProverParam,
     rmms: Vec<RowMajorMatrix<E::BaseField>>,
-) -> Result<JaggedCommitmentWithWitness<E, Pcs>, Error> {
+) -> Result<JaggedCommitmentWithWitness<E, InnerPcs>, Error> {
     if rmms.is_empty() {
         return Err(Error::InvalidPcsParam(
             "jagged_commit: cannot commit to empty sequence of matrices".to_string(),
@@ -270,7 +270,7 @@ pub fn jagged_commit<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
         InstancePaddingStrategy::Default,
     );
 
-    let inner = Pcs::batch_commit(pp, vec![giga_rmm])?;
+    let inner = InnerPcs::batch_commit(pp, vec![giga_rmm])?;
 
     Ok(JaggedCommitmentWithWitness {
         inner,
@@ -318,13 +318,13 @@ fn compute_f_at_point<E: ExtensionField>(
 /// 1. Batch the K column claims via a random column challenge `z_col`.
 /// 2. Run the jagged sumcheck to reduce to a single evaluation of q'.
 /// 3. Open q' at the sumcheck output point via the inner PCS.
-pub fn jagged_batch_open<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
-    pp: &Pcs::ProverParam,
-    comm: &JaggedCommitmentWithWitness<E, Pcs>,
+pub fn jagged_batch_open<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>(
+    pp: &InnerPcs::ProverParam,
+    comm: &JaggedCommitmentWithWitness<E, InnerPcs>,
     point: &[E],
     evals: &[E],
     transcript: &mut impl Transcript<E>,
-) -> Result<JaggedBatchOpenProof<E, Pcs>, Error> {
+) -> Result<JaggedBatchOpenProof<E, InnerPcs>, Error> {
     let num_polys = comm.num_polys();
     if evals.len() != num_polys {
         return Err(Error::InvalidPcsParam(format!(
@@ -362,7 +362,7 @@ pub fn jagged_batch_open<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
     let eq_col = build_eq_x_r_vec(&z_col);
 
     // Extract q' base-field evaluations from the inner PCS witness.
-    let q_mles = Pcs::get_arc_mle_witness_from_commitment(&comm.inner);
+    let q_mles = InnerPcs::get_arc_mle_witness_from_commitment(&comm.inner);
     assert_eq!(
         q_mles.len(),
         1,
@@ -396,7 +396,7 @@ pub fn jagged_batch_open<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
     transcript.append_field_element_ext(&q_eval);
 
     // Open q' at ρ via inner PCS batch_open.
-    let inner_proof = Pcs::batch_open(
+    let inner_proof = InnerPcs::batch_open(
         pp,
         vec![(&comm.inner, vec![(challenges, vec![q_eval])])],
         transcript,
@@ -414,12 +414,12 @@ pub fn jagged_batch_open<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
 ///
 /// Polynomials may have different heights. `point` has length `max_s`. Polynomial
 /// `i` with `s_i` variables is evaluated at the suffix `point[(max_s - s_i)..]`.
-pub fn jagged_batch_verify<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
-    vp: &Pcs::VerifierParam,
-    comm: &JaggedCommitment<E, Pcs>,
+pub fn jagged_batch_verify<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>(
+    vp: &InnerPcs::VerifierParam,
+    comm: &JaggedCommitment<E, InnerPcs>,
     point: &[E],
     evals: &[E],
-    proof: &JaggedBatchOpenProof<E, Pcs>,
+    proof: &JaggedBatchOpenProof<E, InnerPcs>,
     transcript: &mut impl Transcript<E>,
 ) -> Result<(), Error> {
     let num_polys = comm.cumulative_heights.len() - 1;
@@ -497,7 +497,7 @@ pub fn jagged_batch_verify<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>
     }
 
     // Verify the inner PCS opening.
-    Pcs::batch_verify(
+    InnerPcs::batch_verify(
         vp,
         vec![(
             comm.inner.clone(),
