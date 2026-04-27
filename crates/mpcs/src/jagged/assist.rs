@@ -94,7 +94,13 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
         let r_cd: [StateVec<E>; 4] = std::array::from_fn(|cd| vec_mat_mul(&fwd, &step_mats[i][cd]));
 
         // ---- Round 2i: bind z₃[i] ----
-        // Group backward vectors by (c, d) pair, weighted.
+        //
+        // Key identity (§2.3, Eq. 4): because x_y is Boolean, the MLE
+        // telescoping property  Σ_b f(b)·eq(b, x) = f(x)  collapses the
+        // sum over future variables.  Each polynomial y contributes a single
+        // backward vector bwd[y][i+1] (evaluated along its Boolean suffix)
+        // rather than an exponential sum.  We group these by (c,d) symbol
+        // so that the fwd·M^{(c,d)} precomputation can be shared.
         let mut bwd_sum = [[E::ZERO; ROBP_WIDTH]; 4];
         for y in 0..num_polys {
             let cd = c_bits[y][i] * 2 + d_bits[y][i];
