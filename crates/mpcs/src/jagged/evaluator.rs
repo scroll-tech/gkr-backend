@@ -81,7 +81,13 @@ static ROBP_TRANSITION: [[u8; 16]; ROBP_WIDTH] = {
             let sum = a + c + carry_in;
             if sum & 1 == b {
                 let carry_out = sum >> 1;
-                let lt_out = if b < d { 1 } else if b == d { lt_in } else { 0 };
+                let lt_out = if b < d {
+                    1
+                } else if b == d {
+                    lt_in
+                } else {
+                    0
+                };
                 table[from as usize][sym as usize] = carry_out * 2 + lt_out;
             }
             sym += 1;
@@ -111,6 +117,7 @@ pub fn symbol_transition_matrices<E: ExtensionField>(z1i: E, z2i: E) -> [Transit
 
     let mut mats = [[[E::ZERO; ROBP_WIDTH]; ROBP_WIDTH]; 4];
     for cd in 0..4u8 {
+        #[allow(clippy::needless_range_loop)]
         for from in 0..ROBP_WIDTH {
             for ab in 0..4u8 {
                 let sym = (ab << 2) | cd;
