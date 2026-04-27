@@ -398,6 +398,7 @@ mod tests {
             // Reconstruct T = Σ_{c,d} eq₁(z3,c)·eq₁(z4,d)·M^{(c,d)}
             let mut t_recon = [[E::ZERO; 4]; 4];
             for cd in 0..4 {
+                #[allow(clippy::needless_range_loop)]
                 for i in 0..4 {
                     for j in 0..4 {
                         t_recon[i][j] += cd_weights[cd] * mats[cd][i][j];
@@ -452,6 +453,7 @@ mod tests {
                 let (nz3, nz4) = (E::ONE - z3[i], E::ONE - z4[i]);
                 let cd_w = [nz3 * nz4, nz3 * z4[i], z3[i] * nz4, z3[i] * z4[i]];
                 let mut t_i = [[E::ZERO; 4]; 4];
+                #[allow(clippy::needless_range_loop)]
                 for cd in 0..4 {
                     for r in 0..4 {
                         for c in 0..4 {

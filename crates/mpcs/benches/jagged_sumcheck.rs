@@ -68,7 +68,7 @@ fn bench_assist_sumcheck(c: &mut Criterion) {
     let poly_height_log2 = 20usize;
     let poly_height = 1usize << poly_height_log2;
 
-    for num_polys in [1000, 2000, 4000, 8000] {
+    for num_polys in [1000, 2000, 4000, 8000, 16000] {
         let mut rng = thread_rng();
 
         let total_evals = num_polys * poly_height;
