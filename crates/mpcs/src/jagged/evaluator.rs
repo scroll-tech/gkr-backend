@@ -12,6 +12,12 @@ use ff_ext::ExtensionField;
 // where Tᵢ = Σ_{σ ∈ {0,1}⁴} eq(ζᵢ, σ) · M^(σ) is the eq-weighted
 // transition matrix at step i, e₁ is the initial state vector, and u is
 // the sink label vector.
+//
+// Since multilinear variables can be bound in any order, we fix z₁ and z₂
+// first (to z_row and ρ), which reduces the per-step alphabet from {0,1}⁴
+// to {0,1}² and gives the 4 matrices M_i^{(c,d)}.  The remaining variables
+// z₃, z₄ are then interleaved as (z₃[0], z₄[0], z₃[1], …) to match the
+// ROBP step order, enabling the forward/backward decomposition.
 // ---------------------------------------------------------------------------
 
 pub const ROBP_WIDTH: usize = 4;
@@ -50,6 +56,41 @@ pub fn mat_vec_mul<E: ExtensionField>(m: &TransitionMatrix<E>, v: &StateVec<E>) 
     std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2] + m[i][3] * v[3])
 }
 
+/// Raw ROBP transition table for the indicator g(a,b,c,d) = [a+c=b ∧ b<d].
+///
+/// `ROBP_TRANSITION[from_state][symbol]` = `to_state`, where:
+///   - state = carry * 2 + lt
+///   - symbol = a * 8 + b * 4 + c * 2 + d
+///
+/// A value of `REJECT` (0xFF) means the transition leads to a rejecting sink
+/// (inconsistent addition: LSB of a + c + carry_in ≠ b).
+const REJECT: u8 = 0xFF;
+
+static ROBP_TRANSITION: [[u8; 16]; ROBP_WIDTH] = {
+    let mut table = [[REJECT; 16]; ROBP_WIDTH];
+    let mut from = 0u8;
+    while from < 4 {
+        let carry_in = from >> 1;
+        let lt_in = from & 1;
+        let mut sym = 0u8;
+        while sym < 16 {
+            let a = sym >> 3;
+            let b = (sym >> 2) & 1;
+            let c = (sym >> 1) & 1;
+            let d = sym & 1;
+            let sum = a + c + carry_in;
+            if sum & 1 == b {
+                let carry_out = sum >> 1;
+                let lt_out = if b < d { 1 } else if b == d { lt_in } else { 0 };
+                table[from as usize][sym as usize] = carry_out * 2 + lt_out;
+            }
+            sym += 1;
+        }
+        from += 1;
+    }
+    table
+};
+
 /// Per-symbol transition matrices M_i^{(c,d)} at one ROBP step, with
 /// z1 (= z_row[i]) and z2 (= ρ[i]) eq-weights baked in.
 ///
@@ -57,66 +98,30 @@ pub fn mat_vec_mul<E: ExtensionField>(m: &TransitionMatrix<E>, v: &StateVec<E>) 
 /// Matrix entry `m[from][to]` gives the transition weight from `from` to `to`
 /// when reading symbol `(c, d)`.
 ///
+/// Derived from the raw ROBP transition table via:
+///   M_i^{(c,d)}[from][to] = Σ_{a,b} eq₁(z1,a) · eq₁(z2,b) · [transition(from,(a,b,c,d)) = to]
+///
 /// The full eq-weighted transition matrix is recovered as:
 ///   T_i = Σ_{c,d} eq₁(z3, c) · eq₁(z4, d) · M_i^{(c,d)}
 pub fn symbol_transition_matrices<E: ExtensionField>(z1i: E, z2i: E) -> [TransitionMatrix<E>; 4] {
-    let (nz1, nz2) = (E::ONE - z1i, E::ONE - z2i);
-    let ab00 = nz1 * nz2; // eq₁(z1, 0) · eq₁(z2, 0)
-    let ab01 = nz1 * z2i; // eq₁(z1, 0) · eq₁(z2, 1)
-    let ab10 = z1i * nz2; // eq₁(z1, 1) · eq₁(z2, 0)
-    let ab11 = z1i * z2i; // eq₁(z1, 1) · eq₁(z2, 1)
+    let eq_ab: [E; 4] = {
+        let (nz1, nz2) = (E::ONE - z1i, E::ONE - z2i);
+        [nz1 * nz2, nz1 * z2i, z1i * nz2, z1i * z2i]
+    };
 
-    let z = E::ZERO;
-
-    // M^{(0,0)}: symbol (a, b, c=0, d=0)
-    // carry_in=0, a=0: sum=0, b=0, co=0, ab00, b=d→preserve
-    // carry_in=0, a=1: sum=1, b=1, co=0, ab11, b>d→lt=0
-    // carry_in=1, a=0: sum=1, b=1, co=0, ab01, b>d→lt=0
-    // carry_in=1, a=1: sum=2, b=0, co=1, ab10, b=d→preserve
-    let m00: TransitionMatrix<E> = [
-        [ab00 + ab11, z, z, z],
-        [ab11, ab00, z, z],
-        [ab01, z, ab10, z],
-        [ab01, z, z, ab10],
-    ];
-
-    // M^{(0,1)}: symbol (a, b, c=0, d=1)
-    // carry_in=0, a=0: sum=0, b=0, co=0, ab00, b<d→lt=1
-    // carry_in=0, a=1: sum=1, b=1, co=0, ab11, b=d→preserve
-    // carry_in=1, a=0: sum=1, b=1, co=0, ab01, b=d→preserve
-    // carry_in=1, a=1: sum=2, b=0, co=1, ab10, b<d→lt=1
-    let m01: TransitionMatrix<E> = [
-        [ab11, ab00, z, z],
-        [z, ab00 + ab11, z, z],
-        [ab01, z, z, ab10],
-        [z, ab01, z, ab10],
-    ];
-
-    // M^{(1,0)}: symbol (a, b, c=1, d=0)
-    // carry_in=0, a=0: sum=1, b=1, co=0, ab01, b>d→lt=0
-    // carry_in=0, a=1: sum=2, b=0, co=1, ab10, b=d→preserve
-    // carry_in=1, a=0: sum=2, b=0, co=1, ab00, b=d→preserve
-    // carry_in=1, a=1: sum=3, b=1, co=1, ab11, b>d→lt=0
-    let m10: TransitionMatrix<E> = [
-        [ab01, z, ab10, z],
-        [ab01, z, z, ab10],
-        [z, z, ab00 + ab11, z],
-        [z, z, ab11, ab00],
-    ];
-
-    // M^{(1,1)}: symbol (a, b, c=1, d=1)
-    // carry_in=0, a=0: sum=1, b=1, co=0, ab01, b=d→preserve
-    // carry_in=0, a=1: sum=2, b=0, co=1, ab10, b<d→lt=1
-    // carry_in=1, a=0: sum=2, b=0, co=1, ab00, b<d→lt=1
-    // carry_in=1, a=1: sum=3, b=1, co=1, ab11, b=d→preserve
-    let m11: TransitionMatrix<E> = [
-        [ab01, z, z, ab10],
-        [z, ab01, z, ab10],
-        [z, z, ab11, ab00],
-        [z, z, z, ab00 + ab11],
-    ];
-
-    [m00, m01, m10, m11]
+    let mut mats = [[[E::ZERO; ROBP_WIDTH]; ROBP_WIDTH]; 4];
+    for cd in 0..4u8 {
+        for from in 0..ROBP_WIDTH {
+            for ab in 0..4u8 {
+                let sym = (ab << 2) | cd;
+                let to = ROBP_TRANSITION[from][sym as usize];
+                if to != REJECT {
+                    mats[cd as usize][from][to as usize] += eq_ab[ab as usize];
+                }
+            }
+        }
+    }
+    mats
 }
 
 /// Compute the eq-weighted transition matrix at step `i`.
