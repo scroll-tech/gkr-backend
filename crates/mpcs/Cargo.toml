@@ -59,3 +59,7 @@ required-features = ["whir"]
 [[bench]]
 harness = false
 name = "jagged_sumcheck"
+
+[[bench]]
+harness = false
+name = "jagged_pcs"

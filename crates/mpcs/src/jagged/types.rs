@@ -58,12 +58,15 @@ impl<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
 /// Proof for the jagged batch opening protocol.
 ///
 /// Contains a sumcheck proof (reducing K column evaluation claims to a single
-/// point on q'), the evaluation q'(ρ), and an inner PCS opening proof.
+/// point on q'), the evaluation q'(ρ), an assist sumcheck proof (reducing K
+/// ROBP evaluations to one), and an inner PCS opening proof.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(bound(serialize = "", deserialize = ""))]
 pub struct JaggedBatchOpenProof<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>> {
     pub sumcheck_proof: IOPProof<E>,
     pub q_eval: E,
+    pub f_at_rho: E,
+    pub assist_proof: IOPProof<E>,
     pub inner_proof: InnerPcs::Proof,
 }
 

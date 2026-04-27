@@ -14,6 +14,111 @@ use ff_ext::ExtensionField;
 // the sink label vector.
 // ---------------------------------------------------------------------------
 
+pub const ROBP_WIDTH: usize = 4;
+
+pub type StateVec<E> = [E; ROBP_WIDTH];
+pub type TransitionMatrix<E> = [[E; ROBP_WIDTH]; ROBP_WIDTH];
+
+/// Sink label vector: accept at state (carry=0, lt=1) = index 1.
+pub fn sink_labels<E: ExtensionField>() -> StateVec<E> {
+    let mut u = [E::ZERO; ROBP_WIDTH];
+    u[1] = E::ONE;
+    u
+}
+
+/// Initial forward vector: source state (carry=0, lt=0) = index 0.
+pub fn source_vec<E: ExtensionField>() -> StateVec<E> {
+    let mut v = [E::ZERO; ROBP_WIDTH];
+    v[0] = E::ONE;
+    v
+}
+
+#[inline]
+pub fn dot4<E: ExtensionField>(a: &StateVec<E>, b: &StateVec<E>) -> E {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+}
+
+/// Row-vector × matrix: out[j] = Σ_i v[i] * m[i][j].
+#[inline]
+pub fn vec_mat_mul<E: ExtensionField>(v: &StateVec<E>, m: &TransitionMatrix<E>) -> StateVec<E> {
+    std::array::from_fn(|j| v[0] * m[0][j] + v[1] * m[1][j] + v[2] * m[2][j] + v[3] * m[3][j])
+}
+
+/// Matrix × column-vector: out[i] = Σ_j m[i][j] * v[j].
+#[inline]
+pub fn mat_vec_mul<E: ExtensionField>(m: &TransitionMatrix<E>, v: &StateVec<E>) -> StateVec<E> {
+    std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2] + m[i][3] * v[3])
+}
+
+/// Per-symbol transition matrices M_i^{(c,d)} at one ROBP step, with
+/// z1 (= z_row[i]) and z2 (= ρ[i]) eq-weights baked in.
+///
+/// Returns 4 matrices indexed by `c * 2 + d` for `(c, d) ∈ {0,1}²`.
+/// Matrix entry `m[from][to]` gives the transition weight from `from` to `to`
+/// when reading symbol `(c, d)`.
+///
+/// The full eq-weighted transition matrix is recovered as:
+///   T_i = Σ_{c,d} eq₁(z3, c) · eq₁(z4, d) · M_i^{(c,d)}
+pub fn symbol_transition_matrices<E: ExtensionField>(z1i: E, z2i: E) -> [TransitionMatrix<E>; 4] {
+    let (nz1, nz2) = (E::ONE - z1i, E::ONE - z2i);
+    let ab00 = nz1 * nz2; // eq₁(z1, 0) · eq₁(z2, 0)
+    let ab01 = nz1 * z2i; // eq₁(z1, 0) · eq₁(z2, 1)
+    let ab10 = z1i * nz2; // eq₁(z1, 1) · eq₁(z2, 0)
+    let ab11 = z1i * z2i; // eq₁(z1, 1) · eq₁(z2, 1)
+
+    let z = E::ZERO;
+
+    // M^{(0,0)}: symbol (a, b, c=0, d=0)
+    // carry_in=0, a=0: sum=0, b=0, co=0, ab00, b=d→preserve
+    // carry_in=0, a=1: sum=1, b=1, co=0, ab11, b>d→lt=0
+    // carry_in=1, a=0: sum=1, b=1, co=0, ab01, b>d→lt=0
+    // carry_in=1, a=1: sum=2, b=0, co=1, ab10, b=d→preserve
+    let m00: TransitionMatrix<E> = [
+        [ab00 + ab11, z, z, z],
+        [ab11, ab00, z, z],
+        [ab01, z, ab10, z],
+        [ab01, z, z, ab10],
+    ];
+
+    // M^{(0,1)}: symbol (a, b, c=0, d=1)
+    // carry_in=0, a=0: sum=0, b=0, co=0, ab00, b<d→lt=1
+    // carry_in=0, a=1: sum=1, b=1, co=0, ab11, b=d→preserve
+    // carry_in=1, a=0: sum=1, b=1, co=0, ab01, b=d→preserve
+    // carry_in=1, a=1: sum=2, b=0, co=1, ab10, b<d→lt=1
+    let m01: TransitionMatrix<E> = [
+        [ab11, ab00, z, z],
+        [z, ab00 + ab11, z, z],
+        [ab01, z, z, ab10],
+        [z, ab01, z, ab10],
+    ];
+
+    // M^{(1,0)}: symbol (a, b, c=1, d=0)
+    // carry_in=0, a=0: sum=1, b=1, co=0, ab01, b>d→lt=0
+    // carry_in=0, a=1: sum=2, b=0, co=1, ab10, b=d→preserve
+    // carry_in=1, a=0: sum=2, b=0, co=1, ab00, b=d→preserve
+    // carry_in=1, a=1: sum=3, b=1, co=1, ab11, b>d→lt=0
+    let m10: TransitionMatrix<E> = [
+        [ab01, z, ab10, z],
+        [ab01, z, z, ab10],
+        [z, z, ab00 + ab11, z],
+        [z, z, ab11, ab00],
+    ];
+
+    // M^{(1,1)}: symbol (a, b, c=1, d=1)
+    // carry_in=0, a=0: sum=1, b=1, co=0, ab01, b=d→preserve
+    // carry_in=0, a=1: sum=2, b=0, co=1, ab10, b<d→lt=1
+    // carry_in=1, a=0: sum=2, b=0, co=1, ab00, b<d→lt=1
+    // carry_in=1, a=1: sum=3, b=1, co=1, ab11, b=d→preserve
+    let m11: TransitionMatrix<E> = [
+        [ab01, z, z, ab10],
+        [z, ab01, z, ab10],
+        [z, z, ab11, ab00],
+        [z, z, z, ab00 + ab11],
+    ];
+
+    [m00, m01, m10, m11]
+}
+
 /// Compute the eq-weighted transition matrix at step `i`.
 ///
 /// Returns `(T_same, T_lt1, T_lt0)`: three 2×2 matrices (indexed by carry)
@@ -191,7 +296,7 @@ mod tests {
     use p3::field::FieldAlgebra;
     use rand::thread_rng;
 
-    use super::{evaluate_g_backward, evaluate_g_forward};
+    use super::*;
 
     type E = BabyBearExt4;
 
@@ -261,6 +366,94 @@ mod tests {
             let fwd = evaluate_g_forward(&z1, &z2, &z3, &z4);
             let bwd = evaluate_g_backward(&z1, &z2, &z3, &z4);
             assert_eq!(fwd, bwd, "forward != backward at n={n}");
+        }
+    }
+
+    /// Verify that recombining per-symbol matrices reproduces transition_weights.
+    #[test]
+    fn test_symbol_matrices_match_transition_weights() {
+        let mut rng = thread_rng();
+        for _ in 0..20 {
+            let z1i = E::random(&mut rng);
+            let z2i = E::random(&mut rng);
+            let z3i = E::random(&mut rng);
+            let z4i = E::random(&mut rng);
+
+            let mats = symbol_transition_matrices(z1i, z2i);
+            let (nz3, nz4) = (E::ONE - z3i, E::ONE - z4i);
+            let cd_weights = [nz3 * nz4, nz3 * z4i, z3i * nz4, z3i * z4i];
+
+            // Reconstruct T = Σ_{c,d} eq₁(z3,c)·eq₁(z4,d)·M^{(c,d)}
+            let mut t_recon = [[E::ZERO; 4]; 4];
+            for cd in 0..4 {
+                for i in 0..4 {
+                    for j in 0..4 {
+                        t_recon[i][j] += cd_weights[cd] * mats[cd][i][j];
+                    }
+                }
+            }
+
+            // Compare against transition_weights-based backward step.
+            let transitions = transition_weights(z1i, z2i, z3i, z4i);
+            let mut t_expected = [[E::ZERO; 4]; 4];
+            for &(ci, co, w_same, w_lt1, w_lt0) in &transitions {
+                // M[from][to] convention, matching backward pass.
+                t_expected[ci * 2][co * 2] += w_same + w_lt0;
+                t_expected[ci * 2][co * 2 + 1] += w_lt1;
+                t_expected[ci * 2 + 1][co * 2] += w_lt0;
+                t_expected[ci * 2 + 1][co * 2 + 1] += w_same + w_lt1;
+            }
+
+            assert_eq!(
+                t_recon, t_expected,
+                "symbol matrices don't match transition_weights"
+            );
+        }
+    }
+
+    /// Verify backward precomputation: using per-symbol matrices with Boolean
+    /// (c, d) reproduces evaluate_g.
+    #[test]
+    fn test_backward_via_symbol_matrices() {
+        let mut rng = thread_rng();
+        for n in 1..=5 {
+            let z1: Vec<E> = (0..n).map(|_| E::random(&mut rng)).collect();
+            let z2: Vec<E> = (0..n).map(|_| E::random(&mut rng)).collect();
+            let z3: Vec<E> = (0..n).map(|_| E::random(&mut rng)).collect();
+            let z4: Vec<E> = (0..n).map(|_| E::random(&mut rng)).collect();
+
+            let expected = evaluate_g_backward(&z1, &z2, &z3, &z4);
+
+            // Compute using per-symbol matrices with Boolean (c, d) from z3/z4.
+            // Round each z3[i]/z4[i] to the nearest bit for this test — instead,
+            // use evaluate_g with actual field elements and compare using the
+            // matrix product approach.
+            let step_mats: Vec<_> = (0..n)
+                .map(|i| symbol_transition_matrices(z1[i], z2[i]))
+                .collect();
+
+            // Build T_i = Σ_{c,d} eq1(z3[i],c)*eq1(z4[i],d)*M^{(c,d)}
+            // and multiply backward.
+            let u = sink_labels::<E>();
+            let mut val = u;
+            for i in (0..n).rev() {
+                let (nz3, nz4) = (E::ONE - z3[i], E::ONE - z4[i]);
+                let cd_w = [nz3 * nz4, nz3 * z4[i], z3[i] * nz4, z3[i] * z4[i]];
+                let mut t_i = [[E::ZERO; 4]; 4];
+                for cd in 0..4 {
+                    for r in 0..4 {
+                        for c in 0..4 {
+                            t_i[r][c] += cd_w[cd] * step_mats[i][cd][r][c];
+                        }
+                    }
+                }
+                val = mat_vec_mul(&t_i, &val);
+            }
+            let result = val[0]; // source state
+            assert_eq!(
+                result, expected,
+                "symbol-matrix backward != evaluate_g at n={n}"
+            );
         }
     }
 }
