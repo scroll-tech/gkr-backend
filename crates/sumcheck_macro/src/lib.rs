@@ -245,7 +245,7 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
                             } else if x == 2 {
                                 quote! {-#v[b]}
                             } else {
-                                let scale = (x - 1) as u32;
+                                let scale = x - 1;
                                 quote! {-(#v[b] * E::BaseField::from_canonical_u32(#scale))}
                             }
                         })
