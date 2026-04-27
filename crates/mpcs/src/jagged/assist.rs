@@ -12,6 +12,7 @@
 //! each pair of consecutive sumcheck rounds maps to one ROBP step.
 
 use ff_ext::ExtensionField;
+use p3::maybe_rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use sumcheck::structs::{IOPProof, IOPProverMessage};
 use transcript::Transcript;
 
@@ -67,16 +68,18 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
     // Precompute backward vectors: bwd[y][i] for i ∈ [0, n_robp].
     // bwd[y][n] = sink_labels, bwd[y][i] = M_i^{(c,d)} · bwd[y][i+1]
     let u = sink_labels::<E>();
-    let mut bwd: Vec<Vec<StateVec<E>>> = Vec::with_capacity(num_polys);
-    for y in 0..num_polys {
-        let mut vecs = vec![[E::ZERO; ROBP_WIDTH]; n_robp + 1];
-        vecs[n_robp] = u;
-        for i in (0..n_robp).rev() {
-            let cd = c_bits[y][i] * 2 + d_bits[y][i];
-            vecs[i] = mat_vec_mul(&step_mats[i][cd], &vecs[i + 1]);
-        }
-        bwd.push(vecs);
-    }
+    let bwd: Vec<Vec<StateVec<E>>> = (0..num_polys)
+        .into_par_iter()
+        .map(|y| {
+            let mut vecs = vec![[E::ZERO; ROBP_WIDTH]; n_robp + 1];
+            vecs[n_robp] = u;
+            for i in (0..n_robp).rev() {
+                let cd = c_bits[y][i] * 2 + d_bits[y][i];
+                vecs[i] = mat_vec_mul(&step_mats[i][cd], &vecs[i + 1]);
+            }
+            vecs
+        })
+        .collect();
 
     // Initialize weights and forward vector.
     let mut weights: Vec<E> = eq_col[..num_polys].to_vec();
@@ -133,22 +136,14 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
             evaluations: vec![p1, p2],
         });
 
-        // Update weights: w_y *= eq₁(α, c_y[i])
-        let na = E::ONE - alpha;
-        for y in 0..num_polys {
-            weights[y] *= if c_bits[y][i] == 0 { na } else { alpha };
-        }
-
         // ---- Round 2i+1: bind z₄[i] ----
-        // Group by d only (c is already absorbed into weights).
-        let mut bwd_sum_d = [[E::ZERO; ROBP_WIDTH]; 2];
-        for y in 0..num_polys {
-            let d = d_bits[y][i];
-            let w = weights[y];
-            for s in 0..ROBP_WIDTH {
-                bwd_sum_d[d][s] += w * bwd[y][i + 1][s];
-            }
-        }
+        // Derive bwd_sum_d from bwd_sum: absorb eq₁(α, c) without a second O(K) pass.
+        // bwd_sum_d[d] = (1-α)·bwd_sum[(c=0,d)] + α·bwd_sum[(c=1,d)]
+        let na = E::ONE - alpha;
+        let bwd_sum_d: [[E; ROBP_WIDTH]; 2] = [
+            std::array::from_fn(|s| na * bwd_sum[0][s] + alpha * bwd_sum[2][s]),
+            std::array::from_fn(|s| na * bwd_sum[1][s] + alpha * bwd_sum[3][s]),
+        ];
 
         // fwd · T_full(α, λ) at λ=0: (1-α)·R_{0,0} + α·R_{1,0}
         let row_at_0: StateVec<E> = std::array::from_fn(|j| na * r_cd[0][j] + alpha * r_cd[2][j]);
@@ -176,18 +171,20 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
             evaluations: vec![p1, p2],
         });
 
-        // Update weights: w_y *= eq₁(β, d_y[i])
+        // Fused weight update: w_y *= eq₁(α, c_y[i]) · eq₁(β, d_y[i])
         let nb = E::ONE - beta;
+        let eq_cd = [na * nb, na * beta, alpha * nb, alpha * beta];
         for y in 0..num_polys {
-            weights[y] *= if d_bits[y][i] == 0 { nb } else { beta };
+            let cd = c_bits[y][i] * 2 + d_bits[y][i];
+            weights[y] *= eq_cd[cd];
         }
 
         // Update forward vector: fwd ← fwd · T_full(α, β)
         fwd = std::array::from_fn(|j| {
-            na * nb * r_cd[0][j]
-                + na * beta * r_cd[1][j]
-                + alpha * nb * r_cd[2][j]
-                + alpha * beta * r_cd[3][j]
+            eq_cd[0] * r_cd[0][j]
+                + eq_cd[1] * r_cd[1][j]
+                + eq_cd[2] * r_cd[2][j]
+                + eq_cd[3] * r_cd[3][j]
         });
     }
 
