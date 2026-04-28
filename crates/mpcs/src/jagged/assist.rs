@@ -13,11 +13,7 @@
 
 use ff_ext::ExtensionField;
 use multilinear_extensions::util::max_usable_threads;
-#[cfg(feature = "parallel")]
-use p3::maybe_rayon::prelude::IndexedParallelIterator;
-use p3::maybe_rayon::prelude::{
-    IntoParallelIterator, ParallelIterator, ParallelSlice, ParallelSliceMut,
-};
+use p3::maybe_rayon::prelude::*;
 use sumcheck::structs::{IOPProof, IOPProverMessage};
 use transcript::Transcript;
 

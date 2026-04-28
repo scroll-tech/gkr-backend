@@ -160,11 +160,9 @@ use multilinear_extensions::{
     util::ceil_log2,
     virtual_poly::{VPAuxInfo, build_eq_x_r_vec},
 };
-#[cfg(feature = "parallel")]
-use p3::maybe_rayon::prelude::IndexedParallelIterator;
 use p3::{
     matrix::{Matrix, bitrev::BitReversableMatrix},
-    maybe_rayon::prelude::{IntoParallelIterator, ParallelIterator, ParallelSliceMut},
+    maybe_rayon::prelude::*,
 };
 use transcript::Transcript;
 use types::int_to_field_bits;
