@@ -160,24 +160,16 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
             })
             .collect();
 
-        let mut bwd_sum = [[E::ZERO; ROBP_WIDTH]; 4];
         let (mut p0, mut p1, mut p2) = (E::ZERO, E::ZERO, E::ZERO);
-        for (p_local, bs_local) in &partials {
+        for (p_local, _) in &partials {
             p0 += p_local[0];
             p1 += p_local[1];
             p2 += p_local[2];
-            for cd in 0..4 {
-                for s in 0..ROBP_WIDTH {
-                    bwd_sum[cd][s] += bs_local[cd][s];
-                }
-            }
         }
 
         debug_assert_eq!(
             p0 + p1,
             if i == 0 && challenges.is_empty() {
-                // First round: p(0)+p(1) should equal the claimed_sum.
-                // We don't have claimed_sum here but can skip the check.
                 p0 + p1
             } else {
                 p0 + p1
@@ -200,15 +192,9 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
         //   p_{2i+1}(λ) = Σ_y w_y · eq₁(λ, d_y[i]) · fwd · M_i^{(α, λ)} · bwd[i+1][y]
         // where w_y logically includes eq₁(α, c_y[i]) from round 2i.
         //
-        // Rather than an O(K) weight update, absorb eq₁(α, c) into the buckets:
-        //   bwd_sum_d[d] = Σ_c eq₁(α,c) · bwd_sum[c*2+d]
-        // collapsing 4 buckets into 2.
+        // Reuse cached per-thread bwd_sums from round 2i: each absorbs α to
+        // get local bwd_sum_d, computes local p(0), p(1), p(2), then we sum.
         let na = E::ONE - alpha;
-        let bwd_sum_d: [[E; ROBP_WIDTH]; 2] = [
-            std::array::from_fn(|s| na * bwd_sum[0][s] + alpha * bwd_sum[2][s]),
-            std::array::from_fn(|s| na * bwd_sum[1][s] + alpha * bwd_sum[3][s]),
-        ];
-
         // fwd · M_i^{(α, λ)} at λ=0: (1-α)·R_{0,0} + α·R_{1,0}
         let row_at_0: StateVec<E> = std::array::from_fn(|j| na * r_cd[0][j] + alpha * r_cd[2][j]);
         // at λ=1: (1-α)·R_{0,1} + α·R_{1,1}
@@ -216,14 +202,19 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
         // at λ=2: 2·row_at_1 - row_at_0
         let row_at_2: StateVec<E> = std::array::from_fn(|j| row_at_1[j].double() - row_at_0[j]);
 
-        let p0 = dot4(&row_at_0, &bwd_sum_d[0]);
-        let p1 = dot4(&row_at_1, &bwd_sum_d[1]);
-        let p2 = term_d1_d0_combine(
-            dot4(&row_at_2, &bwd_sum_d[0]),
-            dot4(&row_at_2, &bwd_sum_d[1]),
-        );
-
-        let _ = p0; // used only in debug assertions
+        let (mut p0, mut p1, mut p2) = (E::ZERO, E::ZERO, E::ZERO);
+        for (_, local_bwd_sum) in &partials {
+            let local_bwd_sum_d: [[E; ROBP_WIDTH]; 2] = [
+                std::array::from_fn(|s| na * local_bwd_sum[0][s] + alpha * local_bwd_sum[2][s]),
+                std::array::from_fn(|s| na * local_bwd_sum[1][s] + alpha * local_bwd_sum[3][s]),
+            ];
+            p0 += dot4(&row_at_0, &local_bwd_sum_d[0]);
+            p1 += dot4(&row_at_1, &local_bwd_sum_d[1]);
+            p2 += term_d1_d0_combine(
+                dot4(&row_at_2, &local_bwd_sum_d[0]),
+                dot4(&row_at_2, &local_bwd_sum_d[1]),
+            );
+        }
 
         transcript.append_field_element_ext(&p1);
         transcript.append_field_element_ext(&p2);
