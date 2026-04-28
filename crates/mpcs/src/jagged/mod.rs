@@ -139,10 +139,12 @@
 //! `h(ρ)`. The ROBP makes `ĝ` efficiently evaluable, so the verifier computes
 //! `h(ρ) = Σ_i eq(z_c, i) · ĝ(z_r, ρ, t[i], t[i+1])` in `O(K·n)` time.
 
+pub mod assist;
 pub mod evaluator;
 pub mod sumcheck;
 mod types;
 
+pub use assist::{assist_sumcheck_prove, compute_q_at_assist_point};
 pub use evaluator::{evaluate_g, evaluate_g_backward, evaluate_g_forward};
 pub use sumcheck::{JaggedSumcheckInput, jagged_sumcheck_prove};
 pub use types::{JaggedBatchOpenProof, JaggedCommitment, JaggedCommitmentWithWitness};
@@ -160,9 +162,7 @@ use multilinear_extensions::{
 };
 use p3::{
     matrix::{Matrix, bitrev::BitReversableMatrix},
-    maybe_rayon::prelude::{
-        IndexedParallelIterator, IntoParallelIterator, ParallelIterator, ParallelSliceMut,
-    },
+    maybe_rayon::prelude::*,
 };
 use transcript::Transcript;
 use types::int_to_field_bits;
@@ -396,26 +396,54 @@ pub fn jagged_batch_open<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme
         num_giga_vars,
         cumulative_heights: &comm.cumulative_heights,
         eq_row,
-        eq_col,
+        eq_col: eq_col.to_vec(),
     };
     let (sumcheck_proof, challenges) = jagged_sumcheck_prove(&input, transcript, None);
+    let rho = challenges;
 
     // Evaluate q'(ρ).
-    let q_eval = q_mle.evaluate(&challenges);
+    let q_eval = q_mle.evaluate(&rho);
 
-    // Write q_eval to transcript before inner PCS open.
+    // Compute f̂(ρ) = Σ_y eq_col[y] · ĝ(z_row, ρ, bits(t_y), bits(t_{y+1})).
+    let n_robp = num_giga_vars + if total_evals.is_power_of_two() { 1 } else { 0 };
+    let mut z_row_padded = z_row;
+    z_row_padded.resize(n_robp, E::ZERO);
+    let mut rho_padded = rho.clone();
+    rho_padded.resize(n_robp, E::ZERO);
+    let f_at_rho = compute_f_at_point(
+        &z_row_padded,
+        &rho_padded,
+        &eq_col,
+        &comm.cumulative_heights,
+        n_robp,
+    );
+
+    // Write q_eval and f_at_rho to transcript.
     transcript.append_field_element_ext(&q_eval);
+    transcript.append_field_element_ext(&f_at_rho);
+
+    // Run the assist sumcheck to prove f̂(ρ) is correct.
+    let (assist_proof, _assist_challenges) = assist_sumcheck_prove(
+        &z_row_padded,
+        &rho_padded,
+        &eq_col,
+        &comm.cumulative_heights,
+        n_robp,
+        transcript,
+    );
 
     // Open q' at ρ via inner PCS batch_open.
     let inner_proof = InnerPcs::batch_open(
         pp,
-        vec![(&comm.inner, vec![(challenges, vec![q_eval])])],
+        vec![(&comm.inner, vec![(rho, vec![q_eval])])],
         transcript,
     )?;
 
     Ok(JaggedBatchOpenProof {
         sumcheck_proof,
         q_eval,
+        f_at_rho,
+        assist_proof,
         inner_proof,
     })
 }
@@ -484,26 +512,47 @@ pub fn jagged_batch_verify<E: ExtensionField, InnerPcs: PolynomialCommitmentSche
     // When total_evals is an exact power of 2, num_giga_vars bits can't represent it.
     let n_robp = num_giga_vars + if total_evals.is_power_of_two() { 1 } else { 0 };
 
-    // Compute f̂(ρ) via the ROBP evaluator.
+    // Write q_eval and f_at_rho to transcript (must match prover).
+    transcript.append_field_element_ext(&proof.q_eval);
+    transcript.append_field_element_ext(&proof.f_at_rho);
+
+    // Check multiplicative subclaim: q'(ρ) · f̂(ρ) == expected_evaluation.
+    if proof.q_eval * proof.f_at_rho != subclaim.expected_evaluation {
+        return Err(Error::InvalidPcsOpen(
+            "jagged_batch_verify: q_eval * f(rho) != subclaim expected evaluation".into(),
+        ));
+    }
+
+    // Verify the assist sumcheck: proves that f_at_rho is correct.
+    let n_assist = 2 * n_robp;
+    let assist_aux = VPAuxInfo {
+        max_degree: 2,
+        max_num_variables: n_assist,
+        phantom: PhantomData::<E>,
+    };
+    let assist_subclaim =
+        IOPVerifierState::<E>::verify(proof.f_at_rho, &proof.assist_proof, &assist_aux, transcript);
+    let assist_point: Vec<E> = assist_subclaim.point.iter().map(|c| c.elements).collect();
+
+    // De-interleave the assist point: (z3[0], z4[0], z3[1], z4[1], ...)
+    let rho_star_c: Vec<E> = (0..n_robp).map(|i| assist_point[2 * i]).collect();
+    let rho_star_d: Vec<E> = (0..n_robp).map(|i| assist_point[2 * i + 1]).collect();
+
+    // h(ρ*) = ĝ(z_row_padded, ρ_padded, ρ*_c, ρ*_d) — one ROBP evaluation.
     let mut z_row_padded = z_row;
     z_row_padded.resize(n_robp, E::ZERO);
     let mut rho_padded = rho.clone();
     rho_padded.resize(n_robp, E::ZERO);
-    let f_at_rho = compute_f_at_point(
-        &z_row_padded,
-        &rho_padded,
-        &eq_col,
-        &comm.cumulative_heights,
-        n_robp,
-    );
+    let h_at_rho_star = evaluate_g(&z_row_padded, &rho_padded, &rho_star_c, &rho_star_d);
 
-    // Write q_eval to transcript (must match prover).
-    transcript.append_field_element_ext(&proof.q_eval);
+    // Q(ρ*) = Σ_y eq_col[y] · eq(ρ*, x_y).
+    let q_at_rho_star =
+        compute_q_at_assist_point(&assist_point, &eq_col, &comm.cumulative_heights, n_robp);
 
-    // Check subclaim: q'(ρ) · f̂(ρ) == expected_evaluation.
-    if proof.q_eval * f_at_rho != subclaim.expected_evaluation {
+    // Check assist subclaim: h(ρ*) · Q(ρ*) == expected_evaluation.
+    if h_at_rho_star * q_at_rho_star != assist_subclaim.expected_evaluation {
         return Err(Error::InvalidPcsOpen(
-            "jagged_batch_verify: q_eval * f(rho) != subclaim expected evaluation".into(),
+            "jagged_batch_verify: assist sumcheck final check failed".into(),
         ));
     }
 

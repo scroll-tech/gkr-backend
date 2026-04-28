@@ -12,7 +12,124 @@ use ff_ext::ExtensionField;
 // where Tᵢ = Σ_{σ ∈ {0,1}⁴} eq(ζᵢ, σ) · M^(σ) is the eq-weighted
 // transition matrix at step i, e₁ is the initial state vector, and u is
 // the sink label vector.
+//
+// Since multilinear variables can be bound in any order, we fix z₁ and z₂
+// first (to z_row and ρ), which reduces the per-step alphabet from {0,1}⁴
+// to {0,1}² and gives the 4 matrices M_i^{(c,d)}.  The remaining variables
+// z₃, z₄ are then interleaved as (z₃[0], z₄[0], z₃[1], …) to match the
+// ROBP step order, enabling the forward/backward decomposition.
 // ---------------------------------------------------------------------------
+
+pub const ROBP_WIDTH: usize = 4;
+
+pub type StateVec<E> = [E; ROBP_WIDTH];
+pub type TransitionMatrix<E> = [[E; ROBP_WIDTH]; ROBP_WIDTH];
+
+/// Sink label vector: accept at state (carry=0, lt=1) = index 1.
+pub fn sink_labels<E: ExtensionField>() -> StateVec<E> {
+    let mut u = [E::ZERO; ROBP_WIDTH];
+    u[1] = E::ONE;
+    u
+}
+
+/// Initial forward vector: source state (carry=0, lt=0) = index 0.
+pub fn source_vec<E: ExtensionField>() -> StateVec<E> {
+    let mut v = [E::ZERO; ROBP_WIDTH];
+    v[0] = E::ONE;
+    v
+}
+
+#[inline]
+pub fn dot4<E: ExtensionField>(a: &StateVec<E>, b: &StateVec<E>) -> E {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+}
+
+/// Row-vector × matrix: out[j] = Σ_i v[i] * m[i][j].
+#[inline]
+pub fn vec_mat_mul<E: ExtensionField>(v: &StateVec<E>, m: &TransitionMatrix<E>) -> StateVec<E> {
+    std::array::from_fn(|j| v[0] * m[0][j] + v[1] * m[1][j] + v[2] * m[2][j] + v[3] * m[3][j])
+}
+
+/// Matrix × column-vector: out[i] = Σ_j m[i][j] * v[j].
+#[inline]
+pub fn mat_vec_mul<E: ExtensionField>(m: &TransitionMatrix<E>, v: &StateVec<E>) -> StateVec<E> {
+    std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2] + m[i][3] * v[3])
+}
+
+/// Raw ROBP transition table for the indicator g(a,b,c,d) = [a+c=b ∧ b<d].
+///
+/// `ROBP_TRANSITION[from_state][symbol]` = `to_state`, where:
+///   - state = carry * 2 + lt
+///   - symbol = a * 8 + b * 4 + c * 2 + d
+///
+/// A value of `REJECT` (0xFF) means the transition leads to a rejecting sink
+/// (inconsistent addition: LSB of a + c + carry_in ≠ b).
+const REJECT: u8 = 0xFF;
+
+static ROBP_TRANSITION: [[u8; 16]; ROBP_WIDTH] = {
+    let mut table = [[REJECT; 16]; ROBP_WIDTH];
+    let mut from = 0u8;
+    while from < 4 {
+        let carry_in = from >> 1;
+        let lt_in = from & 1;
+        let mut sym = 0u8;
+        while sym < 16 {
+            let a = sym >> 3;
+            let b = (sym >> 2) & 1;
+            let c = (sym >> 1) & 1;
+            let d = sym & 1;
+            let sum = a + c + carry_in;
+            if sum & 1 == b {
+                let carry_out = sum >> 1;
+                let lt_out = if b < d {
+                    1
+                } else if b == d {
+                    lt_in
+                } else {
+                    0
+                };
+                table[from as usize][sym as usize] = carry_out * 2 + lt_out;
+            }
+            sym += 1;
+        }
+        from += 1;
+    }
+    table
+};
+
+/// Per-symbol transition matrices M_i^{(c,d)} at one ROBP step, with
+/// z1 (= z_row[i]) and z2 (= ρ[i]) eq-weights baked in.
+///
+/// Returns 4 matrices indexed by `c * 2 + d` for `(c, d) ∈ {0,1}²`.
+/// Matrix entry `m[from][to]` gives the transition weight from `from` to `to`
+/// when reading symbol `(c, d)`.
+///
+/// Derived from the raw ROBP transition table via:
+///   M_i^{(c,d)}[from][to] = Σ_{a,b} eq₁(z1,a) · eq₁(z2,b) · [transition(from,(a,b,c,d)) = to]
+///
+/// The full eq-weighted transition matrix is recovered as:
+///   T_i = Σ_{c,d} eq₁(z3, c) · eq₁(z4, d) · M_i^{(c,d)}
+pub fn symbol_transition_matrices<E: ExtensionField>(z1i: E, z2i: E) -> [TransitionMatrix<E>; 4] {
+    let eq_ab: [E; 4] = {
+        let (nz1, nz2) = (E::ONE - z1i, E::ONE - z2i);
+        [nz1 * nz2, nz1 * z2i, z1i * nz2, z1i * z2i]
+    };
+
+    let mut mats = [[[E::ZERO; ROBP_WIDTH]; ROBP_WIDTH]; 4];
+    for cd in 0..4u8 {
+        #[allow(clippy::needless_range_loop)]
+        for from in 0..ROBP_WIDTH {
+            for ab in 0..4u8 {
+                let sym = (ab << 2) | cd;
+                let to = ROBP_TRANSITION[from][sym as usize];
+                if to != REJECT {
+                    mats[cd as usize][from][to as usize] += eq_ab[ab as usize];
+                }
+            }
+        }
+    }
+    mats
+}
 
 /// Compute the eq-weighted transition matrix at step `i`.
 ///
@@ -191,7 +308,7 @@ mod tests {
     use p3::field::FieldAlgebra;
     use rand::thread_rng;
 
-    use super::{evaluate_g_backward, evaluate_g_forward};
+    use super::*;
 
     type E = BabyBearExt4;
 
@@ -261,6 +378,96 @@ mod tests {
             let fwd = evaluate_g_forward(&z1, &z2, &z3, &z4);
             let bwd = evaluate_g_backward(&z1, &z2, &z3, &z4);
             assert_eq!(fwd, bwd, "forward != backward at n={n}");
+        }
+    }
+
+    /// Verify that recombining per-symbol matrices reproduces transition_weights.
+    #[test]
+    fn test_symbol_matrices_match_transition_weights() {
+        let mut rng = thread_rng();
+        for _ in 0..20 {
+            let z1i = E::random(&mut rng);
+            let z2i = E::random(&mut rng);
+            let z3i = E::random(&mut rng);
+            let z4i = E::random(&mut rng);
+
+            let mats = symbol_transition_matrices(z1i, z2i);
+            let (nz3, nz4) = (E::ONE - z3i, E::ONE - z4i);
+            let cd_weights = [nz3 * nz4, nz3 * z4i, z3i * nz4, z3i * z4i];
+
+            // Reconstruct T = Σ_{c,d} eq₁(z3,c)·eq₁(z4,d)·M^{(c,d)}
+            let mut t_recon = [[E::ZERO; 4]; 4];
+            for cd in 0..4 {
+                #[allow(clippy::needless_range_loop)]
+                for i in 0..4 {
+                    for j in 0..4 {
+                        t_recon[i][j] += cd_weights[cd] * mats[cd][i][j];
+                    }
+                }
+            }
+
+            // Compare against transition_weights-based backward step.
+            let transitions = transition_weights(z1i, z2i, z3i, z4i);
+            let mut t_expected = [[E::ZERO; 4]; 4];
+            for &(ci, co, w_same, w_lt1, w_lt0) in &transitions {
+                // M[from][to] convention, matching backward pass.
+                t_expected[ci * 2][co * 2] += w_same + w_lt0;
+                t_expected[ci * 2][co * 2 + 1] += w_lt1;
+                t_expected[ci * 2 + 1][co * 2] += w_lt0;
+                t_expected[ci * 2 + 1][co * 2 + 1] += w_same + w_lt1;
+            }
+
+            assert_eq!(
+                t_recon, t_expected,
+                "symbol matrices don't match transition_weights"
+            );
+        }
+    }
+
+    /// Verify backward precomputation: using per-symbol matrices with Boolean
+    /// (c, d) reproduces evaluate_g.
+    #[test]
+    fn test_backward_via_symbol_matrices() {
+        let mut rng = thread_rng();
+        for n in 1..=5 {
+            let z1: Vec<E> = (0..n).map(|_| E::random(&mut rng)).collect();
+            let z2: Vec<E> = (0..n).map(|_| E::random(&mut rng)).collect();
+            let z3: Vec<E> = (0..n).map(|_| E::random(&mut rng)).collect();
+            let z4: Vec<E> = (0..n).map(|_| E::random(&mut rng)).collect();
+
+            let expected = evaluate_g_backward(&z1, &z2, &z3, &z4);
+
+            // Compute using per-symbol matrices with Boolean (c, d) from z3/z4.
+            // Round each z3[i]/z4[i] to the nearest bit for this test — instead,
+            // use evaluate_g with actual field elements and compare using the
+            // matrix product approach.
+            let step_mats: Vec<_> = (0..n)
+                .map(|i| symbol_transition_matrices(z1[i], z2[i]))
+                .collect();
+
+            // Build T_i = Σ_{c,d} eq1(z3[i],c)*eq1(z4[i],d)*M^{(c,d)}
+            // and multiply backward.
+            let u = sink_labels::<E>();
+            let mut val = u;
+            for i in (0..n).rev() {
+                let (nz3, nz4) = (E::ONE - z3[i], E::ONE - z4[i]);
+                let cd_w = [nz3 * nz4, nz3 * z4[i], z3[i] * nz4, z3[i] * z4[i]];
+                let mut t_i = [[E::ZERO; 4]; 4];
+                #[allow(clippy::needless_range_loop)]
+                for cd in 0..4 {
+                    for r in 0..4 {
+                        for c in 0..4 {
+                            t_i[r][c] += cd_w[cd] * step_mats[i][cd][r][c];
+                        }
+                    }
+                }
+                val = mat_vec_mul(&t_i, &val);
+            }
+            let result = val[0]; // source state
+            assert_eq!(
+                result, expected,
+                "symbol-matrix backward != evaluate_g at n={n}"
+            );
         }
     }
 }

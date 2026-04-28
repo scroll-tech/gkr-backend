@@ -834,7 +834,6 @@ dependencies = [
  "p3",
  "rand",
  "rand_chacha",
- "rayon",
  "serde",
  "sumcheck",
  "tracing",
