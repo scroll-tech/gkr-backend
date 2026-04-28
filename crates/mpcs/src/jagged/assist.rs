@@ -12,7 +12,11 @@
 //! each pair of consecutive sumcheck rounds maps to one ROBP step.
 
 use ff_ext::ExtensionField;
-use p3::maybe_rayon::prelude::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+use multilinear_extensions::util::max_usable_threads;
+use p3::maybe_rayon::prelude::{
+    IndexedParallelIterator, IntoParallelIterator, ParallelIterator, ParallelSlice,
+    ParallelSliceMut,
+};
 use sumcheck::structs::{IOPProof, IOPProverMessage};
 use transcript::Transcript;
 
@@ -58,9 +62,26 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
         }
     }
 
-    // Precompute backward vectors in step-major layout bwd[i][y].
-    // Outer loop over steps (sequential, reversed); inner loop over K
-    // polynomials (parallel). Both reads and writes are contiguous.
+    // Precompute backward vectors bwd[i][y] (step-major layout).
+    //
+    // bwd[i][y] is a 4-element state vector representing the ROBP suffix
+    // product from step i to the sinks, for polynomial y's Boolean bits:
+    //
+    //   bwd[n][y]  = u = [0, 1, 0, 0]          (sink labels: accept at carry=0, lt=1)
+    //   bwd[i][y]  = M_i^{(c_y[i], d_y[i])} · bwd[i+1][y],   i = n-1, …, 0
+    //
+    // where c_y[i] = bit_i(t_y), d_y[i] = bit_i(t_{y+1}), and M_i^{(c,d)}
+    // is the per-symbol transition matrix with z_row[i], ρ[i] baked in.
+    //
+    // The full ROBP evaluation for polynomial y equals:
+    //   ĝ(z_row, ρ, bits(t_y), bits(t_{y+1})) = e_0^T · bwd[0][y]
+    //
+    // During the sumcheck, the prover decomposes ĝ into fwd · bwd.
+    // M_i^{(c,d)} extends to field arguments via MLE: M_i^{(α,β)} means
+    // Σ_{c,d} eq₁(α,c)·eq₁(β,d)·M_i^{(c,d)}.  With this notation:
+    //   round 2i:   h_y(λ) = fwd · M_i^{(λ, d_y[i])} · bwd[i+1][y]
+    //   round 2i+1: h_y(λ) = fwd · M_i^{(α, λ)}      · bwd[i+1][y]
+    // where fwd absorbs bound challenges and bwd provides the Boolean suffix.
     let u = sink_labels::<E>();
     let mut bwd = vec![vec![[E::ZERO; ROBP_WIDTH]; num_polys]; n_robp + 1];
     for y in 0..num_polys {
@@ -83,41 +104,74 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
     let mut challenges: Vec<E> = Vec::with_capacity(n_vars);
     let mut proof_messages: Vec<IOPProverMessage<E>> = Vec::with_capacity(n_vars);
 
-    #[allow(clippy::needless_range_loop)]
+    let n_threads = max_usable_threads();
+    let poly_indices: Vec<usize> = (0..num_polys).collect();
+
     for i in 0..n_robp {
         // Precompute fwd · M^{(c,d)} for all 4 symbols.
         let r_cd: [StateVec<E>; 4] = std::array::from_fn(|cd| vec_mat_mul(&fwd, &step_mats[i][cd]));
 
         // ---- Round 2i: bind z₃[i] ----
         //
-        // Round polynomial (§2.3, Eq. 4):
-        //   p_{2i}(λ) = Σ_{c,d} eq₁(λ,c) · fwd·T_half(λ,d) · bwd_sum[c*2+d]
-        // where
-        //   bwd_sum[c*2+d] = Σ_{y: c_y[i]=c, d_y[i]=d} w_y · bwd_{i+1}^{(y)}
+        // Round polynomial for round 2i:
+        //   p_{2i}(λ) = Σ_y w_y · eq₁(λ, c_y[i]) · fwd · M_i^{(λ, d_y[i])} · bwd[i+1][y]
         //
-        // The MLE telescoping property (Σ_b f(b)·eq(b,x) = f(x) for Boolean x)
-        // collapses the sum over future variables, so each polynomial y
-        // contributes a single backward vector bwd[i+1][y]. Grouping by (c,d)
-        // turns K terms into 4 buckets, letting fwd·M^{(c,d)} be shared.
-        let mut bwd_sum = [[E::ZERO; ROBP_WIDTH]; 4];
-        for y in 0..num_polys {
-            let cd = c_bits[i][y] * 2 + d_bits[i][y];
-            let w = weights[y];
-            for s in 0..ROBP_WIDTH {
-                bwd_sum[cd][s] += w * bwd[i + 1][y][s];
-            }
-        }
-
-        // p(0): eq₁(0,c=0)=1, eq₁(0,c=1)=0. fwd_row(0,d) = R_{0,d}.
-        let p0 = dot4(&r_cd[0], &bwd_sum[0]) + dot4(&r_cd[1], &bwd_sum[1]);
-        // p(1): eq₁(1,c=0)=0, eq₁(1,c=1)=1. fwd_row(1,d) = R_{1,d}.
-        let p1 = dot4(&r_cd[2], &bwd_sum[2]) + dot4(&r_cd[3], &bwd_sum[3]);
-        // p(2): eq₁(2,c=0)=-1, eq₁(2,c=1)=2. fwd_row(2,d) = 2·R_{1,d} - R_{0,d}.
+        // Precompute R[c*2+d] = fwd · M_i^{(c,d)} as row-vectors for Boolean (c,d).
+        // Then fwd · M_i^{(λ,d)} = (1-λ)·R[d] + λ·R[2+d] is also a row-vector,
+        // so each term reduces to a dot product with bwd — no matrix-vector multiply.
+        //
+        // Expanding M_i^{(λ,d)} = Σ_{c'} eq₁(λ,c')·M_i^{(c',d)} in the bucketed form:
+        //   p_{2i}(λ) = Σ_{c,c',d} eq₁(λ,c) · eq₁(λ,c') · R[c'*2+d] · bwd_sum[c*2+d]
+        // where c indexes the Q bucket and c' indexes the M expansion (independent).
+        //
+        // Bucket bwd vectors by (c,d):
+        //   bwd_sum[c*2+d] = Σ_{y: c_y[i]=c, d_y[i]=d} w_y · bwd[i+1][y]
+        //
+        // This reduces evaluation at each λ to 4 dot products against bwd_sum.
+        //
+        // Parallelization: partition K polynomials across threads. Each thread
+        // builds local bwd_sum, computes local (p0, p1, p2), then we sum
+        // the scalars across threads. We also merge bwd_sum for round 2i+1.
         let row2_d0: StateVec<E> = std::array::from_fn(|j| r_cd[2][j].double() - r_cd[0][j]);
         let row2_d1: StateVec<E> = std::array::from_fn(|j| r_cd[3][j].double() - r_cd[1][j]);
-        let term_c0 = dot4(&row2_d0, &bwd_sum[0]) + dot4(&row2_d1, &bwd_sum[1]);
-        let term_c1 = dot4(&row2_d0, &bwd_sum[2]) + dot4(&row2_d1, &bwd_sum[3]);
-        let p2 = term_c1.double() - term_c0;
+
+        let batch_size = (num_polys / n_threads).max(1);
+        let partials: Vec<([E; 3], [[E; ROBP_WIDTH]; 4])> = poly_indices
+            .par_chunks(batch_size)
+            .map(|chunk| {
+                let mut local_bwd_sum = [[E::ZERO; ROBP_WIDTH]; 4];
+                for &y in chunk {
+                    let cd = c_bits[i][y] * 2 + d_bits[i][y];
+                    let w = weights[y];
+                    for s in 0..ROBP_WIDTH {
+                        local_bwd_sum[cd][s] += w * bwd[i + 1][y][s];
+                    }
+                }
+                let lp0 =
+                    dot4(&r_cd[0], &local_bwd_sum[0]) + dot4(&r_cd[1], &local_bwd_sum[1]);
+                let lp1 =
+                    dot4(&r_cd[2], &local_bwd_sum[2]) + dot4(&r_cd[3], &local_bwd_sum[3]);
+                let tc0 =
+                    dot4(&row2_d0, &local_bwd_sum[0]) + dot4(&row2_d1, &local_bwd_sum[1]);
+                let tc1 =
+                    dot4(&row2_d0, &local_bwd_sum[2]) + dot4(&row2_d1, &local_bwd_sum[3]);
+                let lp2 = tc1.double() - tc0;
+                ([lp0, lp1, lp2], local_bwd_sum)
+            })
+            .collect();
+
+        let mut bwd_sum = [[E::ZERO; ROBP_WIDTH]; 4];
+        let (mut p0, mut p1, mut p2) = (E::ZERO, E::ZERO, E::ZERO);
+        for (p_local, bs_local) in &partials {
+            p0 += p_local[0];
+            p1 += p_local[1];
+            p2 += p_local[2];
+            for cd in 0..4 {
+                for s in 0..ROBP_WIDTH {
+                    bwd_sum[cd][s] += bs_local[cd][s];
+                }
+            }
+        }
 
         debug_assert_eq!(
             p0 + p1,
@@ -141,15 +195,21 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
         });
 
         // ---- Round 2i+1: bind z₄[i] ----
-        // Derive bwd_sum_d from bwd_sum: absorb eq₁(α, c) without a second O(K) pass.
-        // bwd_sum_d[d] = (1-α)·bwd_sum[(c=0,d)] + α·bwd_sum[(c=1,d)]
+        //
+        // Round polynomial for round 2i+1:
+        //   p_{2i+1}(λ) = Σ_y w_y · eq₁(λ, d_y[i]) · fwd · M_i^{(α, λ)} · bwd[i+1][y]
+        // where w_y logically includes eq₁(α, c_y[i]) from round 2i.
+        //
+        // Rather than an O(K) weight update, absorb eq₁(α, c) into the buckets:
+        //   bwd_sum_d[d] = Σ_c eq₁(α,c) · bwd_sum[c*2+d]
+        // collapsing 4 buckets into 2.
         let na = E::ONE - alpha;
         let bwd_sum_d: [[E; ROBP_WIDTH]; 2] = [
             std::array::from_fn(|s| na * bwd_sum[0][s] + alpha * bwd_sum[2][s]),
             std::array::from_fn(|s| na * bwd_sum[1][s] + alpha * bwd_sum[3][s]),
         ];
 
-        // fwd · T_full(α, λ) at λ=0: (1-α)·R_{0,0} + α·R_{1,0}
+        // fwd · M_i^{(α, λ)} at λ=0: (1-α)·R_{0,0} + α·R_{1,0}
         let row_at_0: StateVec<E> = std::array::from_fn(|j| na * r_cd[0][j] + alpha * r_cd[2][j]);
         // at λ=1: (1-α)·R_{0,1} + α·R_{1,1}
         let row_at_1: StateVec<E> = std::array::from_fn(|j| na * r_cd[1][j] + alpha * r_cd[3][j]);
@@ -178,12 +238,19 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
         // Fused weight update: w_y *= eq₁(α, c_y[i]) · eq₁(β, d_y[i])
         let nb = E::ONE - beta;
         let eq_cd = [na * nb, na * beta, alpha * nb, alpha * beta];
-        for y in 0..num_polys {
-            let cd = c_bits[i][y] * 2 + d_bits[i][y];
-            weights[y] *= eq_cd[cd];
-        }
+        weights
+            .par_chunks_mut(batch_size)
+            .enumerate()
+            .for_each(|(chunk_idx, w_chunk)| {
+                let start = chunk_idx * batch_size;
+                for (j, w) in w_chunk.iter_mut().enumerate() {
+                    let y = start + j;
+                    let cd = c_bits[i][y] * 2 + d_bits[i][y];
+                    *w *= eq_cd[cd];
+                }
+            });
 
-        // Update forward vector: fwd ← fwd · T_full(α, β)
+        // Update forward vector: fwd ← fwd · M_i^{(α, β)}
         fwd = std::array::from_fn(|j| {
             eq_cd[0] * r_cd[0][j]
                 + eq_cd[1] * r_cd[1][j]
