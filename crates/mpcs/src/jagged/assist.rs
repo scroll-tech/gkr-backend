@@ -12,7 +12,7 @@
 //! each pair of consecutive sumcheck rounds maps to one ROBP step.
 
 use ff_ext::ExtensionField;
-use p3::maybe_rayon::prelude::{IntoParallelIterator, ParallelIterator};
+use p3::maybe_rayon::prelude::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use sumcheck::structs::{IOPProof, IOPProverMessage};
 use transcript::Transcript;
 
@@ -47,39 +47,34 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
         .map(|i| symbol_transition_matrices(z_row_padded[i], rho_padded[i]))
         .collect();
 
-    // Extract Boolean bits for each polynomial's evaluation points.
-    // x_y = interleaved (c_y[0], d_y[0], c_y[1], d_y[1], ...)
-    // c_y[i] = bit_i(t_y), d_y[i] = bit_i(t_{y+1})
-    let c_bits: Vec<Vec<usize>> = (0..num_polys)
-        .map(|y| {
-            (0..n_robp)
-                .map(|i| (cumulative_heights[y] >> i) & 1)
-                .collect()
-        })
-        .collect();
-    let d_bits: Vec<Vec<usize>> = (0..num_polys)
-        .map(|y| {
-            (0..n_robp)
-                .map(|i| (cumulative_heights[y + 1] >> i) & 1)
-                .collect()
-        })
-        .collect();
+    // Extract Boolean bits in step-major layout: c_bits[i][y], d_bits[i][y].
+    // c_bits[i][y] = bit_i(t_y), d_bits[i][y] = bit_i(t_{y+1})
+    let mut c_bits = vec![vec![0usize; num_polys]; n_robp];
+    let mut d_bits = vec![vec![0usize; num_polys]; n_robp];
+    for i in 0..n_robp {
+        for y in 0..num_polys {
+            c_bits[i][y] = (cumulative_heights[y] >> i) & 1;
+            d_bits[i][y] = (cumulative_heights[y + 1] >> i) & 1;
+        }
+    }
 
-    // Precompute backward vectors: bwd[y][i] for i ∈ [0, n_robp].
-    // bwd[y][n] = sink_labels, bwd[y][i] = M_i^{(c,d)} · bwd[y][i+1]
+    // Precompute backward vectors in step-major layout bwd[i][y].
+    // Outer loop over steps (sequential, reversed); inner loop over K
+    // polynomials (parallel). Both reads and writes are contiguous.
     let u = sink_labels::<E>();
-    let bwd: Vec<Vec<StateVec<E>>> = (0..num_polys)
-        .into_par_iter()
-        .map(|y| {
-            let mut vecs = vec![[E::ZERO; ROBP_WIDTH]; n_robp + 1];
-            vecs[n_robp] = u;
-            for i in (0..n_robp).rev() {
-                let cd = c_bits[y][i] * 2 + d_bits[y][i];
-                vecs[i] = mat_vec_mul(&step_mats[i][cd], &vecs[i + 1]);
-            }
-            vecs
-        })
-        .collect();
+    let mut bwd = vec![vec![[E::ZERO; ROBP_WIDTH]; num_polys]; n_robp + 1];
+    for y in 0..num_polys {
+        bwd[n_robp][y] = u;
+    }
+    for i in (0..n_robp).rev() {
+        let (left, right) = bwd.split_at_mut(i + 1);
+        let dst = &mut left[i];
+        let src = &right[0];
+        dst.into_par_iter().enumerate().for_each(|(y, dst_y)| {
+            let cd = c_bits[i][y] * 2 + d_bits[i][y];
+            *dst_y = mat_vec_mul(&step_mats[i][cd], &src[y]);
+        });
+    }
 
     // Initialize weights and forward vector.
     let mut weights: Vec<E> = eq_col[..num_polys].to_vec();
@@ -95,18 +90,21 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
 
         // ---- Round 2i: bind z₃[i] ----
         //
-        // Key identity (§2.3, Eq. 4): because x_y is Boolean, the MLE
-        // telescoping property  Σ_b f(b)·eq(b, x) = f(x)  collapses the
-        // sum over future variables.  Each polynomial y contributes a single
-        // backward vector bwd[y][i+1] (evaluated along its Boolean suffix)
-        // rather than an exponential sum.  We group these by (c,d) symbol
-        // so that the fwd·M^{(c,d)} precomputation can be shared.
+        // Round polynomial (§2.3, Eq. 4):
+        //   p_{2i}(λ) = Σ_{c,d} eq₁(λ,c) · fwd·T_half(λ,d) · bwd_sum[c*2+d]
+        // where
+        //   bwd_sum[c*2+d] = Σ_{y: c_y[i]=c, d_y[i]=d} w_y · bwd_{i+1}^{(y)}
+        //
+        // The MLE telescoping property (Σ_b f(b)·eq(b,x) = f(x) for Boolean x)
+        // collapses the sum over future variables, so each polynomial y
+        // contributes a single backward vector bwd[i+1][y]. Grouping by (c,d)
+        // turns K terms into 4 buckets, letting fwd·M^{(c,d)} be shared.
         let mut bwd_sum = [[E::ZERO; ROBP_WIDTH]; 4];
         for y in 0..num_polys {
-            let cd = c_bits[y][i] * 2 + d_bits[y][i];
+            let cd = c_bits[i][y] * 2 + d_bits[i][y];
             let w = weights[y];
             for s in 0..ROBP_WIDTH {
-                bwd_sum[cd][s] += w * bwd[y][i + 1][s];
+                bwd_sum[cd][s] += w * bwd[i + 1][y][s];
             }
         }
 
@@ -181,7 +179,7 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
         let nb = E::ONE - beta;
         let eq_cd = [na * nb, na * beta, alpha * nb, alpha * beta];
         for y in 0..num_polys {
-            let cd = c_bits[y][i] * 2 + d_bits[y][i];
+            let cd = c_bits[i][y] * 2 + d_bits[i][y];
             weights[y] *= eq_cd[cd];
         }
 
