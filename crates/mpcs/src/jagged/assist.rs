@@ -13,9 +13,10 @@
 
 use ff_ext::ExtensionField;
 use multilinear_extensions::util::max_usable_threads;
+#[cfg(feature = "parallel")]
+use p3::maybe_rayon::prelude::IndexedParallelIterator;
 use p3::maybe_rayon::prelude::{
-    IndexedParallelIterator, IntoParallelIterator, ParallelIterator, ParallelSlice,
-    ParallelSliceMut,
+    IntoParallelIterator, ParallelIterator, ParallelSlice, ParallelSliceMut,
 };
 use sumcheck::structs::{IOPProof, IOPProverMessage};
 use transcript::Transcript;
@@ -147,14 +148,10 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
                         local_bwd_sum[cd][s] += w * bwd[i + 1][y][s];
                     }
                 }
-                let lp0 =
-                    dot4(&r_cd[0], &local_bwd_sum[0]) + dot4(&r_cd[1], &local_bwd_sum[1]);
-                let lp1 =
-                    dot4(&r_cd[2], &local_bwd_sum[2]) + dot4(&r_cd[3], &local_bwd_sum[3]);
-                let tc0 =
-                    dot4(&row2_d0, &local_bwd_sum[0]) + dot4(&row2_d1, &local_bwd_sum[1]);
-                let tc1 =
-                    dot4(&row2_d0, &local_bwd_sum[2]) + dot4(&row2_d1, &local_bwd_sum[3]);
+                let lp0 = dot4(&r_cd[0], &local_bwd_sum[0]) + dot4(&r_cd[1], &local_bwd_sum[1]);
+                let lp1 = dot4(&r_cd[2], &local_bwd_sum[2]) + dot4(&r_cd[3], &local_bwd_sum[3]);
+                let tc0 = dot4(&row2_d0, &local_bwd_sum[0]) + dot4(&row2_d1, &local_bwd_sum[1]);
+                let tc1 = dot4(&row2_d0, &local_bwd_sum[2]) + dot4(&row2_d1, &local_bwd_sum[3]);
                 let lp2 = tc1.double() - tc0;
                 ([lp0, lp1, lp2], local_bwd_sum)
             })
@@ -166,15 +163,6 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
             p1 += p_local[1];
             p2 += p_local[2];
         }
-
-        debug_assert_eq!(
-            p0 + p1,
-            if i == 0 && challenges.is_empty() {
-                p0 + p1
-            } else {
-                p0 + p1
-            }
-        );
 
         transcript.append_field_element_ext(&p1);
         transcript.append_field_element_ext(&p2);

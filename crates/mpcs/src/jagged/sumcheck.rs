@@ -7,9 +7,10 @@ use ff_ext::ExtensionField;
 use multilinear_extensions::{
     mle::MultilinearExtension, util::max_usable_threads, virtual_poly::build_eq_x_r_vec,
 };
+#[cfg(feature = "parallel")]
+use p3::maybe_rayon::prelude::IndexedParallelIterator;
 use p3::maybe_rayon::prelude::{
-    IndexedParallelIterator, IntoParallelIterator, ParallelIterator, ParallelSlice,
-    ParallelSliceMut,
+    IntoParallelIterator, ParallelIterator, ParallelSlice, ParallelSliceMut,
 };
 use sumcheck::{
     macros::{entered_span, exit_span},
