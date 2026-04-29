@@ -8,14 +8,15 @@ Multivariate polynomial primitives for GKR-based proving systems. Built on [Plon
 |---|---|
 | `sumcheck` | Sumcheck prover and verifier — linear-time, linear-space via CTY11/Thaler13-style in-place halving |
 | `mpcs` | Multilinear polynomial commitment schemes (BaseFold, WHIR) |
-| `multilinear_extensions` | Multilinear extension types and evaluation operations |
-| `transcript` | Fiat-Shamir transcript for challenge generation |
-| `ff_ext` | Field extension traits |
-| `poseidon` | Poseidon hash |
-| `p3` | Plonky3 integration layer |
-| `whir` | WHIR polynomial commitment scheme |
-| `witness` | Witness and matrix types |
-| `curves` | Curve definitions |
+| `multilinear_extensions` | Multilinear polynomials in dense evaluation form — variable binding, point evaluation, eq(x,r) construction |
+| `transcript` | Fiat-Shamir transcript trait and Poseidon2-based implementation (observe, squeeze challenges, fork for parallel proving) |
+| `ff_ext` | Thin trait layer over Plonky3 fields — adds uniform byte sampling, canonical conversions, and Poseidon2 configuration for Goldilocks and BabyBear |
+| `poseidon` | Default Poseidon2 challenger wrapper with optional permutation-count instrumentation (debug builds) |
+| `p3` | Re-exports Plonky3 crates under a single namespace for unified version pinning and feature propagation |
+| `whir` | WHIR polynomial commitment scheme (forked from [WizardOfMenlo/whir](https://github.com/WizardOfMenlo/whir)) |
+| `sumcheck_macro` | Proc macro that generates degree-specialized sumcheck inner loops with compile-time unrolling |
+| `witness` | Row-major witness matrix with power-of-two padding and column-to-MLE extraction |
+| `curves` | Elliptic curve definitions and scalar multiplication — Secp256k1, Secp256r1, BN254, Ed25519, BLS12-381 (forked from [SP1](https://github.com/succinctlabs/sp1)) |
 
 ## Build and test
 
