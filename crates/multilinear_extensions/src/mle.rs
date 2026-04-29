@@ -320,16 +320,6 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
         );
     }
 
-    #[inline(always)]
-    fn compact_fold_len(len: usize) -> usize {
-        (len + 1) >> 1
-    }
-
-    #[inline(always)]
-    fn compact_fold_len_two_vars(len: usize) -> usize {
-        (len + 3) >> 2
-    }
-
     /// Returns `Right(&mut self)` if mutable access is possible, otherwise `Left(&self)`
     pub fn to_either(&mut self) -> Either<&Self, &mut Self> {
         if self.is_mut() {
@@ -654,7 +644,7 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
                 }
                 FieldType::Unreachable => unreachable!(),
             };
-            new_len = Self::compact_fold_len(new_len);
+            new_len = new_len.div_ceil(2);
         }
         match &mut self.evaluations {
             FieldType::Base(_) => unreachable!(),
@@ -800,7 +790,7 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
             FieldType::Ext(slice) => {
                 let slice_mut = slice.to_mut();
                 let quad_len = largest_multiple_of_four_below(slice_mut.len());
-                let new_len = Self::compact_fold_len_two_vars(slice_mut.len());
+                let new_len = slice_mut.len().div_ceil(4);
                 for i in 0..(quad_len >> 2) {
                     let b = i << 2;
                     slice_mut[i] = Self::eval_block_2_vars_ext(&slice_mut[b..b + 4], r0, r1);
@@ -957,7 +947,7 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
                 }
                 FieldType::Unreachable => unreachable!(),
             };
-            new_len = Self::compact_fold_len(new_len);
+            new_len = new_len.div_ceil(2);
         }
         match &mut self.evaluations {
             FieldType::Base(_) => unreachable!(),
