@@ -7,7 +7,7 @@ Multivariate polynomial primitives for GKR-based proving systems. Built on [Plon
 | Crate | Description |
 |---|---|
 | `sumcheck` | Sumcheck prover and verifier — linear-time, linear-space via CTY11/Thaler13-style in-place halving |
-| `mpcs` | Multilinear polynomial commitment schemes (BaseFold, Ligero, WHIR) |
+| `mpcs` | Multilinear polynomial commitment schemes (BaseFold, WHIR) |
 | `multilinear_extensions` | Multilinear extension types and evaluation operations |
 | `transcript` | Fiat-Shamir transcript for challenge generation |
 | `ff_ext` | Field extension traits |
