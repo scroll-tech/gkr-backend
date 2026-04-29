@@ -35,6 +35,11 @@ pub fn largest_even_below(n: usize) -> usize {
     }
 }
 
+#[inline(always)]
+pub fn largest_multiple_of_four_below(n: usize) -> usize {
+    n & !3
+}
+
 fn prev_power_of_two(n: usize) -> usize {
     (n + 1).next_power_of_two() / 2
 }
