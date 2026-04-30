@@ -20,7 +20,6 @@ num-integer = "0.1"
 p3.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
-rayon = { workspace = true, optional = true }
 serde.workspace = true
 sumcheck.workspace = true
 tracing.workspace = true
@@ -30,10 +29,11 @@ witness.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+tracing-forest = "0.1"
 
 [features]
 nightly-features = ["ff_ext/nightly-features"]
-parallel = ["p3/parallel", "dep:rayon"]
+parallel = ["p3/parallel"]
 whir = ["dep:whir"]
 print-trace = ["whir/print-trace"]
 sanity-check = []
@@ -54,3 +54,11 @@ name = "interpolate"
 harness = false
 name = "whir"
 required-features = ["whir"]
+
+[[bench]]
+harness = false
+name = "jagged_sumcheck"
+
+[[bench]]
+harness = false
+name = "jagged_pcs"
