@@ -107,8 +107,7 @@ fn bench_jagged_pcs(c: &mut Criterion) {
         let param = Pcs::setup(poly_size, SecurityLevel::Conjecture100bits).unwrap();
         let (pp, vp) = Pcs::trim(param, poly_size).unwrap();
 
-        let comm =
-            jagged_commit::<E, Pcs>(&pp, rmms.clone(), log_h).expect("commit failed");
+        let comm = jagged_commit::<E, Pcs>(&pp, rmms.clone(), log_h).expect("commit failed");
 
         group.bench_function(BenchmarkId::new("commit", &label), |b| {
             b.iter_custom(|iters| {

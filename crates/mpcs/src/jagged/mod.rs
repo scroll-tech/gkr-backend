@@ -437,7 +437,10 @@ pub fn jagged_batch_open<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme
                 FieldType::Base(slice) => slice.iter().copied(),
                 _ => unreachable!("expected base-field evaluations"),
             })
-            .chain(std::iter::repeat_n(E::BaseField::ZERO, target_len - padded_total))
+            .chain(std::iter::repeat_n(
+                E::BaseField::ZERO,
+                target_len - padded_total,
+            ))
             .collect();
         &q_evals_base_owned
     };
