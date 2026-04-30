@@ -187,8 +187,6 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
     // Generate AdditiveArray based on degree, for usage in match statement.
     let additive_converter = {
         let mut additive_array_items = TokenStream::new();
-        let mut additive_array_first_item = TokenStream::new();
-
         // Generate degree+1 row elements in AdditiveArray
         for i in 1..=(degree + 1) {
             let item = mul_exprs(
@@ -224,16 +222,40 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
                     })
                     .collect(),
             );
-
-            if i == 1 {
-                additive_array_first_item = item.clone();
-            }
             additive_array_items = acc_list(additive_array_items, item);
         }
 
         let additive_array_items = quote! {
             #c_declarations
             AdditiveArray([#additive_array_items])
+        };
+
+        let tail_additive_array_items = {
+            let mut items = TokenStream::new();
+            for i in 1..=(degree + 1) {
+                let item = mul_exprs(
+                    (1..=degree)
+                        .map(|j: u32| {
+                            let v = ident(format!("v{j}"));
+                            let x = i - 1;
+                            if x == 0 {
+                                quote! {#v[b]}
+                            } else if x == 1 {
+                                quote! {#v[b] - #v[b]}
+                            } else if x == 2 {
+                                quote! {-#v[b]}
+                            } else {
+                                let scale = x - 1;
+                                quote! {-(#v[b] * E::BaseField::from_canonical_u32(#scale))}
+                            }
+                        })
+                        .collect(),
+                );
+                items = acc_list(items, item);
+            }
+            quote! {
+                AdditiveArray([#items])
+            }
         };
 
         let iter = if parallalize {
@@ -321,14 +343,19 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
                     } else {
                         if v1.len() == 1 {
                             let b = 0;
-                            AdditiveArray::<_, #degree_plus_one>([#additive_array_first_item ; #degree_plus_one])
+                            #tail_additive_array_items
                         } else {
-                            (0..largest_even_below(v1.len()))
+                            let mut sum = (0..largest_even_below(v1.len()))
                                 #iter
                                 .map(|b| {
                                     #additive_array_items
                                 })
-                                .sum::<AdditiveArray<_, #degree_plus_one>>()
+                                .sum::<AdditiveArray<_, #degree_plus_one>>();
+                            if !v1.len().is_multiple_of(2) {
+                                let b = v1.len() - 1;
+                                sum += #tail_additive_array_items;
+                            }
+                            sum
                         }
                     }
                 },

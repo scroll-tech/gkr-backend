@@ -445,7 +445,11 @@ pub fn jagged_batch_open<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme
         &q_evals_base_owned
     };
 
-    // Run the jagged sumcheck.
+    // Batched opening claim: v = Σ_i eq_col[i] · C_i · p_i(z_row[..s_i])
+    // where C_i = Π_{j=s_i}^{max_s-1}(1 - z_row[j]) is the correction factor for poly i.
+    // eq_row[r] = eq(z_row, r) naturally incorporates C_i for row r within poly i
+    // (the high bits of r are 0, so eq_row[r] = eq(z_row[..s_i], r) * C_i). This means
+    // the jagged sumcheck sum Σ_{i,r} eq_col[i]*eq_row[r]*q'(t_i+r) equals the batched claim.
     let eq_row = build_eq_x_r_vec(&z_row);
     let input = JaggedSumcheckInput {
         q_evals: q_evals_base,
@@ -546,7 +550,7 @@ pub fn jagged_batch_verify<E: ExtensionField, InnerPcs: PolynomialCommitmentSche
     let num_col_vars = ceil_log2(num_polys).max(1);
     let z_col: Vec<E> = transcript.sample_and_append_vec(b"jagged_z_col", num_col_vars);
 
-    // claimed_sum = Σ_i eq_col[i] · C_i · evals[i]
+    // Batched opening claim: v = Σ_i eq_col[i] · C_i · evals[i]
     // where C_i = eq(z_row[s_i..], 0) = Π_{j=s_i}^{max_s-1} (1 - z_row[j]) is the
     // correction factor from zero-padding p_i to max_s variables (see module docs).
     let eq_col = build_eq_x_r_vec(&z_col);
