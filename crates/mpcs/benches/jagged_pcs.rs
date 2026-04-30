@@ -59,38 +59,13 @@ fn bench_jagged_pcs(c: &mut Criterion) {
     let max_s = *log_heights.iter().max().unwrap();
     let total_evals: usize = rmms.iter().map(|rmm| rmm.height() * rmm.width()).sum();
     let num_giga_vars = ceil_log2(total_evals);
-    let num_polys = NUM_MATRICES * NUM_COLS;
 
     println!(
-        "num_matrices={}, num_cols={}, num_polys={}, total_evals={}, num_giga_vars={}, max_s={}",
-        NUM_MATRICES, NUM_COLS, num_polys, total_evals, num_giga_vars, max_s
+        "num_matrices={}, num_cols={}, total_evals={}, num_giga_vars={}, max_s={}",
+        NUM_MATRICES, NUM_COLS, total_evals, num_giga_vars, max_s
     );
 
-    let poly_size = 1usize << num_giga_vars;
-    let param = Pcs::setup(poly_size, SecurityLevel::Conjecture100bits).unwrap();
-    let (pp, vp) = Pcs::trim(param, poly_size).unwrap();
-
-    // --- Bench commit ---
-    let comm = jagged_commit::<E, Pcs>(&pp, rmms.clone()).expect("commit failed");
-
-    group.bench_function(
-        BenchmarkId::new("commit", format!("{}x{}", NUM_MATRICES, NUM_COLS)),
-        |b| {
-            b.iter_custom(|iters| {
-                let mut time = Duration::new(0, 0);
-                for _ in 0..iters {
-                    let rmms_clone = rmms.clone();
-                    let instant = std::time::Instant::now();
-                    let _ = jagged_commit::<E, Pcs>(&pp, rmms_clone).unwrap();
-                    time += instant.elapsed();
-                }
-                time
-            })
-        },
-    );
-
-    // --- Prepare evaluation data ---
-    // Extract column polynomials (before bit-reversal) for computing true evaluations.
+    // Prepare evaluation data (shared across all reshape_log_height values).
     let col_polys: Vec<Vec<F>> = rmms
         .iter()
         .flat_map(|rmm| {
@@ -112,10 +87,43 @@ fn bench_jagged_pcs(c: &mut Criterion) {
         .map(|(col, s_i)| eval_column_poly_at_point(col, &point[(max_s - s_i)..]))
         .collect();
 
-    // --- Bench batch open ---
-    group.bench_function(
-        BenchmarkId::new("batch_open", format!("{}x{}", NUM_MATRICES, NUM_COLS)),
-        |b| {
+    // Sweep reshape_log_height values: baseline (no reshape) + a few smaller heights.
+    let reshape_log_heights: Vec<usize> = {
+        let mut vals = vec![num_giga_vars];
+        for step in [2, 4, 6] {
+            if num_giga_vars > step {
+                vals.push(num_giga_vars - step);
+            }
+        }
+        vals
+    };
+
+    for &log_h in &reshape_log_heights {
+        let h = 1usize << log_h;
+        let w = total_evals.div_ceil(h);
+        let label = format!("log_h={log_h}_w={w}");
+
+        let poly_size = 1usize << log_h;
+        let param = Pcs::setup(poly_size, SecurityLevel::Conjecture100bits).unwrap();
+        let (pp, vp) = Pcs::trim(param, poly_size).unwrap();
+
+        let comm =
+            jagged_commit::<E, Pcs>(&pp, rmms.clone(), log_h).expect("commit failed");
+
+        group.bench_function(BenchmarkId::new("commit", &label), |b| {
+            b.iter_custom(|iters| {
+                let mut time = Duration::new(0, 0);
+                for _ in 0..iters {
+                    let rmms_clone = rmms.clone();
+                    let instant = std::time::Instant::now();
+                    let _ = jagged_commit::<E, Pcs>(&pp, rmms_clone, log_h).unwrap();
+                    time += instant.elapsed();
+                }
+                time
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("batch_open", &label), |b| {
             b.iter_batched(
                 || {
                     let mut transcript = BasicTranscript::<E>::new(b"jagged_bench");
@@ -128,18 +136,18 @@ fn bench_jagged_pcs(c: &mut Criterion) {
                 },
                 BatchSize::SmallInput,
             );
-        },
-    );
+        });
 
-    // --- Bench batch verify ---
-    let mut transcript_p = BasicTranscript::<E>::new(b"jagged_bench");
-    Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_p).unwrap();
-    let proof = jagged_batch_open::<E, Pcs>(&pp, &comm, &point, &evals, &mut transcript_p).unwrap();
-    let pure_comm = comm.to_commitment();
+        let mut transcript_p = BasicTranscript::<E>::new(b"jagged_bench");
+        Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_p).unwrap();
+        let proof =
+            jagged_batch_open::<E, Pcs>(&pp, &comm, &point, &evals, &mut transcript_p).unwrap();
+        let pure_comm = comm.to_commitment();
 
-    group.bench_function(
-        BenchmarkId::new("batch_verify", format!("{}x{}", NUM_MATRICES, NUM_COLS)),
-        |b| {
+        let proof_size = bincode::serialize(&proof).map(|v| v.len()).unwrap_or(0);
+        println!("{label}: proof_size={proof_size} bytes, col_evals.len={w}");
+
+        group.bench_function(BenchmarkId::new("batch_verify", &label), |b| {
             b.iter_batched(
                 || {
                     let mut transcript = BasicTranscript::<E>::new(b"jagged_bench");
@@ -159,8 +167,8 @@ fn bench_jagged_pcs(c: &mut Criterion) {
                 },
                 BatchSize::SmallInput,
             );
-        },
-    );
+        });
+    }
 
     group.finish();
 }

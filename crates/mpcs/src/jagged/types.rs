@@ -19,6 +19,9 @@ pub struct JaggedCommitmentWithWitness<E: ExtensionField, InnerPcs: PolynomialCo
     /// Number of evaluations `h_i = 2^(num_vars_i)` for each polynomial `p_i`.
     /// Length: `num_polys`.
     pub poly_heights: Vec<usize>,
+    /// Log2 of the reshape column height. Each column MLE has this many variables.
+    /// When equal to `num_giga_vars`, no reshape is performed (single column).
+    pub reshape_log_height: usize,
 }
 
 /// The pure commitment (without witness data) for a jagged polynomial `q'`.
@@ -30,6 +33,8 @@ pub struct JaggedCommitment<E: ExtensionField, InnerPcs: PolynomialCommitmentSch
     pub inner: InnerPcs::Commitment,
     /// Cumulative height sequence `t` (verifier needs this to evaluate `f(b)`).
     pub cumulative_heights: Vec<usize>,
+    /// Log2 of the reshape column height (verifier needs this to split ρ).
+    pub reshape_log_height: usize,
 }
 
 impl<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
@@ -40,6 +45,7 @@ impl<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
         JaggedCommitment {
             inner: InnerPcs::get_pure_commitment(&self.inner),
             cumulative_heights: self.cumulative_heights.clone(),
+            reshape_log_height: self.reshape_log_height,
         }
     }
 
@@ -64,7 +70,7 @@ impl<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
 #[serde(bound(serialize = "", deserialize = ""))]
 pub struct JaggedBatchOpenProof<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>> {
     pub sumcheck_proof: IOPProof<E>,
-    pub q_eval: E,
+    pub col_evals: Vec<E>,
     pub f_at_rho: E,
     pub assist_proof: IOPProof<E>,
     pub inner_proof: InnerPcs::Proof,
