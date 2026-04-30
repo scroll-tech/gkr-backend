@@ -1280,7 +1280,8 @@ pub fn wit_infer_by_monomial_expr<'a, E: ExtensionField>(
         })
         .collect();
 
-    MultilinearExtension::from_evaluation_vec_smart(witness[0].num_vars(), evaluations).into()
+    MultilinearExtension::from_evaluation_vec_smart_compact(witness[0].num_vars(), evaluations)
+        .into()
 }
 
 /// infer witness value from expression by flattening into monomial terms

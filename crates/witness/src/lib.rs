@@ -240,20 +240,24 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + FieldAlgebra> RowMajorMat
         self.num_rows
     }
 
+    pub fn occupied_physical_rows(&self) -> usize {
+        self.num_instances() * Self::num_rotation(self.log2_num_rotation)
+    }
+
     fn num_rotation(log2_num_rotation: usize) -> usize {
         1 << log2_num_rotation
     }
 
     pub fn iter_rows(&self) -> Chunks<'_, T> {
         let num_rotation = Self::num_rotation(self.log2_num_rotation);
-        self.inner.values[..self.num_instances() * num_rotation * self.n_col()]
+        self.inner.values[..self.occupied_physical_rows() * self.n_col()]
             .chunks(num_rotation * self.inner.width)
     }
 
     pub fn iter_mut(&mut self) -> ChunksMut<'_, T> {
         self.invalidate_device_backing();
         let num_rotation = Self::num_rotation(self.log2_num_rotation);
-        let max_range = self.num_instances() * num_rotation * self.n_col();
+        let max_range = self.occupied_physical_rows() * self.n_col();
         self.inner.values[..max_range].chunks_mut(num_rotation * self.inner.width)
     }
 

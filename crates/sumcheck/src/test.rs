@@ -6,7 +6,7 @@ use either::Either;
 use ff_ext::{BabyBearExt4, ExtensionField, FromUniformBytes, GoldilocksExt2};
 use itertools::Itertools;
 use multilinear_extensions::{
-    mle::Point,
+    mle::{MultilinearExtension, Point},
     monomial::Term,
     util::{ceil_log2, max_usable_threads},
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
@@ -149,6 +149,54 @@ fn test_runtime_prover_modes_are_compatible_helper<E: ExtensionField>() {
     );
 
     assert_eq!(legacy_subclaim, reduced_subclaim);
+}
+
+#[test]
+fn test_compact_mle_matches_zero_padded_sumcheck() {
+    let eval = vec![
+        GoldilocksExt2::from_canonical_u32(2),
+        GoldilocksExt2::from_canonical_u32(3),
+        GoldilocksExt2::from_canonical_u32(5),
+        GoldilocksExt2::from_canonical_u32(7),
+        GoldilocksExt2::from_canonical_u32(11),
+    ];
+    let compact = MultilinearExtension::from_evaluations_ext_vec_compact(3, eval.clone());
+    let mut padded_eval = eval;
+    padded_eval.resize(1 << 3, GoldilocksExt2::ZERO);
+    let padded = MultilinearExtension::from_evaluations_ext_vec(3, padded_eval);
+
+    let compact_poly = VirtualPolynomials::new_from_monimials(
+        1,
+        3,
+        vec![Term {
+            scalar: Either::Right(GoldilocksExt2::ONE),
+            product: vec![Either::Left(&compact)],
+        }],
+    );
+    let padded_poly = VirtualPolynomials::new_from_monimials(
+        1,
+        3,
+        vec![Term {
+            scalar: Either::Right(GoldilocksExt2::ONE),
+            product: vec![Either::Left(&padded)],
+        }],
+    );
+
+    let mut compact_transcript = BasicTranscript::<GoldilocksExt2>::new(b"compact");
+    let (compact_proof, compact_state) =
+        IOPProverState::<GoldilocksExt2>::prove(compact_poly, &mut compact_transcript);
+
+    let mut padded_transcript = BasicTranscript::<GoldilocksExt2>::new(b"compact");
+    let (padded_proof, padded_state) =
+        IOPProverState::<GoldilocksExt2>::prove(padded_poly, &mut padded_transcript);
+
+    assert_eq!(compact_proof, padded_proof);
+    let compact_final = compact_state.get_mle_final_evaluations();
+    let padded_final = padded_state.get_mle_final_evaluations();
+    assert_eq!(compact_final.len(), padded_final.len());
+    for (compact_eval, padded_eval) in compact_final.iter().zip(padded_final.iter()) {
+        assert_eq!(compact_eval, &padded_eval[..compact_eval.len()]);
+    }
 }
 
 fn test_sumcheck<E: ExtensionField>(
