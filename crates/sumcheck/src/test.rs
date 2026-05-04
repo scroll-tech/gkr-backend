@@ -1,4 +1,5 @@
 use crate::{
+    frontloaded,
     structs::{IOPProverState, IOPVerifierState, SumcheckProverMode},
     util::extrapolate_uni_poly,
 };
@@ -14,7 +15,187 @@ use multilinear_extensions::{
 };
 use p3::field::FieldAlgebra;
 use rand::{Rng, thread_rng};
+use std::sync::Arc;
 use transcript::{BasicTranscript, Transcript};
+
+#[test]
+fn test_frontloaded_mixed_size_sumcheck() {
+    test_frontloaded_mixed_size_sumcheck_helper::<GoldilocksExt2>();
+    test_frontloaded_mixed_size_sumcheck_helper::<BabyBearExt4>();
+}
+
+fn test_frontloaded_mixed_size_sumcheck_helper<E: ExtensionField>() {
+    let mut rng = thread_rng();
+    let num_vars = 8;
+    let large = Arc::new(
+        multilinear_extensions::mle::MultilinearExtension::<E>::random(num_vars, &mut rng),
+    );
+    let small =
+        Arc::new(multilinear_extensions::mle::MultilinearExtension::<E>::random(2, &mut rng));
+
+    let mut poly = VirtualPolynomial::new(num_vars);
+    let large_idx = poly.register_mle(large);
+    let small_idx = poly.register_mle(small);
+    poly.aux_info.max_degree = 2;
+    poly.products
+        .push(multilinear_extensions::virtual_poly::MonomialTerms {
+            terms: vec![Term {
+                scalar: Either::Right(E::ONE),
+                product: vec![large_idx, small_idx],
+            }],
+        });
+
+    let asserted_sum = frontloaded::claimed_sum(&poly);
+    let mut transcript = BasicTranscript::<E>::new(b"frontloaded-test");
+    let (proof, _) = frontloaded::prove(poly.as_view(), &mut transcript);
+
+    let mut transcript = BasicTranscript::<E>::new(b"frontloaded-test");
+    let subclaim = IOPVerifierState::<E>::verify(
+        asserted_sum,
+        &proof,
+        &frontloaded::aux_info(&poly),
+        &mut transcript,
+    );
+    let point = subclaim
+        .point
+        .iter()
+        .map(|challenge| challenge.elements)
+        .collect_vec();
+
+    assert_eq!(
+        frontloaded::evaluate(&poly, &point),
+        subclaim.expected_evaluation
+    );
+}
+
+#[test]
+fn test_frontloaded_2phase_sum_keeps_small_mle_compact() {
+    let mut rng = thread_rng();
+    let num_vars = 8;
+    let num_threads = 4;
+    let large = multilinear_extensions::mle::MultilinearExtension::<GoldilocksExt2>::random(
+        num_vars, &mut rng,
+    );
+    let small =
+        multilinear_extensions::mle::MultilinearExtension::<GoldilocksExt2>::random(2, &mut rng);
+    let poly = VirtualPolynomials::new_from_monimials(
+        num_threads,
+        num_vars,
+        vec![
+            Term {
+                scalar: Either::Right(GoldilocksExt2::ONE),
+                product: vec![Either::Left(&large)],
+            },
+            Term {
+                scalar: Either::Right(GoldilocksExt2::ONE),
+                product: vec![Either::Left(&small)],
+            },
+        ],
+    );
+
+    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"frontloaded-2phase-test");
+    let (proof, _) = frontloaded::prove_2phase(poly, &mut transcript);
+
+    let mut direct_poly = VirtualPolynomial::new(num_vars);
+    let large_idx = direct_poly.register_mle(Arc::new(large));
+    let small_idx = direct_poly.register_mle(Arc::new(small));
+    direct_poly.aux_info.max_degree = 1;
+    direct_poly
+        .products
+        .push(multilinear_extensions::virtual_poly::MonomialTerms {
+            terms: vec![
+                Term {
+                    scalar: Either::Right(GoldilocksExt2::ONE),
+                    product: vec![large_idx],
+                },
+                Term {
+                    scalar: Either::Right(GoldilocksExt2::ONE),
+                    product: vec![small_idx],
+                },
+            ],
+        });
+    let asserted_sum = frontloaded::claimed_sum(&direct_poly);
+    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"frontloaded-2phase-test");
+    let subclaim = IOPVerifierState::<GoldilocksExt2>::verify(
+        asserted_sum,
+        &proof,
+        &frontloaded::aux_info(&direct_poly),
+        &mut transcript,
+    );
+    let point = subclaim
+        .point
+        .iter()
+        .map(|challenge| challenge.elements)
+        .collect_vec();
+    let mut direct_transcript = BasicTranscript::<GoldilocksExt2>::new(b"frontloaded-2phase-test");
+    let (direct_proof, _) = frontloaded::prove(direct_poly.as_view(), &mut direct_transcript);
+    let mut direct_verify_transcript =
+        BasicTranscript::<GoldilocksExt2>::new(b"frontloaded-2phase-test");
+    let direct_subclaim = IOPVerifierState::<GoldilocksExt2>::verify(
+        asserted_sum,
+        &direct_proof,
+        &frontloaded::aux_info(&direct_poly),
+        &mut direct_verify_transcript,
+    );
+    let direct_point = direct_subclaim
+        .point
+        .iter()
+        .map(|challenge| challenge.elements)
+        .collect_vec();
+    assert_eq!(
+        frontloaded::evaluate(&direct_poly, &direct_point),
+        direct_subclaim.expected_evaluation,
+        "single frontloaded proof failed"
+    );
+    for (round, (direct, two_phase)) in direct_proof.proofs.iter().zip(&proof.proofs).enumerate() {
+        assert_eq!(
+            direct, two_phase,
+            "frontloaded 2phase diverged at round {round}"
+        );
+    }
+    assert_eq!(
+        frontloaded::evaluate(&direct_poly, &point),
+        subclaim.expected_evaluation
+    );
+}
+
+#[test]
+fn test_frontloaded_small_only_sumcheck() {
+    let mut rng = thread_rng();
+    let num_vars = 8;
+    let small = Arc::new(multilinear_extensions::mle::MultilinearExtension::<
+        GoldilocksExt2,
+    >::random(2, &mut rng));
+    let mut poly = VirtualPolynomial::new(num_vars);
+    let small_idx = poly.register_mle(small);
+    poly.aux_info.max_degree = 1;
+    poly.products
+        .push(multilinear_extensions::virtual_poly::MonomialTerms {
+            terms: vec![Term {
+                scalar: Either::Right(GoldilocksExt2::ONE),
+                product: vec![small_idx],
+            }],
+        });
+    let asserted_sum = frontloaded::claimed_sum(&poly);
+    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"frontloaded-small-only");
+    let (proof, _) = frontloaded::prove(poly.as_view(), &mut transcript);
+    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"frontloaded-small-only");
+    let subclaim = IOPVerifierState::<GoldilocksExt2>::verify(
+        asserted_sum,
+        &proof,
+        &frontloaded::aux_info(&poly),
+        &mut transcript,
+    );
+    let point = subclaim
+        .point
+        .iter()
+        .map(|challenge| challenge.elements)
+        .collect_vec();
+    assert_eq!(
+        frontloaded::evaluate(&poly, &point),
+        subclaim.expected_evaluation
+    );
+}
 
 // test polynomial mixed with different num_var
 #[test]
