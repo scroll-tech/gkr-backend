@@ -22,6 +22,21 @@ pub struct FrontloadedProverState<E: ExtensionField> {
     pub final_evaluations: Vec<Vec<E>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrontloadedPolyMeta {
+    Normal,
+    Phase1Only,
+}
+
+impl From<PolyMeta> for FrontloadedPolyMeta {
+    fn from(meta: PolyMeta) -> Self {
+        match meta {
+            PolyMeta::Normal => Self::Normal,
+            PolyMeta::Phase2Only => Self::Phase1Only,
+        }
+    }
+}
+
 pub fn prove<'a, E: ExtensionField>(
     poly: VirtualPolynomial<'a, E>,
     transcript: &mut impl Transcript<E>,
@@ -36,6 +51,10 @@ pub fn prove_2phase<'a, E: ExtensionField>(
     let log_num_workers = p3::util::log2_strict_usize(virtual_poly.num_threads);
     let max_degree = virtual_poly.degree();
     let (polys, poly_meta) = virtual_poly.get_batched_polys();
+    let frontloaded_poly_meta = poly_meta
+        .into_iter()
+        .map(FrontloadedPolyMeta::from)
+        .collect_vec();
     let local_num_vars = polys
         .first()
         .map(|poly| poly.aux_info.max_num_variables)
@@ -50,10 +69,10 @@ pub fn prove_2phase<'a, E: ExtensionField>(
         .map(|poly| {
             poly.flattened_ml_extensions
                 .iter()
-                .zip_eq(&poly_meta)
+                .zip_eq(&frontloaded_poly_meta)
                 .map(|(mle, meta)| match meta {
-                    PolyMeta::Normal => mle.num_vars() + log_num_workers,
-                    PolyMeta::Phase2Only => mle.num_vars(),
+                    FrontloadedPolyMeta::Normal => mle.num_vars() + log_num_workers,
+                    FrontloadedPolyMeta::Phase1Only => mle.num_vars(),
                 })
                 .collect_vec()
         })
@@ -106,7 +125,12 @@ pub fn prove_2phase<'a, E: ExtensionField>(
         }
     }
 
-    let phase2_poly = build_phase2_poly(&workers, &poly_meta, local_num_vars, log_num_workers);
+    let phase2_poly = build_phase2_poly(
+        &workers,
+        &frontloaded_poly_meta,
+        local_num_vars,
+        log_num_workers,
+    );
     let (phase2_proof, phase2_state) =
         prove_inner(WorkingState::new(phase2_poly), transcript, false);
     proofs.extend(phase2_proof.proofs);
@@ -552,7 +576,7 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
 
 fn build_phase2_poly<'a, E: ExtensionField>(
     workers: &[WorkingState<'a, E>],
-    poly_meta: &[PolyMeta],
+    poly_meta: &[FrontloadedPolyMeta],
     local_num_vars: usize,
     log_num_workers: usize,
 ) -> VirtualPolynomial<'a, E> {
@@ -562,14 +586,14 @@ fn build_phase2_poly<'a, E: ExtensionField>(
 
     for (mle_idx, meta) in poly_meta.iter().enumerate() {
         let mle = match meta {
-            PolyMeta::Normal => {
+            FrontloadedPolyMeta::Normal => {
                 let values = workers
                     .iter()
                     .map(|worker| read_eval(&worker.mles[mle_idx], 0))
                     .collect_vec();
                 MultilinearExtension::from_evaluations_ext_vec(log_num_workers, values)
             }
-            PolyMeta::Phase2Only => {
+            FrontloadedPolyMeta::Phase1Only => {
                 let value = read_eval(&first_worker.mles[mle_idx], 0)
                     * first_worker.fixed_frontload_factor(mle_idx, local_num_vars);
                 MultilinearExtension::from_evaluations_ext_vec(0, vec![value])
