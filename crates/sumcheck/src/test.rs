@@ -94,7 +94,8 @@ fn test_frontloaded_2phase_sum_keeps_small_mle_compact() {
     );
 
     let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"frontloaded-2phase-test");
-    let (proof, _) = frontloaded::prove_2phase(poly, &mut transcript);
+    let (proof, state) = IOPProverState::<GoldilocksExt2>::prove(poly, &mut transcript);
+    assert_eq!(state.prover_mode(), SumcheckProverMode::Frontloaded);
 
     let mut direct_poly = VirtualPolynomial::new(num_vars);
     let large_idx = direct_poly.register_mle(Arc::new(large));
@@ -197,6 +198,47 @@ fn test_frontloaded_small_only_sumcheck() {
     );
 }
 
+#[test]
+fn test_random_monimials_use_frontloaded_sum() {
+    let mut rng = thread_rng();
+    let nv = vec![2, 4, 6];
+    let degree = 2;
+    let num_products = 2;
+    let (mut monimials, asserted_sum) = VirtualPolynomials::<GoldilocksExt2>::random_monimials(
+        &nv,
+        (degree, degree + 1),
+        num_products,
+        &mut rng,
+    );
+    let max_num_variables = *nv.iter().max().unwrap();
+    let poly = VirtualPolynomials::<GoldilocksExt2>::new_from_monimials(
+        4,
+        max_num_variables,
+        monimials
+            .iter_mut()
+            .map(|Term { scalar, product }| Term {
+                scalar: Either::Right(*scalar),
+                product: product.iter_mut().map(Either::Right).collect_vec(),
+            })
+            .collect_vec(),
+    );
+
+    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"frontloaded-random-monimials");
+    let (proof, _) = IOPProverState::<GoldilocksExt2>::prove(poly, &mut transcript);
+    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"frontloaded-random-monimials");
+    let subclaim = IOPVerifierState::<GoldilocksExt2>::verify(
+        asserted_sum,
+        &proof,
+        &VPAuxInfo {
+            max_degree: degree,
+            max_num_variables,
+            ..Default::default()
+        },
+        &mut transcript,
+    );
+    assert_eq!(subclaim.point.len(), max_num_variables);
+}
+
 // test polynomial mixed with different num_var
 #[test]
 fn test_sumcheck_with_different_degree() {
@@ -215,7 +257,7 @@ fn test_sumcheck_with_different_degree_helper<E: ExtensionField>(num_threads: us
     let mut transcript = BasicTranscript::<E>::new(b"test");
 
     let max_num_variables = *nv.iter().max().unwrap();
-    let (mut monimials, asserted_sum) = VirtualPolynomials::<E>::random_monimials(
+    let (mut monimials, asserted_sum) = VirtualPolynomials::<E>::random_suffixload_monimials(
         nv,
         num_multiplicands_range,
         num_products,
@@ -234,7 +276,7 @@ fn test_sumcheck_with_different_degree_helper<E: ExtensionField>(num_threads: us
             .collect_vec(),
     );
 
-    let (proof, _) = IOPProverState::<E>::prove(poly.as_view(), &mut transcript);
+    let (proof, _) = IOPProverState::<E>::prove_suffix(poly.as_view(), &mut transcript);
     let mut transcript = BasicTranscript::new(b"test");
     let subclaim = IOPVerifierState::<E>::verify(
         asserted_sum,
@@ -260,7 +302,7 @@ fn test_sumcheck_with_different_degree_helper<E: ExtensionField>(num_threads: us
 
     // test in-place work
     let mut transcript = BasicTranscript::<E>::new(b"test");
-    let (proof_mut, _) = IOPProverState::<E>::prove(poly, &mut transcript);
+    let (proof_mut, _) = IOPProverState::<E>::prove_suffix(poly, &mut transcript);
     assert_eq!(proof, proof_mut, "different proof");
 }
 
@@ -277,7 +319,7 @@ fn test_runtime_prover_modes_are_compatible_helper<E: ExtensionField>() {
     let num_products = 4;
 
     let max_num_variables = *nv.iter().max().unwrap();
-    let (mut monimials, asserted_sum) = VirtualPolynomials::<E>::random_monimials(
+    let (mut monimials, asserted_sum) = VirtualPolynomials::<E>::random_suffixload_monimials(
         &nv,
         (degree, degree + 1),
         num_products,
@@ -296,7 +338,11 @@ fn test_runtime_prover_modes_are_compatible_helper<E: ExtensionField>() {
     );
 
     let mut transcript_legacy = BasicTranscript::<E>::new(b"mode-test");
-    let (proof_legacy, _) = IOPProverState::<E>::prove(poly.as_view(), &mut transcript_legacy);
+    let (proof_legacy, _) = IOPProverState::<E>::prove_with_mode(
+        poly.as_view(),
+        &mut transcript_legacy,
+        SumcheckProverMode::LegacyStable,
+    );
 
     let mut transcript_reduced = BasicTranscript::<E>::new(b"mode-test");
     let (proof_reduced, _) = IOPProverState::<E>::prove_with_mode(

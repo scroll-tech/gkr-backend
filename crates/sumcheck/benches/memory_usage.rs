@@ -108,6 +108,7 @@ fn main() {
 
     for &nv in NV {
         for mode in [
+            SumcheckProverMode::Frontloaded,
             SumcheckProverMode::LegacyStable,
             SumcheckProverMode::ReducedPeakMemory,
         ] {
@@ -143,6 +144,7 @@ fn main() {
             let median = peaks[RUNS / 2];
 
             let mode_name = match mode {
+                SumcheckProverMode::Frontloaded => "Frontloaded",
                 SumcheckProverMode::LegacyStable => "LegacyStable",
                 SumcheckProverMode::ReducedPeakMemory => "ReducedPeakMemory",
             };

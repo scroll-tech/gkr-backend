@@ -17,6 +17,7 @@ use transcript::{Challenge, Transcript};
 
 use crate::{
     extrapolate::ExtrapolationCache,
+    frontloaded::{self, FrontloadedProverState},
     macros::{entered_span, exit_span},
     structs::{
         IOPProof, IOPProverMessage, IOPProverState, ProverInnerContext, ReducedPeakMemoryContext,
@@ -116,6 +117,23 @@ impl<'a, E: ExtensionField> Phase1WorkerState<'a, E> {
 }
 
 impl<'a, E: ExtensionField> IOPProverState<'a, E> {
+    fn from_frontloaded_state(
+        max_num_variables: usize,
+        state: FrontloadedProverState<E>,
+    ) -> IOPProverState<'a, E> {
+        IOPProverState {
+            is_main_worker: true,
+            challenges: state.challenges,
+            inner_ctx: ProverInnerContext::from_mode(SumcheckProverMode::LegacyStable),
+            round: max_num_variables,
+            poly: VirtualPolynomial::default(),
+            max_num_variables,
+            poly_meta: vec![],
+            final_evaluations: Some(state.final_evaluations),
+            phase2_numvar: None,
+        }
+    }
+
     /// Given a virtual polynomial, generate an IOP proof.
     /// multi-threads model follow https://arxiv.org/pdf/2210.00264#page=8 "distributed sumcheck"
     /// This is experiment features. It's preferable that we move parallel level up more to
@@ -127,6 +145,13 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         fields(profiling_5)
     )]
     pub fn prove(
+        virtual_poly: VirtualPolynomials<'a, E>,
+        transcript: &mut impl Transcript<E>,
+    ) -> (IOPProof<E>, IOPProverState<'a, E>) {
+        Self::prove_with_mode(virtual_poly, transcript, SumcheckProverMode::Frontloaded)
+    }
+
+    pub fn prove_suffix(
         virtual_poly: VirtualPolynomials<'a, E>,
         transcript: &mut impl Transcript<E>,
     ) -> (IOPProof<E>, IOPProverState<'a, E>) {
@@ -149,6 +174,12 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         transcript: &mut impl Transcript<E>,
         mode: SumcheckProverMode,
     ) -> (IOPProof<E>, IOPProverState<'a, E>) {
+        if mode == SumcheckProverMode::Frontloaded {
+            let (proof, state) = frontloaded::prove_2phase(virtual_poly, transcript);
+            let prover_state = Self::from_frontloaded_state(proof.proofs.len(), state);
+            return (proof, prover_state);
+        }
+
         // Runtime mode is threaded through both phase-1 workers and merged phase-2 state
         // so a caller gets consistent flow selection for the full proof.
         let max_thread_id = virtual_poly.num_threads;
@@ -351,6 +382,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             round: 0,
             poly: polynomial,
             poly_meta: poly_meta.unwrap_or_else(|| vec![PolyMeta::Normal; num_polys]),
+            final_evaluations: None,
             phase2_numvar,
         }
     }
@@ -652,6 +684,9 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
 
     /// collect all mle evaluation (claim) after sumcheck
     pub fn get_mle_final_evaluations(&self) -> Vec<Vec<E>> {
+        if let Some(final_evaluations) = &self.final_evaluations {
+            return final_evaluations.clone();
+        }
         self.poly
             .flattened_ml_extensions
             .iter()
@@ -742,6 +777,11 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
     }
 
     pub fn set_prover_mode(&mut self, mode: SumcheckProverMode) {
+        assert_ne!(
+            mode,
+            SumcheckProverMode::Frontloaded,
+            "frontloaded mode is only available through IOPProverState::prove"
+        );
         // This resets mode-specific transient state (e.g. deferred r0) intentionally.
         self.inner_ctx = ProverInnerContext::from_mode(mode);
     }
@@ -752,6 +792,9 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
     }
 
     pub fn prover_mode(&self) -> SumcheckProverMode {
+        if self.final_evaluations.is_some() {
+            return SumcheckProverMode::Frontloaded;
+        }
         self.inner_ctx.mode()
     }
 }
@@ -842,6 +885,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             round: 0,
             poly: polynomial,
             poly_meta,
+            final_evaluations: None,
             phase2_numvar: None,
         };
 

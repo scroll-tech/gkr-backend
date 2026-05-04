@@ -538,6 +538,14 @@ fn mixed_product_sum_frontload_vs_suffix_fn(c: &mut Criterion) {
         &[22, 16, 2],
         3,
     );
+    mixed_product_sum_frontload_vs_suffix_case(
+        c,
+        "mixed_product4_sum_nv_22_16_2",
+        "frontloaded_compact_product4_sum",
+        "suffix_phase2_product4_sum",
+        &[22, 16, 2],
+        4,
+    );
 }
 
 fn devirgo_sumcheck_reduced_peak_memory_fn(c: &mut Criterion) {

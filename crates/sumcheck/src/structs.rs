@@ -30,10 +30,14 @@ pub struct IOPProverMessage<E: ExtensionField> {
 /// Runtime mode for sumcheck prover internals.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SumcheckProverMode {
-    /// Legacy, allocation-stable path used by default for compatibility.
+    /// Frontend-loaded layout. Short MLEs are bound to early variables and missing variables
+    /// contribute frontend tail factors.
     #[default]
+    Frontloaded,
+    /// Legacy suffix/backend-loaded, allocation-stable path.
     LegacyStable,
     /// Reduce peak memory by deferring first-round fixing and using direct round-2 evaluation.
+    /// This is also a suffix/backend-loaded path.
     ReducedPeakMemory,
 }
 
@@ -69,6 +73,9 @@ impl<E: ExtensionField> ProverInnerContext<E> {
 
     pub(crate) fn from_mode(mode: SumcheckProverMode) -> Self {
         match mode {
+            SumcheckProverMode::Frontloaded => {
+                panic!("frontloaded mode is only available through IOPProverState::prove")
+            }
             SumcheckProverMode::LegacyStable => Self::Legacy(LegacyProverContext),
             SumcheckProverMode::ReducedPeakMemory => {
                 Self::ReducedPeakMemory(ReducedPeakMemoryContext::default())
@@ -91,6 +98,7 @@ pub struct IOPProverState<'a, E: ExtensionField> {
     pub(crate) poly: VirtualPolynomial<'a, E>,
     pub(crate) max_num_variables: usize,
     pub(crate) poly_meta: Vec<PolyMeta>,
+    pub(crate) final_evaluations: Option<Vec<Vec<E>>>,
     /// phase 1 and phase 2 sumcheck we share similar implementation
     /// thus this option variable only use for phase 1 sumcheck to mark how many variables belongs to phase 2
     pub(crate) phase2_numvar: Option<usize>,
