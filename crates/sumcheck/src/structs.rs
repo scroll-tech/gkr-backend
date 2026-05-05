@@ -33,7 +33,7 @@ pub enum SumcheckProverMode {
     /// Frontend-loaded layout. Short MLEs are bound to early variables and missing variables
     /// contribute frontend tail factors.
     #[default]
-    Frontloaded,
+    FrontLoaded,
     /// Legacy suffix/backend-loaded, allocation-stable path.
     LegacyStable,
     /// Reduce peak memory by deferring first-round fixing and using direct round-2 evaluation.
@@ -73,8 +73,8 @@ impl<E: ExtensionField> ProverInnerContext<E> {
 
     pub(crate) fn from_mode(mode: SumcheckProverMode) -> Self {
         match mode {
-            SumcheckProverMode::Frontloaded => {
-                panic!("frontloaded mode is only available through IOPProverState::prove")
+            SumcheckProverMode::FrontLoaded => {
+                panic!("front_loaded mode is only available through IOPProverState::prove")
             }
             SumcheckProverMode::LegacyStable => Self::Legacy(LegacyProverContext),
             SumcheckProverMode::ReducedPeakMemory => {

@@ -17,18 +17,18 @@ use crate::{
 };
 
 #[derive(Clone, Debug)]
-pub struct FrontloadedProverState<E: ExtensionField> {
+pub struct FrontLoadedProverState<E: ExtensionField> {
     pub challenges: Vec<Challenge<E>>,
     pub final_evaluations: Vec<Vec<E>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FrontloadedPolyMeta {
+enum FrontLoadedPolyMeta {
     Normal,
     Phase1Only,
 }
 
-impl From<PolyMeta> for FrontloadedPolyMeta {
+impl From<PolyMeta> for FrontLoadedPolyMeta {
     fn from(meta: PolyMeta) -> Self {
         match meta {
             PolyMeta::Normal => Self::Normal,
@@ -40,20 +40,20 @@ impl From<PolyMeta> for FrontloadedPolyMeta {
 pub fn prove<'a, E: ExtensionField>(
     poly: VirtualPolynomial<'a, E>,
     transcript: &mut impl Transcript<E>,
-) -> (IOPProof<E>, FrontloadedProverState<E>) {
+) -> (IOPProof<E>, FrontLoadedProverState<E>) {
     prove_inner(WorkingState::new(poly), transcript, true)
 }
 
 pub fn prove_2phase<'a, E: ExtensionField>(
     virtual_poly: VirtualPolynomials<'a, E>,
     transcript: &mut impl Transcript<E>,
-) -> (IOPProof<E>, FrontloadedProverState<E>) {
+) -> (IOPProof<E>, FrontLoadedProverState<E>) {
     let log_num_workers = p3::util::log2_strict_usize(virtual_poly.num_threads);
     let max_degree = virtual_poly.degree();
     let (polys, poly_meta) = virtual_poly.get_batched_polys();
-    let frontloaded_poly_meta = poly_meta
+    let front_loaded_poly_meta = poly_meta
         .into_iter()
-        .map(FrontloadedPolyMeta::from)
+        .map(FrontLoadedPolyMeta::from)
         .collect_vec();
     let local_num_vars = polys
         .first()
@@ -69,10 +69,10 @@ pub fn prove_2phase<'a, E: ExtensionField>(
         .map(|poly| {
             poly.flattened_ml_extensions
                 .iter()
-                .zip_eq(&frontloaded_poly_meta)
+                .zip_eq(&front_loaded_poly_meta)
                 .map(|(mle, meta)| match meta {
-                    FrontloadedPolyMeta::Normal => mle.num_vars() + log_num_workers,
-                    FrontloadedPolyMeta::Phase1Only => mle.num_vars(),
+                    FrontLoadedPolyMeta::Normal => mle.num_vars() + log_num_workers,
+                    FrontLoadedPolyMeta::Phase1Only => mle.num_vars(),
                 })
                 .collect_vec()
         })
@@ -127,7 +127,7 @@ pub fn prove_2phase<'a, E: ExtensionField>(
 
     let phase2_poly = build_phase2_poly(
         &workers,
-        &frontloaded_poly_meta,
+        &front_loaded_poly_meta,
         local_num_vars,
         log_num_workers,
     );
@@ -137,7 +137,7 @@ pub fn prove_2phase<'a, E: ExtensionField>(
 
     (
         IOPProof { proofs },
-        FrontloadedProverState {
+        FrontLoadedProverState {
             challenges: workers
                 .first()
                 .map(|worker| worker.challenges.clone())
@@ -154,7 +154,7 @@ fn prove_inner<'a, E: ExtensionField>(
     mut state: WorkingState<'a, E>,
     transcript: &mut impl Transcript<E>,
     append_header: bool,
-) -> (IOPProof<E>, FrontloadedProverState<E>) {
+) -> (IOPProof<E>, FrontLoadedProverState<E>) {
     let num_vars = state.poly.aux_info.max_num_variables;
     let max_degree = state.poly.aux_info.max_degree;
 
@@ -187,7 +187,7 @@ fn prove_inner<'a, E: ExtensionField>(
     let final_evaluations = state.final_evaluations();
     (
         IOPProof { proofs: proof },
-        FrontloadedProverState {
+        FrontLoadedProverState {
             challenges: state.challenges,
             final_evaluations,
         },
@@ -309,7 +309,7 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         round: usize,
     ) -> Vec<E> {
         let degree = term.product.len();
-        if !self.worker_matches_frontload_tail(term) {
+        if !self.worker_matches_front_loaded_tail(term) {
             return vec![E::ZERO; self.poly.aux_info.max_degree + 1];
         }
         if degree == 1 {
@@ -333,11 +333,11 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         } else {
             1usize << (live_vars - 1)
         };
-        let required_ones_mask = self.required_future_frontload_mask(term, round, live_vars);
-        let fixed_frontload = term
+        let required_ones_mask = self.required_future_front_loaded_mask(term, round, live_vars);
+        let fixed_front_loaded = term
             .product
             .iter()
-            .map(|&idx| self.fixed_frontload_factor(idx, round))
+            .map(|&idx| self.fixed_front_loaded_factor(idx, round))
             .collect_vec();
 
         let evaluations = active_lanes(lane_count, required_ones_mask)
@@ -349,9 +349,9 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
                     let product = term
                         .product
                         .iter()
-                        .zip_eq(&fixed_frontload)
-                        .map(|(&idx, &frontload_factor)| {
-                            self.mle_round_value(idx, round, lane, z) * frontload_factor
+                        .zip_eq(&fixed_front_loaded)
+                        .map(|(&idx, &front_loaded_factor)| {
+                            self.mle_round_value(idx, round, lane, z) * front_loaded_factor
                         })
                         .product::<E>();
                     either::for_both!(&term.scalar, scalar => {
@@ -394,8 +394,8 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         } else {
             1usize << (live_vars - 1)
         };
-        let required_ones_mask = self.required_future_frontload_mask(term, round, live_vars);
-        let frontload_factor = self.fixed_frontload_factor(mle_idx, round);
+        let required_ones_mask = self.required_future_front_loaded_mask(term, round, live_vars);
+        let front_loaded_factor = self.fixed_front_loaded_factor(mle_idx, round);
         let scalar = match &term.scalar {
             either::Either::Left(base) => E::from(*base),
             either::Either::Right(ext) => *ext,
@@ -405,8 +405,8 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
             .into_par_iter()
             .map(|lane| {
                 (
-                    self.mle_round_value(mle_idx, round, lane, E::ZERO) * frontload_factor,
-                    self.mle_round_value(mle_idx, round, lane, E::ONE) * frontload_factor,
+                    self.mle_round_value(mle_idx, round, lane, E::ZERO) * front_loaded_factor,
+                    self.mle_round_value(mle_idx, round, lane, E::ONE) * front_loaded_factor,
                 )
             })
             .reduce(
@@ -444,9 +444,9 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         } else {
             1usize << (live_vars - 1)
         };
-        let required_ones_mask = self.required_future_frontload_mask(term, round, live_vars);
-        let lhs_frontload = self.fixed_frontload_factor(lhs_idx, round);
-        let rhs_frontload = self.fixed_frontload_factor(rhs_idx, round);
+        let required_ones_mask = self.required_future_front_loaded_mask(term, round, live_vars);
+        let lhs_front_loaded = self.fixed_front_loaded_factor(lhs_idx, round);
+        let rhs_front_loaded = self.fixed_front_loaded_factor(rhs_idx, round);
         let scalar = match &term.scalar {
             either::Either::Left(base) => E::from(*base),
             either::Either::Right(ext) => *ext,
@@ -455,10 +455,10 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         let (eval_0, eval_1, eval_2) = active_lanes(lane_count, required_ones_mask)
             .into_par_iter()
             .map(|lane| {
-                let lhs_0 = self.mle_round_value(lhs_idx, round, lane, E::ZERO) * lhs_frontload;
-                let lhs_1 = self.mle_round_value(lhs_idx, round, lane, E::ONE) * lhs_frontload;
-                let rhs_0 = self.mle_round_value(rhs_idx, round, lane, E::ZERO) * rhs_frontload;
-                let rhs_1 = self.mle_round_value(rhs_idx, round, lane, E::ONE) * rhs_frontload;
+                let lhs_0 = self.mle_round_value(lhs_idx, round, lane, E::ZERO) * lhs_front_loaded;
+                let lhs_1 = self.mle_round_value(lhs_idx, round, lane, E::ONE) * lhs_front_loaded;
+                let rhs_0 = self.mle_round_value(rhs_idx, round, lane, E::ZERO) * rhs_front_loaded;
+                let rhs_1 = self.mle_round_value(rhs_idx, round, lane, E::ONE) * rhs_front_loaded;
                 let lhs_2 = lhs_1 + (lhs_1 - lhs_0);
                 let rhs_2 = rhs_1 + (rhs_1 - rhs_0);
                 (lhs_0 * rhs_0, lhs_1 * rhs_1, lhs_2 * rhs_2)
@@ -478,7 +478,7 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         evaluations
     }
 
-    fn required_future_frontload_mask(
+    fn required_future_front_loaded_mask(
         &self,
         term: &Term<either::Either<E::BaseField, E>, usize>,
         round: usize,
@@ -489,11 +489,11 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         }
         let enumerated_var_end = (round + live_vars).min(self.poly.aux_info.max_num_variables);
         ((round + 1)..enumerated_var_end).fold(0usize, |mask, var_idx| {
-            let needs_frontload = term
+            let needs_front_loaded = term
                 .product
                 .iter()
                 .any(|&idx| self.global_mle_num_vars[idx] <= var_idx);
-            if needs_frontload {
+            if needs_front_loaded {
                 mask | (1usize << (var_idx - round - 1))
             } else {
                 mask
@@ -501,7 +501,7 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         })
     }
 
-    fn worker_matches_frontload_tail(
+    fn worker_matches_front_loaded_tail(
         &self,
         term: &Term<either::Either<E::BaseField, E>, usize>,
     ) -> bool {
@@ -540,7 +540,7 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         e0 + z * (e1 - e0)
     }
 
-    fn fixed_frontload_factor(&self, mle_idx: usize, round: usize) -> E {
+    fn fixed_front_loaded_factor(&self, mle_idx: usize, round: usize) -> E {
         let original_num_vars = self.global_mle_num_vars[mle_idx];
         if round <= original_num_vars {
             return E::ONE;
@@ -576,26 +576,26 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
 
 fn build_phase2_poly<'a, E: ExtensionField>(
     workers: &[WorkingState<'a, E>],
-    poly_meta: &[FrontloadedPolyMeta],
+    poly_meta: &[FrontLoadedPolyMeta],
     local_num_vars: usize,
     log_num_workers: usize,
 ) -> VirtualPolynomial<'a, E> {
-    let first_worker = workers.first().expect("frontloaded 2phase needs workers");
+    let first_worker = workers.first().expect("front-loaded 2phase needs workers");
     let mut poly = VirtualPolynomial::new(log_num_workers);
     poly.aux_info.max_degree = first_worker.poly.aux_info.max_degree;
 
     for (mle_idx, meta) in poly_meta.iter().enumerate() {
         let mle = match meta {
-            FrontloadedPolyMeta::Normal => {
+            FrontLoadedPolyMeta::Normal => {
                 let values = workers
                     .iter()
                     .map(|worker| read_eval(&worker.mles[mle_idx], 0))
                     .collect_vec();
                 MultilinearExtension::from_evaluations_ext_vec(log_num_workers, values)
             }
-            FrontloadedPolyMeta::Phase1Only => {
+            FrontLoadedPolyMeta::Phase1Only => {
                 let value = read_eval(&first_worker.mles[mle_idx], 0)
-                    * first_worker.fixed_frontload_factor(mle_idx, local_num_vars);
+                    * first_worker.fixed_front_loaded_factor(mle_idx, local_num_vars);
                 MultilinearExtension::from_evaluations_ext_vec(0, vec![value])
             }
         };
