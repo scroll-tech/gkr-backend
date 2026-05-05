@@ -108,16 +108,15 @@ pub fn prove_2phase<'a, E: ExtensionField>(
     let mut challenge: Option<Challenge<E>> = None;
 
     for round in 0..local_num_vars {
-        if let Some(challenge) = challenge.take() {
-            workers.par_iter_mut().for_each(|worker| {
-                worker.challenges.push(challenge);
-                worker.fold_round(challenge.elements);
-            });
-        }
-
         let mut evaluations = workers
-            .par_iter()
-            .map(|worker| worker.round_evaluations(round))
+            .par_iter_mut()
+            .map(|worker| {
+                if let Some(challenge) = challenge {
+                    worker.challenges.push(challenge);
+                    worker.fold_round(challenge.elements);
+                }
+                worker.round_evaluations(round)
+            })
             .reduce(
                 || vec![E::ZERO; max_degree + 1],
                 |mut acc, evals| {
@@ -133,7 +132,7 @@ pub fn prove_2phase<'a, E: ExtensionField>(
         challenge = Some(transcript.sample_and_append_challenge(b"Internal round"));
     }
 
-    if let Some(challenge) = challenge.take() {
+    if let Some(challenge) = challenge {
         workers.par_iter_mut().for_each(|worker| {
             worker.challenges.push(challenge);
             worker.fold_round(challenge.elements);
