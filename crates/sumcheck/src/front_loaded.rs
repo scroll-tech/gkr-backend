@@ -16,6 +16,20 @@ use crate::{
     util::extrapolate_from_table,
 };
 
+macro_rules! front_loaded_sumcheck_code_gen {
+    ($state:expr, $term:expr, $round:expr, $degree:expr, $($specialized_degree:literal),* $(,)?) => {
+        match $degree {
+            $(
+                $specialized_degree => {
+                    return $state
+                        .term_round_evaluations_degree::<$specialized_degree>($term, $round);
+                }
+            )*
+            _ => {}
+        }
+    };
+}
+
 #[derive(Clone, Debug)]
 pub struct FrontLoadedProverState<E: ExtensionField> {
     pub challenges: Vec<Challenge<E>>,
@@ -90,14 +104,14 @@ pub fn prove_2phase<'a, E: ExtensionField>(
         })
         .collect_vec();
     let mut proofs = Vec::with_capacity(global_num_vars);
-    let mut challenge = None;
+    let mut challenge: Option<Challenge<E>> = None;
 
     for round in 0..local_num_vars {
         if let Some(challenge) = challenge.take() {
-            for worker in &mut workers {
+            workers.par_iter_mut().for_each(|worker| {
                 worker.challenges.push(challenge);
                 worker.fold_round(challenge.elements);
-            }
+            });
         }
 
         let mut evaluations = workers
@@ -119,10 +133,10 @@ pub fn prove_2phase<'a, E: ExtensionField>(
     }
 
     if let Some(challenge) = challenge.take() {
-        for worker in &mut workers {
+        workers.par_iter_mut().for_each(|worker| {
             worker.challenges.push(challenge);
             worker.fold_round(challenge.elements);
-        }
+        });
     }
 
     let phase2_poly = build_phase2_poly(
@@ -164,7 +178,7 @@ fn prove_inner<'a, E: ExtensionField>(
     }
 
     let mut proof = Vec::with_capacity(num_vars);
-    let mut challenge = None;
+    let mut challenge: Option<Challenge<E>> = None;
 
     for round in 0..num_vars {
         if let Some(challenge) = challenge.take() {
@@ -309,7 +323,7 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         round: usize,
     ) -> Vec<E> {
         let degree = term.product.len();
-        if !self.worker_matches_front_loaded_tail(term) {
+        if !self.worker_matches_frontload_tail(term) {
             return vec![E::ZERO; self.poly.aux_info.max_degree + 1];
         }
         if degree == 1 {
@@ -318,6 +332,17 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         if degree == 2 {
             return self.term_round_evaluations_degree2(term, round);
         }
+        if degree == 3 {
+            return self.term_round_evaluations_degree3(term, round);
+        }
+        if degree == 4 {
+            return self.term_round_evaluations_degree4(term, round);
+        }
+        if degree == 5 {
+            return self.term_round_evaluations_degree5(term, round);
+        }
+        front_loaded_sumcheck_code_gen!(self, term, round, degree, 3, 4, 5);
+
         let live_vars = term
             .product
             .iter()
@@ -333,42 +358,29 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         } else {
             1usize << (live_vars - 1)
         };
-        let required_ones_mask = self.required_future_front_loaded_mask(term, round, live_vars);
-        let fixed_front_loaded = term
+        let required_ones_mask = self.required_future_frontload_mask(term, round, live_vars);
+        let fixed_frontload = term
             .product
             .iter()
-            .map(|&idx| self.fixed_front_loaded_factor(idx, round))
+            .map(|&idx| self.fixed_frontload_factor(idx, round))
             .collect_vec();
 
-        let evaluations = active_lanes(lane_count, required_ones_mask)
-            .into_par_iter()
-            .map(|lane| {
-                let mut local = vec![E::ZERO; degree + 1];
-                for (z_idx, eval) in local.iter_mut().enumerate() {
-                    let z = E::from_canonical_u64(z_idx as u64);
-                    let product = term
-                        .product
-                        .iter()
-                        .zip_eq(&fixed_front_loaded)
-                        .map(|(&idx, &front_loaded_factor)| {
-                            self.mle_round_value(idx, round, lane, z) * front_loaded_factor
-                        })
-                        .product::<E>();
-                    either::for_both!(&term.scalar, scalar => {
-                        *eval = product * *scalar;
-                    });
-                }
-                local
-            })
-            .reduce(
-                || vec![E::ZERO; degree + 1],
-                |mut acc, evals| {
-                    acc.iter_mut().zip_eq(evals).for_each(|(acc, eval)| {
-                        *acc += eval;
-                    });
-                    acc
-                },
-            );
+        let mut evaluations = vec![E::ZERO; degree + 1];
+        let scalar = scalar_to_ext(&term.scalar);
+        for_each_active_lane(lane_count, required_ones_mask, |lane| {
+            for (z_idx, eval) in evaluations.iter_mut().enumerate() {
+                let z = E::from_canonical_u64(z_idx as u64);
+                let product = term
+                    .product
+                    .iter()
+                    .zip_eq(&fixed_frontload)
+                    .map(|(&idx, &frontload_factor)| {
+                        self.mle_round_value(idx, round, lane, z) * frontload_factor
+                    })
+                    .product::<E>();
+                *eval += product * scalar;
+            }
+        });
 
         if degree == self.poly.aux_info.max_degree {
             evaluations
@@ -378,6 +390,22 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
             extrapolate_from_table(&mut extrapolated, degree + 1);
             extrapolated
         }
+    }
+
+    fn worker_matches_frontload_tail(
+        &self,
+        term: &Term<either::Either<E::BaseField, E>, usize>,
+    ) -> bool {
+        let Some((worker_id, log_num_workers)) = self.worker else {
+            return true;
+        };
+        let local_num_vars = self.poly.aux_info.max_num_variables;
+        term_matches_frontload_tail(
+            local_num_vars,
+            &self.global_mle_num_vars,
+            Some((worker_id, log_num_workers)),
+            term,
+        )
     }
 
     fn term_round_evaluations_degree1(
@@ -394,25 +422,36 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         } else {
             1usize << (live_vars - 1)
         };
-        let required_ones_mask = self.required_future_front_loaded_mask(term, round, live_vars);
-        let front_loaded_factor = self.fixed_front_loaded_factor(mle_idx, round);
-        let scalar = match &term.scalar {
-            either::Either::Left(base) => E::from(*base),
-            either::Either::Right(ext) => *ext,
-        };
+        let required_ones_mask = self.required_future_frontload_mask(term, round, live_vars);
+        let frontload_factor = self.fixed_frontload_factor(mle_idx, round);
+        let scalar = scalar_to_ext(&term.scalar);
 
-        let (eval_0, eval_1) = active_lanes(lane_count, required_ones_mask)
-            .into_par_iter()
-            .map(|lane| {
-                (
-                    self.mle_round_value(mle_idx, round, lane, E::ZERO) * front_loaded_factor,
-                    self.mle_round_value(mle_idx, round, lane, E::ONE) * front_loaded_factor,
-                )
-            })
-            .reduce(
-                || (E::ZERO, E::ZERO),
-                |(a0, a1), (b0, b1)| (a0 + b0, a1 + b1),
-            );
+        if let FieldType::Ext(evals) = self.mles[mle_idx].evaluations() {
+            let original_num_vars = self.poly.flattened_ml_extensions[mle_idx].num_vars();
+            let mut eval_0 = E::ZERO;
+            let mut eval_1 = E::ZERO;
+            for_each_active_lane(lane_count, required_ones_mask, |lane| {
+                let (v0, v1) =
+                    ext_round_endpoints(evals.as_slice(), original_num_vars, round, lane);
+                eval_0 += v0 * frontload_factor;
+                eval_1 += v1 * frontload_factor;
+            });
+            let mut evaluations = vec![E::ZERO; self.poly.aux_info.max_degree + 1];
+            evaluations[0] = eval_0 * scalar;
+            evaluations[1] = eval_1 * scalar;
+            if self.poly.aux_info.max_degree > 1 {
+                extrapolate_from_table(&mut evaluations, 2);
+            }
+            return evaluations;
+        }
+
+        let mut eval_0 = E::ZERO;
+        let mut eval_1 = E::ZERO;
+        for_each_active_lane(lane_count, required_ones_mask, |lane| {
+            let (v0, v1) = self.mle_round_endpoints_scaled(mle_idx, round, lane, frontload_factor);
+            eval_0 += v0;
+            eval_1 += v1;
+        });
 
         let mut evaluations = vec![E::ZERO; self.poly.aux_info.max_degree + 1];
         evaluations[0] = eval_0 * scalar;
@@ -444,29 +483,59 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         } else {
             1usize << (live_vars - 1)
         };
-        let required_ones_mask = self.required_future_front_loaded_mask(term, round, live_vars);
-        let lhs_front_loaded = self.fixed_front_loaded_factor(lhs_idx, round);
-        let rhs_front_loaded = self.fixed_front_loaded_factor(rhs_idx, round);
-        let scalar = match &term.scalar {
-            either::Either::Left(base) => E::from(*base),
-            either::Either::Right(ext) => *ext,
-        };
+        let required_ones_mask = self.required_future_frontload_mask(term, round, live_vars);
+        let lhs_frontload = self.fixed_frontload_factor(lhs_idx, round);
+        let rhs_frontload = self.fixed_frontload_factor(rhs_idx, round);
+        let scalar = scalar_to_ext(&term.scalar);
 
-        let (eval_0, eval_1, eval_2) = active_lanes(lane_count, required_ones_mask)
-            .into_par_iter()
-            .map(|lane| {
-                let lhs_0 = self.mle_round_value(lhs_idx, round, lane, E::ZERO) * lhs_front_loaded;
-                let lhs_1 = self.mle_round_value(lhs_idx, round, lane, E::ONE) * lhs_front_loaded;
-                let rhs_0 = self.mle_round_value(rhs_idx, round, lane, E::ZERO) * rhs_front_loaded;
-                let rhs_1 = self.mle_round_value(rhs_idx, round, lane, E::ONE) * rhs_front_loaded;
+        if let (FieldType::Ext(lhs_evals), FieldType::Ext(rhs_evals)) = (
+            self.mles[lhs_idx].evaluations(),
+            self.mles[rhs_idx].evaluations(),
+        ) {
+            let lhs_original_num_vars = self.poly.flattened_ml_extensions[lhs_idx].num_vars();
+            let rhs_original_num_vars = self.poly.flattened_ml_extensions[rhs_idx].num_vars();
+            let mut eval_0 = E::ZERO;
+            let mut eval_1 = E::ZERO;
+            let mut eval_2 = E::ZERO;
+            for_each_active_lane(lane_count, required_ones_mask, |lane| {
+                let (lhs_0, lhs_1) =
+                    ext_round_endpoints(lhs_evals.as_slice(), lhs_original_num_vars, round, lane);
+                let (rhs_0, rhs_1) =
+                    ext_round_endpoints(rhs_evals.as_slice(), rhs_original_num_vars, round, lane);
+                let lhs_0 = lhs_0 * lhs_frontload;
+                let lhs_1 = lhs_1 * lhs_frontload;
+                let rhs_0 = rhs_0 * rhs_frontload;
+                let rhs_1 = rhs_1 * rhs_frontload;
                 let lhs_2 = lhs_1 + (lhs_1 - lhs_0);
                 let rhs_2 = rhs_1 + (rhs_1 - rhs_0);
-                (lhs_0 * rhs_0, lhs_1 * rhs_1, lhs_2 * rhs_2)
-            })
-            .reduce(
-                || (E::ZERO, E::ZERO, E::ZERO),
-                |(a0, a1, a2), (b0, b1, b2)| (a0 + b0, a1 + b1, a2 + b2),
-            );
+                eval_0 += lhs_0 * rhs_0;
+                eval_1 += lhs_1 * rhs_1;
+                eval_2 += lhs_2 * rhs_2;
+            });
+            let mut evaluations = vec![E::ZERO; self.poly.aux_info.max_degree + 1];
+            evaluations[0] = eval_0 * scalar;
+            evaluations[1] = eval_1 * scalar;
+            evaluations[2] = eval_2 * scalar;
+            if self.poly.aux_info.max_degree > 2 {
+                extrapolate_from_table(&mut evaluations, 3);
+            }
+            return evaluations;
+        }
+
+        let mut eval_0 = E::ZERO;
+        let mut eval_1 = E::ZERO;
+        let mut eval_2 = E::ZERO;
+        for_each_active_lane(lane_count, required_ones_mask, |lane| {
+            let (lhs_0, lhs_1) =
+                self.mle_round_endpoints_scaled(lhs_idx, round, lane, lhs_frontload);
+            let (rhs_0, rhs_1) =
+                self.mle_round_endpoints_scaled(rhs_idx, round, lane, rhs_frontload);
+            let lhs_2 = lhs_1 + (lhs_1 - lhs_0);
+            let rhs_2 = rhs_1 + (rhs_1 - rhs_0);
+            eval_0 += lhs_0 * rhs_0;
+            eval_1 += lhs_1 * rhs_1;
+            eval_2 += lhs_2 * rhs_2;
+        });
 
         let mut evaluations = vec![E::ZERO; self.poly.aux_info.max_degree + 1];
         evaluations[0] = eval_0 * scalar;
@@ -478,7 +547,497 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         evaluations
     }
 
-    fn required_future_front_loaded_mask(
+    fn term_round_evaluations_degree3(
+        &self,
+        term: &Term<either::Either<E::BaseField, E>, usize>,
+        round: usize,
+    ) -> Vec<E> {
+        let idx0 = term.product[0];
+        let idx1 = term.product[1];
+        let idx2 = term.product[2];
+        let live_vars = [idx0, idx1, idx2]
+            .iter()
+            .map(|&idx| {
+                self.poly.flattened_ml_extensions[idx]
+                    .num_vars()
+                    .saturating_sub(round)
+            })
+            .max()
+            .unwrap_or(0);
+        let lane_count = if live_vars == 0 {
+            1
+        } else {
+            1usize << (live_vars - 1)
+        };
+        let required_ones_mask = self.required_future_frontload_mask(term, round, live_vars);
+        let factor0 = self.fixed_frontload_factor(idx0, round);
+        let factor1 = self.fixed_frontload_factor(idx1, round);
+        let factor2 = self.fixed_frontload_factor(idx2, round);
+        let scalar = scalar_to_ext(&term.scalar);
+
+        if let (FieldType::Ext(evals0), FieldType::Ext(evals1), FieldType::Ext(evals2)) = (
+            self.mles[idx0].evaluations(),
+            self.mles[idx1].evaluations(),
+            self.mles[idx2].evaluations(),
+        ) {
+            let original_num_vars0 = self.poly.flattened_ml_extensions[idx0].num_vars();
+            let original_num_vars1 = self.poly.flattened_ml_extensions[idx1].num_vars();
+            let original_num_vars2 = self.poly.flattened_ml_extensions[idx2].num_vars();
+            let mut eval_0 = E::ZERO;
+            let mut eval_1 = E::ZERO;
+            let mut eval_2 = E::ZERO;
+            let mut eval_3 = E::ZERO;
+            for_each_active_lane(lane_count, required_ones_mask, |lane| {
+                let (a0, a1) =
+                    ext_round_endpoints(evals0.as_slice(), original_num_vars0, round, lane);
+                let (b0, b1) =
+                    ext_round_endpoints(evals1.as_slice(), original_num_vars1, round, lane);
+                let (c0, c1) =
+                    ext_round_endpoints(evals2.as_slice(), original_num_vars2, round, lane);
+                let a0 = a0 * factor0;
+                let a1 = a1 * factor0;
+                let b0 = b0 * factor1;
+                let b1 = b1 * factor1;
+                let c0 = c0 * factor2;
+                let c1 = c1 * factor2;
+                let a_delta = a1 - a0;
+                let b_delta = b1 - b0;
+                let c_delta = c1 - c0;
+                let a2 = a1 + a_delta;
+                let b2 = b1 + b_delta;
+                let c2 = c1 + c_delta;
+                let a3 = a2 + a_delta;
+                let b3 = b2 + b_delta;
+                let c3 = c2 + c_delta;
+                eval_0 += a0 * b0 * c0;
+                eval_1 += a1 * b1 * c1;
+                eval_2 += a2 * b2 * c2;
+                eval_3 += a3 * b3 * c3;
+            });
+            return self.finalize_degree3_evaluations(eval_0, eval_1, eval_2, eval_3, scalar);
+        }
+
+        let mut eval_0 = E::ZERO;
+        let mut eval_1 = E::ZERO;
+        let mut eval_2 = E::ZERO;
+        let mut eval_3 = E::ZERO;
+        for_each_active_lane(lane_count, required_ones_mask, |lane| {
+            let (a0, a1) = self.mle_round_endpoints_scaled(idx0, round, lane, factor0);
+            let (b0, b1) = self.mle_round_endpoints_scaled(idx1, round, lane, factor1);
+            let (c0, c1) = self.mle_round_endpoints_scaled(idx2, round, lane, factor2);
+            let a_delta = a1 - a0;
+            let b_delta = b1 - b0;
+            let c_delta = c1 - c0;
+            let a2 = a1 + a_delta;
+            let b2 = b1 + b_delta;
+            let c2 = c1 + c_delta;
+            let a3 = a2 + a_delta;
+            let b3 = b2 + b_delta;
+            let c3 = c2 + c_delta;
+            eval_0 += a0 * b0 * c0;
+            eval_1 += a1 * b1 * c1;
+            eval_2 += a2 * b2 * c2;
+            eval_3 += a3 * b3 * c3;
+        });
+
+        self.finalize_degree3_evaluations(eval_0, eval_1, eval_2, eval_3, scalar)
+    }
+
+    fn term_round_evaluations_degree4(
+        &self,
+        term: &Term<either::Either<E::BaseField, E>, usize>,
+        round: usize,
+    ) -> Vec<E> {
+        let idx0 = term.product[0];
+        let idx1 = term.product[1];
+        let idx2 = term.product[2];
+        let idx3 = term.product[3];
+        let live_vars = [idx0, idx1, idx2, idx3]
+            .iter()
+            .map(|&idx| {
+                self.poly.flattened_ml_extensions[idx]
+                    .num_vars()
+                    .saturating_sub(round)
+            })
+            .max()
+            .unwrap_or(0);
+        let lane_count = if live_vars == 0 {
+            1
+        } else {
+            1usize << (live_vars - 1)
+        };
+        let required_ones_mask = self.required_future_frontload_mask(term, round, live_vars);
+        let factor0 = self.fixed_frontload_factor(idx0, round);
+        let factor1 = self.fixed_frontload_factor(idx1, round);
+        let factor2 = self.fixed_frontload_factor(idx2, round);
+        let factor3 = self.fixed_frontload_factor(idx3, round);
+        let scalar = scalar_to_ext(&term.scalar);
+
+        if let (
+            FieldType::Ext(evals0),
+            FieldType::Ext(evals1),
+            FieldType::Ext(evals2),
+            FieldType::Ext(evals3),
+        ) = (
+            self.mles[idx0].evaluations(),
+            self.mles[idx1].evaluations(),
+            self.mles[idx2].evaluations(),
+            self.mles[idx3].evaluations(),
+        ) {
+            let original_num_vars0 = self.poly.flattened_ml_extensions[idx0].num_vars();
+            let original_num_vars1 = self.poly.flattened_ml_extensions[idx1].num_vars();
+            let original_num_vars2 = self.poly.flattened_ml_extensions[idx2].num_vars();
+            let original_num_vars3 = self.poly.flattened_ml_extensions[idx3].num_vars();
+            let mut eval_0 = E::ZERO;
+            let mut eval_1 = E::ZERO;
+            let mut eval_2 = E::ZERO;
+            let mut eval_3 = E::ZERO;
+            let mut eval_4 = E::ZERO;
+            for_each_active_lane(lane_count, required_ones_mask, |lane| {
+                let (a0, a1) =
+                    ext_round_endpoints(evals0.as_slice(), original_num_vars0, round, lane);
+                let (b0, b1) =
+                    ext_round_endpoints(evals1.as_slice(), original_num_vars1, round, lane);
+                let (c0, c1) =
+                    ext_round_endpoints(evals2.as_slice(), original_num_vars2, round, lane);
+                let (d0, d1) =
+                    ext_round_endpoints(evals3.as_slice(), original_num_vars3, round, lane);
+                let a0 = a0 * factor0;
+                let a1 = a1 * factor0;
+                let b0 = b0 * factor1;
+                let b1 = b1 * factor1;
+                let c0 = c0 * factor2;
+                let c1 = c1 * factor2;
+                let d0 = d0 * factor3;
+                let d1 = d1 * factor3;
+                let a_delta = a1 - a0;
+                let b_delta = b1 - b0;
+                let c_delta = c1 - c0;
+                let d_delta = d1 - d0;
+                let a2 = a1 + a_delta;
+                let b2 = b1 + b_delta;
+                let c2 = c1 + c_delta;
+                let d2 = d1 + d_delta;
+                let a3 = a2 + a_delta;
+                let b3 = b2 + b_delta;
+                let c3 = c2 + c_delta;
+                let d3 = d2 + d_delta;
+                let a4 = a3 + a_delta;
+                let b4 = b3 + b_delta;
+                let c4 = c3 + c_delta;
+                let d4 = d3 + d_delta;
+                eval_0 += a0 * b0 * c0 * d0;
+                eval_1 += a1 * b1 * c1 * d1;
+                eval_2 += a2 * b2 * c2 * d2;
+                eval_3 += a3 * b3 * c3 * d3;
+                eval_4 += a4 * b4 * c4 * d4;
+            });
+            return self
+                .finalize_degree4_evaluations(eval_0, eval_1, eval_2, eval_3, eval_4, scalar);
+        }
+
+        let mut eval_0 = E::ZERO;
+        let mut eval_1 = E::ZERO;
+        let mut eval_2 = E::ZERO;
+        let mut eval_3 = E::ZERO;
+        let mut eval_4 = E::ZERO;
+        for_each_active_lane(lane_count, required_ones_mask, |lane| {
+            let (a0, a1) = self.mle_round_endpoints_scaled(idx0, round, lane, factor0);
+            let (b0, b1) = self.mle_round_endpoints_scaled(idx1, round, lane, factor1);
+            let (c0, c1) = self.mle_round_endpoints_scaled(idx2, round, lane, factor2);
+            let (d0, d1) = self.mle_round_endpoints_scaled(idx3, round, lane, factor3);
+            let a_delta = a1 - a0;
+            let b_delta = b1 - b0;
+            let c_delta = c1 - c0;
+            let d_delta = d1 - d0;
+            let a2 = a1 + a_delta;
+            let b2 = b1 + b_delta;
+            let c2 = c1 + c_delta;
+            let d2 = d1 + d_delta;
+            let a3 = a2 + a_delta;
+            let b3 = b2 + b_delta;
+            let c3 = c2 + c_delta;
+            let d3 = d2 + d_delta;
+            let a4 = a3 + a_delta;
+            let b4 = b3 + b_delta;
+            let c4 = c3 + c_delta;
+            let d4 = d3 + d_delta;
+            eval_0 += a0 * b0 * c0 * d0;
+            eval_1 += a1 * b1 * c1 * d1;
+            eval_2 += a2 * b2 * c2 * d2;
+            eval_3 += a3 * b3 * c3 * d3;
+            eval_4 += a4 * b4 * c4 * d4;
+        });
+
+        self.finalize_degree4_evaluations(eval_0, eval_1, eval_2, eval_3, eval_4, scalar)
+    }
+
+    fn term_round_evaluations_degree5(
+        &self,
+        term: &Term<either::Either<E::BaseField, E>, usize>,
+        round: usize,
+    ) -> Vec<E> {
+        let idx0 = term.product[0];
+        let idx1 = term.product[1];
+        let idx2 = term.product[2];
+        let idx3 = term.product[3];
+        let idx4 = term.product[4];
+        let live_vars = [idx0, idx1, idx2, idx3, idx4]
+            .iter()
+            .map(|&idx| {
+                self.poly.flattened_ml_extensions[idx]
+                    .num_vars()
+                    .saturating_sub(round)
+            })
+            .max()
+            .unwrap_or(0);
+        let lane_count = if live_vars == 0 {
+            1
+        } else {
+            1usize << (live_vars - 1)
+        };
+        let required_ones_mask = self.required_future_frontload_mask(term, round, live_vars);
+        let factor0 = self.fixed_frontload_factor(idx0, round);
+        let factor1 = self.fixed_frontload_factor(idx1, round);
+        let factor2 = self.fixed_frontload_factor(idx2, round);
+        let factor3 = self.fixed_frontload_factor(idx3, round);
+        let factor4 = self.fixed_frontload_factor(idx4, round);
+        let scalar = scalar_to_ext(&term.scalar);
+
+        if let (
+            FieldType::Ext(evals0),
+            FieldType::Ext(evals1),
+            FieldType::Ext(evals2),
+            FieldType::Ext(evals3),
+            FieldType::Ext(evals4),
+        ) = (
+            self.mles[idx0].evaluations(),
+            self.mles[idx1].evaluations(),
+            self.mles[idx2].evaluations(),
+            self.mles[idx3].evaluations(),
+            self.mles[idx4].evaluations(),
+        ) {
+            let original_num_vars0 = self.poly.flattened_ml_extensions[idx0].num_vars();
+            let original_num_vars1 = self.poly.flattened_ml_extensions[idx1].num_vars();
+            let original_num_vars2 = self.poly.flattened_ml_extensions[idx2].num_vars();
+            let original_num_vars3 = self.poly.flattened_ml_extensions[idx3].num_vars();
+            let original_num_vars4 = self.poly.flattened_ml_extensions[idx4].num_vars();
+            let mut eval_0 = E::ZERO;
+            let mut eval_1 = E::ZERO;
+            let mut eval_2 = E::ZERO;
+            let mut eval_3 = E::ZERO;
+            let mut eval_4 = E::ZERO;
+            let mut eval_5 = E::ZERO;
+            for_each_active_lane(lane_count, required_ones_mask, |lane| {
+                let (a0, a1) =
+                    ext_round_endpoints(evals0.as_slice(), original_num_vars0, round, lane);
+                let (b0, b1) =
+                    ext_round_endpoints(evals1.as_slice(), original_num_vars1, round, lane);
+                let (c0, c1) =
+                    ext_round_endpoints(evals2.as_slice(), original_num_vars2, round, lane);
+                let (d0, d1) =
+                    ext_round_endpoints(evals3.as_slice(), original_num_vars3, round, lane);
+                let (e0, e1) =
+                    ext_round_endpoints(evals4.as_slice(), original_num_vars4, round, lane);
+                let a0 = a0 * factor0;
+                let a1 = a1 * factor0;
+                let b0 = b0 * factor1;
+                let b1 = b1 * factor1;
+                let c0 = c0 * factor2;
+                let c1 = c1 * factor2;
+                let d0 = d0 * factor3;
+                let d1 = d1 * factor3;
+                let e0 = e0 * factor4;
+                let e1 = e1 * factor4;
+                let a_delta = a1 - a0;
+                let b_delta = b1 - b0;
+                let c_delta = c1 - c0;
+                let d_delta = d1 - d0;
+                let e_delta = e1 - e0;
+                let a2 = a1 + a_delta;
+                let b2 = b1 + b_delta;
+                let c2 = c1 + c_delta;
+                let d2 = d1 + d_delta;
+                let e2 = e1 + e_delta;
+                let a3 = a2 + a_delta;
+                let b3 = b2 + b_delta;
+                let c3 = c2 + c_delta;
+                let d3 = d2 + d_delta;
+                let e3 = e2 + e_delta;
+                let a4 = a3 + a_delta;
+                let b4 = b3 + b_delta;
+                let c4 = c3 + c_delta;
+                let d4 = d3 + d_delta;
+                let e4 = e3 + e_delta;
+                let a5 = a4 + a_delta;
+                let b5 = b4 + b_delta;
+                let c5 = c4 + c_delta;
+                let d5 = d4 + d_delta;
+                let e5 = e4 + e_delta;
+                eval_0 += a0 * b0 * c0 * d0 * e0;
+                eval_1 += a1 * b1 * c1 * d1 * e1;
+                eval_2 += a2 * b2 * c2 * d2 * e2;
+                eval_3 += a3 * b3 * c3 * d3 * e3;
+                eval_4 += a4 * b4 * c4 * d4 * e4;
+                eval_5 += a5 * b5 * c5 * d5 * e5;
+            });
+            return self.finalize_degree5_evaluations(
+                [eval_0, eval_1, eval_2, eval_3, eval_4, eval_5],
+                scalar,
+            );
+        }
+
+        let mut eval_0 = E::ZERO;
+        let mut eval_1 = E::ZERO;
+        let mut eval_2 = E::ZERO;
+        let mut eval_3 = E::ZERO;
+        let mut eval_4 = E::ZERO;
+        let mut eval_5 = E::ZERO;
+        for_each_active_lane(lane_count, required_ones_mask, |lane| {
+            let (a0, a1) = self.mle_round_endpoints_scaled(idx0, round, lane, factor0);
+            let (b0, b1) = self.mle_round_endpoints_scaled(idx1, round, lane, factor1);
+            let (c0, c1) = self.mle_round_endpoints_scaled(idx2, round, lane, factor2);
+            let (d0, d1) = self.mle_round_endpoints_scaled(idx3, round, lane, factor3);
+            let (e0, e1) = self.mle_round_endpoints_scaled(idx4, round, lane, factor4);
+            let a_delta = a1 - a0;
+            let b_delta = b1 - b0;
+            let c_delta = c1 - c0;
+            let d_delta = d1 - d0;
+            let e_delta = e1 - e0;
+            let a2 = a1 + a_delta;
+            let b2 = b1 + b_delta;
+            let c2 = c1 + c_delta;
+            let d2 = d1 + d_delta;
+            let e2 = e1 + e_delta;
+            let a3 = a2 + a_delta;
+            let b3 = b2 + b_delta;
+            let c3 = c2 + c_delta;
+            let d3 = d2 + d_delta;
+            let e3 = e2 + e_delta;
+            let a4 = a3 + a_delta;
+            let b4 = b3 + b_delta;
+            let c4 = c3 + c_delta;
+            let d4 = d3 + d_delta;
+            let e4 = e3 + e_delta;
+            let a5 = a4 + a_delta;
+            let b5 = b4 + b_delta;
+            let c5 = c4 + c_delta;
+            let d5 = d4 + d_delta;
+            let e5 = e4 + e_delta;
+            eval_0 += a0 * b0 * c0 * d0 * e0;
+            eval_1 += a1 * b1 * c1 * d1 * e1;
+            eval_2 += a2 * b2 * c2 * d2 * e2;
+            eval_3 += a3 * b3 * c3 * d3 * e3;
+            eval_4 += a4 * b4 * c4 * d4 * e4;
+            eval_5 += a5 * b5 * c5 * d5 * e5;
+        });
+
+        self.finalize_degree5_evaluations([eval_0, eval_1, eval_2, eval_3, eval_4, eval_5], scalar)
+    }
+
+    fn finalize_degree3_evaluations(
+        &self,
+        eval_0: E,
+        eval_1: E,
+        eval_2: E,
+        eval_3: E,
+        scalar: E,
+    ) -> Vec<E> {
+        let mut evaluations = vec![E::ZERO; self.poly.aux_info.max_degree + 1];
+        evaluations[0] = eval_0 * scalar;
+        evaluations[1] = eval_1 * scalar;
+        evaluations[2] = eval_2 * scalar;
+        evaluations[3] = eval_3 * scalar;
+        if self.poly.aux_info.max_degree > 3 {
+            extrapolate_from_table(&mut evaluations, 4);
+        }
+        evaluations
+    }
+
+    fn finalize_degree4_evaluations(
+        &self,
+        eval_0: E,
+        eval_1: E,
+        eval_2: E,
+        eval_3: E,
+        eval_4: E,
+        scalar: E,
+    ) -> Vec<E> {
+        let mut evaluations = vec![E::ZERO; self.poly.aux_info.max_degree + 1];
+        evaluations[0] = eval_0 * scalar;
+        evaluations[1] = eval_1 * scalar;
+        evaluations[2] = eval_2 * scalar;
+        evaluations[3] = eval_3 * scalar;
+        evaluations[4] = eval_4 * scalar;
+        if self.poly.aux_info.max_degree > 4 {
+            extrapolate_from_table(&mut evaluations, 5);
+        }
+        evaluations
+    }
+
+    fn finalize_degree5_evaluations(&self, evals: [E; 6], scalar: E) -> Vec<E> {
+        let mut evaluations = vec![E::ZERO; self.poly.aux_info.max_degree + 1];
+        evaluations[0] = evals[0] * scalar;
+        evaluations[1] = evals[1] * scalar;
+        evaluations[2] = evals[2] * scalar;
+        evaluations[3] = evals[3] * scalar;
+        evaluations[4] = evals[4] * scalar;
+        evaluations[5] = evals[5] * scalar;
+        if self.poly.aux_info.max_degree > 5 {
+            extrapolate_from_table(&mut evaluations, 6);
+        }
+        evaluations
+    }
+
+    fn term_round_evaluations_degree<const D: usize>(
+        &self,
+        term: &Term<either::Either<E::BaseField, E>, usize>,
+        round: usize,
+    ) -> Vec<E> {
+        debug_assert_eq!(term.product.len(), D);
+        debug_assert!((1..=5).contains(&D));
+        let indices: [usize; D] = term.product.as_slice().try_into().unwrap();
+        let live_vars = indices
+            .iter()
+            .map(|&idx| {
+                self.poly.flattened_ml_extensions[idx]
+                    .num_vars()
+                    .saturating_sub(round)
+            })
+            .max()
+            .unwrap_or(0);
+        let lane_count = if live_vars == 0 {
+            1
+        } else {
+            1usize << (live_vars - 1)
+        };
+        let required_ones_mask = self.required_future_frontload_mask(term, round, live_vars);
+        let frontload_factors = indices.map(|idx| self.fixed_frontload_factor(idx, round));
+        let scalar = scalar_to_ext(&term.scalar);
+        let mut evaluations = vec![E::ZERO; self.poly.aux_info.max_degree + 1];
+
+        for_each_active_lane(lane_count, required_ones_mask, |lane| {
+            let endpoints: [(E, E); D] = std::array::from_fn(|i| {
+                let (v0, v1) =
+                    self.mle_round_endpoints_scaled(indices[i], round, lane, frontload_factors[i]);
+                (v0, v1 - v0)
+            });
+            for (z_idx, eval) in evaluations.iter_mut().take(D + 1).enumerate() {
+                let product = endpoints
+                    .iter()
+                    .map(|&(v0, delta)| v0 + delta * E::from_canonical_u64(z_idx as u64))
+                    .product::<E>();
+                *eval += product * scalar;
+            }
+        });
+
+        if D < self.poly.aux_info.max_degree {
+            extrapolate_from_table(&mut evaluations, D + 1);
+        }
+        evaluations
+    }
+
+    fn required_future_frontload_mask(
         &self,
         term: &Term<either::Either<E::BaseField, E>, usize>,
         round: usize,
@@ -489,11 +1048,11 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         }
         let enumerated_var_end = (round + live_vars).min(self.poly.aux_info.max_num_variables);
         ((round + 1)..enumerated_var_end).fold(0usize, |mask, var_idx| {
-            let needs_front_loaded = term
+            let needs_frontload = term
                 .product
                 .iter()
                 .any(|&idx| self.global_mle_num_vars[idx] <= var_idx);
-            if needs_front_loaded {
+            if needs_frontload {
                 mask | (1usize << (var_idx - round - 1))
             } else {
                 mask
@@ -501,30 +1060,26 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         })
     }
 
-    fn worker_matches_front_loaded_tail(
-        &self,
-        term: &Term<either::Either<E::BaseField, E>, usize>,
-    ) -> bool {
-        let Some((worker_id, log_num_workers)) = self.worker else {
-            return true;
-        };
-        let local_num_vars = self.poly.aux_info.max_num_variables;
-        let term_num_vars = term
-            .product
-            .iter()
-            .map(|&idx| self.global_mle_num_vars[idx])
-            .max()
-            .unwrap_or(0);
-        (0..log_num_workers).all(|phase2_bit| {
-            let global_var = local_num_vars + phase2_bit;
-            term_num_vars > global_var || ((worker_id >> phase2_bit) & 1) == 1
-        })
+    fn mle_round_value(&self, mle_idx: usize, round: usize, lane: usize, z: E) -> E {
+        let (e0, e1) = self.mle_round_endpoints(mle_idx, round, lane);
+        e0 + z * (e1 - e0)
     }
 
-    fn mle_round_value(&self, mle_idx: usize, round: usize, lane: usize, z: E) -> E {
+    fn mle_round_endpoints_scaled(
+        &self,
+        mle_idx: usize,
+        round: usize,
+        lane: usize,
+        factor: E,
+    ) -> (E, E) {
+        let (e0, e1) = self.mle_round_endpoints(mle_idx, round, lane);
+        (e0 * factor, e1 * factor)
+    }
+
+    fn mle_round_endpoints(&self, mle_idx: usize, round: usize, lane: usize) -> (E, E) {
         let original_num_vars = self.poly.flattened_ml_extensions[mle_idx].num_vars();
         if round >= original_num_vars {
-            return read_eval(&self.mles[mle_idx], 0) * z;
+            return (E::ZERO, read_eval(&self.mles[mle_idx], 0));
         }
 
         let remaining_vars = original_num_vars - round;
@@ -537,10 +1092,10 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         let evals = self.mles[mle_idx].evaluations();
         let e0 = field_index(evals, suffix << 1);
         let e1 = field_index(evals, (suffix << 1) + 1);
-        e0 + z * (e1 - e0)
+        (e0, e1)
     }
 
-    fn fixed_front_loaded_factor(&self, mle_idx: usize, round: usize) -> E {
+    fn fixed_frontload_factor(&self, mle_idx: usize, round: usize) -> E {
         let original_num_vars = self.global_mle_num_vars[mle_idx];
         if round <= original_num_vars {
             return E::ONE;
@@ -552,6 +1107,10 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
 
     fn fold_round(&mut self, challenge: E) {
         let round = self.challenges.len() - 1;
+        self.fold_round_at(round, challenge);
+    }
+
+    fn fold_round_at(&mut self, round: usize, challenge: E) {
         self.mles
             .iter_mut()
             .zip_eq(&self.poly.flattened_ml_extensions)
@@ -580,7 +1139,7 @@ fn build_phase2_poly<'a, E: ExtensionField>(
     local_num_vars: usize,
     log_num_workers: usize,
 ) -> VirtualPolynomial<'a, E> {
-    let first_worker = workers.first().expect("front-loaded 2phase needs workers");
+    let first_worker = workers.first().expect("front_loaded 2phase needs workers");
     let mut poly = VirtualPolynomial::new(log_num_workers);
     poly.aux_info.max_degree = first_worker.poly.aux_info.max_degree;
 
@@ -595,7 +1154,7 @@ fn build_phase2_poly<'a, E: ExtensionField>(
             }
             FrontLoadedPolyMeta::Phase1Only => {
                 let value = read_eval(&first_worker.mles[mle_idx], 0)
-                    * first_worker.fixed_front_loaded_factor(mle_idx, local_num_vars);
+                    * first_worker.fixed_frontload_factor(mle_idx, local_num_vars);
                 MultilinearExtension::from_evaluations_ext_vec(0, vec![value])
             }
         };
@@ -616,11 +1175,79 @@ fn field_index<E: ExtensionField>(evals: &FieldType<'_, E>, idx: usize) -> E {
     }
 }
 
-fn active_lanes(lane_count: usize, required_ones_mask: usize) -> Vec<usize> {
-    if required_ones_mask == 0 {
-        return (0..lane_count).collect();
+fn ext_round_endpoints<E: ExtensionField>(
+    evals: &[E],
+    original_num_vars: usize,
+    round: usize,
+    lane: usize,
+) -> (E, E) {
+    if round >= original_num_vars {
+        return (E::ZERO, evals[0]);
     }
-    (0..lane_count)
-        .filter(|lane| (lane & required_ones_mask) == required_ones_mask)
-        .collect()
+
+    let remaining_vars = original_num_vars - round;
+    let suffix_mask = if remaining_vars == 1 {
+        0
+    } else {
+        (1usize << (remaining_vars - 1)) - 1
+    };
+    let suffix = lane & suffix_mask;
+    (evals[suffix << 1], evals[(suffix << 1) + 1])
+}
+
+fn term_matches_frontload_tail<E: ExtensionField>(
+    local_num_vars: usize,
+    global_mle_num_vars: &[usize],
+    worker: Option<(usize, usize)>,
+    term: &Term<either::Either<E::BaseField, E>, usize>,
+) -> bool {
+    let Some((worker_id, log_num_workers)) = worker else {
+        return true;
+    };
+    let term_num_vars = term
+        .product
+        .iter()
+        .map(|&idx| global_mle_num_vars[idx])
+        .max()
+        .unwrap_or(0);
+    (0..log_num_workers).all(|phase2_bit| {
+        let global_var = local_num_vars + phase2_bit;
+        term_num_vars > global_var || ((worker_id >> phase2_bit) & 1) == 1
+    })
+}
+
+fn scalar_to_ext<E: ExtensionField>(scalar: &either::Either<E::BaseField, E>) -> E {
+    match scalar {
+        either::Either::Left(base) => E::from(*base),
+        either::Either::Right(ext) => *ext,
+    }
+}
+
+fn for_each_active_lane(
+    mut lane_count: usize,
+    required_ones_mask: usize,
+    mut f: impl FnMut(usize),
+) {
+    if lane_count == 0 {
+        return;
+    }
+    if required_ones_mask == 0 {
+        for lane in 0..lane_count {
+            f(lane);
+        }
+        return;
+    }
+
+    lane_count = lane_count.next_power_of_two();
+    let lane_mask = lane_count - 1;
+    let fixed_mask = required_ones_mask & lane_mask;
+    let free_mask = lane_mask & !fixed_mask;
+    let mut free_bits = free_mask;
+    loop {
+        f(fixed_mask | free_bits);
+        if free_bits == 0 {
+            break;
+        }
+        free_bits = (free_bits - 1) & free_mask;
+    }
 }

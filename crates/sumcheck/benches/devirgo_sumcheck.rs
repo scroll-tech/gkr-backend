@@ -313,7 +313,8 @@ fn suffix_phase2_expanded_mixed_sumcheck_fn(c: &mut Criterion) {
                     }],
                 );
                 let instant = std::time::Instant::now();
-                let (_proof, _state) = IOPProverState::<E>::prove(poly, &mut prover_transcript);
+                let (_proof, _state) =
+                    IOPProverState::<E>::prove_suffix(poly, &mut prover_transcript);
                 time += instant.elapsed();
             }
             time
@@ -388,7 +389,8 @@ fn mixed_sum_front_loaded_vs_suffix_case(
                     .collect_vec();
                 let poly = mixed_sum_poly(threads, max_num_variables, &mles);
                 let instant = std::time::Instant::now();
-                let (_proof, _state) = IOPProverState::<E>::prove(poly, &mut prover_transcript);
+                let (_proof, _state) =
+                    IOPProverState::<E>::prove_suffix(poly, &mut prover_transcript);
                 time += instant.elapsed();
             }
             time
@@ -511,7 +513,8 @@ fn mixed_product_sum_front_loaded_vs_suffix_case(
                     &mles,
                 );
                 let instant = std::time::Instant::now();
-                let (_proof, _state) = IOPProverState::<E>::prove(poly, &mut prover_transcript);
+                let (_proof, _state) =
+                    IOPProverState::<E>::prove_suffix(poly, &mut prover_transcript);
                 time += instant.elapsed();
             }
             time
