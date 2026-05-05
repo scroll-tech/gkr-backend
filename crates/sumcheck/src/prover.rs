@@ -117,6 +117,68 @@ impl<'a, E: ExtensionField> Phase1WorkerState<'a, E> {
 }
 
 impl<'a, E: ExtensionField> IOPProverState<'a, E> {
+    fn log_sumcheck_diag(virtual_poly: &VirtualPolynomials<'a, E>, mode: SumcheckProverMode) {
+        if std::env::var_os("CENO_SUMCHECK_DIAG").is_none() {
+            return;
+        }
+
+        let (polys, poly_meta) = virtual_poly.as_view().get_batched_polys();
+        let Some(first_poly) = polys.first() else {
+            tracing::info!("[sumcheck-diag] mode={mode:?} empty=true");
+            return;
+        };
+
+        let mut degree_hist = std::collections::BTreeMap::<usize, usize>::new();
+        let mut term_max_vars_hist = std::collections::BTreeMap::<usize, usize>::new();
+        let mut mixed_term_count = 0usize;
+        let mut phase2_only_mles = 0usize;
+        let mut normal_mles = 0usize;
+
+        for meta in &poly_meta {
+            match meta {
+                PolyMeta::Normal => normal_mles += 1,
+                PolyMeta::Phase2Only => phase2_only_mles += 1,
+            }
+        }
+
+        for monomial_terms in &first_poly.products {
+            for Term { product, .. } in &monomial_terms.terms {
+                *degree_hist.entry(product.len()).or_default() += 1;
+                let max_vars = product
+                    .iter()
+                    .map(|idx| first_poly.flattened_ml_extensions[*idx].num_vars())
+                    .max()
+                    .unwrap_or(0);
+                let min_vars = product
+                    .iter()
+                    .map(|idx| first_poly.flattened_ml_extensions[*idx].num_vars())
+                    .min()
+                    .unwrap_or(0);
+                if min_vars != max_vars {
+                    mixed_term_count += 1;
+                }
+                *term_max_vars_hist.entry(max_vars).or_default() += 1;
+            }
+        }
+
+        let total_terms = degree_hist.values().sum::<usize>();
+        tracing::info!(
+            "[sumcheck-diag] mode={mode:?} threads={} local_vars={} global_vars={} max_degree={} mles={} normal_mles={} phase2_only_mles={} products={} terms={} mixed_terms={} degree_hist={:?} term_max_vars_hist={:?}",
+            virtual_poly.num_threads,
+            first_poly.aux_info.max_num_variables,
+            first_poly.aux_info.max_num_variables + ceil_log2(virtual_poly.num_threads),
+            first_poly.aux_info.max_degree,
+            first_poly.flattened_ml_extensions.len(),
+            normal_mles,
+            phase2_only_mles,
+            first_poly.products.len(),
+            total_terms,
+            mixed_term_count,
+            degree_hist,
+            term_max_vars_hist,
+        );
+    }
+
     fn from_front_loaded_state(
         max_num_variables: usize,
         state: FrontLoadedProverState<E>,
@@ -148,6 +210,9 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         virtual_poly: VirtualPolynomials<'a, E>,
         transcript: &mut impl Transcript<E>,
     ) -> (IOPProof<E>, IOPProverState<'a, E>) {
+        if std::env::var_os("CENO_SUMCHECK_FORCE_SUFFIX").is_some() {
+            return Self::prove_suffix(virtual_poly, transcript);
+        }
         Self::prove_with_mode(virtual_poly, transcript, SumcheckProverMode::FrontLoaded)
     }
 
@@ -174,6 +239,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         transcript: &mut impl Transcript<E>,
         mode: SumcheckProverMode,
     ) -> (IOPProof<E>, IOPProverState<'a, E>) {
+        Self::log_sumcheck_diag(&virtual_poly, mode);
         if mode == SumcheckProverMode::FrontLoaded {
             let (proof, state) = front_loaded::prove_2phase(virtual_poly, transcript);
             let prover_state = Self::from_front_loaded_state(proof.proofs.len(), state);

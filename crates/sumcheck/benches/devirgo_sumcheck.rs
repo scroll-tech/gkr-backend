@@ -15,8 +15,13 @@ use sumcheck::{
 };
 
 use multilinear_extensions::{
-    mle::MultilinearExtension, monomial::Term, op_mle, util::max_usable_threads,
-    virtual_poly::VirtualPolynomial, virtual_polys::VirtualPolynomials,
+    Expression,
+    mle::MultilinearExtension,
+    monomial::Term,
+    op_mle,
+    util::max_usable_threads,
+    virtual_poly::VirtualPolynomial,
+    virtual_polys::{VirtualPolynomials, VirtualPolynomialsBuilder},
 };
 use transcript::BasicTranscript as Transcript;
 
@@ -30,6 +35,7 @@ criterion_group!(
     mixed_sum_front_loaded_vs_suffix_fn,
     mixed_sum_three_terms_front_loaded_vs_suffix_fn,
     mixed_product_sum_front_loaded_vs_suffix_fn,
+    ceno_dense_uniform_front_loaded_vs_suffix_fn,
 );
 criterion_main!(benches);
 
@@ -549,6 +555,131 @@ fn mixed_product_sum_front_loaded_vs_suffix_fn(c: &mut Criterion) {
         &[22, 16, 2],
         4,
     );
+}
+
+#[derive(Clone, Copy)]
+struct DenseUniformShape {
+    name: &'static str,
+    num_variables: usize,
+    num_mles: usize,
+    degree_hist: &'static [(usize, usize)],
+}
+
+const CENO_DENSE_UNIFORM_SHAPES: &[DenseUniformShape] = &[
+    DenseUniformShape {
+        name: "keccak_tower_nv_11_mles_4705_terms_3475",
+        num_variables: 11,
+        num_mles: 4705,
+        degree_hist: &[(3, 3475)],
+    },
+    DenseUniformShape {
+        name: "keccak_main_nv_12_mles_1700_terms_2785",
+        num_variables: 12,
+        num_mles: 1700,
+        degree_hist: &[(1, 3), (2, 2754), (3, 28)],
+    },
+    DenseUniformShape {
+        name: "weierstrass_main_nv_10_mles_2193_terms_5297",
+        num_variables: 10,
+        num_mles: 2193,
+        degree_hist: &[(1, 1), (2, 2192), (3, 3104)],
+    },
+    DenseUniformShape {
+        name: "shard_ram_main_nv_13_mles_382_terms_992",
+        num_variables: 13,
+        num_mles: 382,
+        degree_hist: &[(1, 3), (2, 404), (3, 303), (4, 282)],
+    },
+];
+
+fn dense_uniform_mles<E: ExtensionField, R: Rng>(
+    shape: DenseUniformShape,
+    rng: &mut R,
+) -> Vec<MultilinearExtension<'static, E>> {
+    (0..shape.num_mles)
+        .map(|_| MultilinearExtension::<E>::random(shape.num_variables, rng))
+        .collect_vec()
+}
+
+fn dense_uniform_poly<'a, E: ExtensionField>(
+    threads: usize,
+    shape: DenseUniformShape,
+    mles: &'a [MultilinearExtension<E>],
+) -> VirtualPolynomials<'a, E> {
+    let mut builder = VirtualPolynomialsBuilder::new_with_mles(
+        threads,
+        shape.num_variables,
+        mles.iter().map(Either::Left).collect_vec(),
+    );
+    let mle_exprs = mles
+        .iter()
+        .map(|mle| builder.lift(Either::Left(mle)))
+        .collect_vec();
+    let mut terms = Vec::with_capacity(shape.degree_hist.iter().map(|(_, count)| count).sum());
+    let mut term_offset = 0usize;
+
+    for &(degree, count) in shape.degree_hist {
+        for term_idx in 0..count {
+            let product = (0..degree)
+                .map(|factor_idx| {
+                    let mle_idx = (term_offset + term_idx * degree + factor_idx) % shape.num_mles;
+                    mle_exprs[mle_idx].clone()
+                })
+                .collect_vec();
+            terms.push(Term {
+                scalar: Expression::ONE,
+                product,
+            });
+        }
+        term_offset += count * degree;
+    }
+
+    builder.to_virtual_polys_with_monomial_terms(&terms, &[], &[])
+}
+
+fn ceno_dense_uniform_front_loaded_vs_suffix_fn(c: &mut Criterion) {
+    type E = GoldilocksExt2;
+
+    let threads = max_usable_threads();
+    for shape in CENO_DENSE_UNIFORM_SHAPES {
+        let mut group = c.benchmark_group(format!("ceno_dense_uniform_{}", shape.name));
+        group.sample_size(NUM_SAMPLES);
+
+        group.bench_function("front_loaded", |b| {
+            b.iter_custom(|iters| {
+                let mut time = Duration::new(0, 0);
+                for _ in 0..iters {
+                    let mut prover_transcript = Transcript::<E>::new(b"front-loaded-dense-bench");
+                    let mut rng = thread_rng();
+                    let mles = dense_uniform_mles::<E, _>(*shape, &mut rng);
+                    let poly = dense_uniform_poly(threads, *shape, &mles);
+                    let instant = std::time::Instant::now();
+                    let (_proof, _state) = front_loaded::prove_2phase(poly, &mut prover_transcript);
+                    time += instant.elapsed();
+                }
+                time
+            });
+        });
+
+        group.bench_function("suffix", |b| {
+            b.iter_custom(|iters| {
+                let mut time = Duration::new(0, 0);
+                for _ in 0..iters {
+                    let mut prover_transcript = Transcript::<E>::new(b"suffix-dense-bench");
+                    let mut rng = thread_rng();
+                    let mles = dense_uniform_mles::<E, _>(*shape, &mut rng);
+                    let poly = dense_uniform_poly(threads, *shape, &mles);
+                    let instant = std::time::Instant::now();
+                    let (_proof, _state) =
+                        IOPProverState::<E>::prove_suffix(poly, &mut prover_transcript);
+                    time += instant.elapsed();
+                }
+                time
+            });
+        });
+
+        group.finish();
+    }
 }
 
 fn devirgo_sumcheck_reduced_peak_memory_fn(c: &mut Criterion) {

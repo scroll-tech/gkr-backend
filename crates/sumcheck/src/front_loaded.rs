@@ -8,6 +8,7 @@ use multilinear_extensions::{
     virtual_poly::{MonomialTerms, VPAuxInfo, VirtualPolynomial},
     virtual_polys::{PolyMeta, VirtualPolynomials},
 };
+use p3::field::FieldAlgebra;
 use rayon::prelude::*;
 use transcript::{Challenge, Transcript};
 
@@ -253,9 +254,19 @@ pub fn aux_info<E: ExtensionField>(poly: &VirtualPolynomial<'_, E>) -> VPAuxInfo
 struct WorkingState<'a, E: ExtensionField> {
     poly: VirtualPolynomial<'a, E>,
     mles: Vec<MultilinearExtension<'a, E>>,
+    term_metadata: Vec<Vec<TermMetadata>>,
     challenges: Vec<Challenge<E>>,
     global_mle_num_vars: Vec<usize>,
     worker: Option<(usize, usize)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TermMetadata {
+    degree: usize,
+    local_num_vars: usize,
+    global_num_vars: usize,
+    all_same_local_num_vars: bool,
+    all_same_global_num_vars: bool,
 }
 
 impl<'a, E: ExtensionField> WorkingState<'a, E> {
@@ -279,9 +290,50 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
             .map(|mle| mle.as_ref().as_owned())
             .collect_vec();
         assert_eq!(global_mle_num_vars.len(), mles.len());
+        let term_metadata = poly
+            .products
+            .iter()
+            .map(|MonomialTerms { terms }| {
+                terms
+                    .iter()
+                    .map(|term| {
+                        let mut local_num_vars = 0usize;
+                        let mut first_local_num_vars = None;
+                        let mut first_global_num_vars = None;
+                        let mut all_same_local_num_vars = true;
+                        let mut all_same_global_num_vars = true;
+                        for &idx in &term.product {
+                            let mle_num_vars = poly.flattened_ml_extensions[idx].num_vars();
+                            let global_num_vars = global_mle_num_vars[idx];
+                            local_num_vars = local_num_vars.max(mle_num_vars);
+                            if first_local_num_vars
+                                .replace(mle_num_vars)
+                                .is_some_and(|first| first != mle_num_vars)
+                            {
+                                all_same_local_num_vars = false;
+                            }
+                            if first_global_num_vars
+                                .replace(global_num_vars)
+                                .is_some_and(|first| first != global_num_vars)
+                            {
+                                all_same_global_num_vars = false;
+                            }
+                        }
+                        TermMetadata {
+                            degree: term.product.len(),
+                            local_num_vars,
+                            global_num_vars: first_global_num_vars.unwrap_or(0),
+                            all_same_local_num_vars,
+                            all_same_global_num_vars,
+                        }
+                    })
+                    .collect_vec()
+            })
+            .collect_vec();
         Self {
             poly,
             mles,
+            term_metadata,
             challenges: vec![],
             global_mle_num_vars,
             worker,
@@ -289,32 +341,854 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
     }
 
     fn round_evaluations(&self, round: usize) -> Vec<E> {
-        self.poly
-            .products
-            .iter()
-            .map(|MonomialTerms { terms }| {
-                terms
-                    .iter()
-                    .map(|term| self.term_round_evaluations(term, round))
-                    .fold(
-                        vec![E::ZERO; self.poly.aux_info.max_degree + 1],
-                        |mut acc, evals| {
-                            acc.iter_mut().zip_eq(evals).for_each(|(acc, eval)| {
-                                *acc += eval;
-                            });
-                            acc
-                        },
-                    )
-            })
-            .fold(
-                vec![E::ZERO; self.poly.aux_info.max_degree + 1],
-                |mut acc, evals| {
-                    acc.iter_mut().zip_eq(evals).for_each(|(acc, eval)| {
-                        *acc += eval;
-                    });
-                    acc
-                },
-            )
+        let mut evaluations = vec![E::ZERO; self.poly.aux_info.max_degree + 1];
+        for (MonomialTerms { terms }, metadata) in
+            self.poly.products.iter().zip_eq(&self.term_metadata)
+        {
+            for (term, metadata) in terms.iter().zip_eq(metadata) {
+                self.add_term_round_evaluations(term, *metadata, round, &mut evaluations);
+            }
+        }
+        evaluations
+    }
+
+    fn add_term_round_evaluations(
+        &self,
+        term: &Term<either::Either<E::BaseField, E>, usize>,
+        metadata: TermMetadata,
+        round: usize,
+        acc: &mut [E],
+    ) {
+        debug_assert_eq!(metadata.degree, term.product.len());
+        if metadata.all_same_local_num_vars
+            && metadata.all_same_global_num_vars
+            && metadata.local_num_vars == self.poly.aux_info.max_num_variables
+            && self.uniform_term_has_no_frontload_tail(metadata)
+        {
+            match metadata.degree {
+                2 if self.add_uniform_degree2(term, metadata, round, acc) => return,
+                3 if self.add_uniform_degree3(term, metadata, round, acc) => return,
+                4 if self.add_uniform_degree4(term, metadata, round, acc) => return,
+                _ => {}
+            }
+        }
+
+        let evaluations = self.term_round_evaluations(term, round);
+        acc.iter_mut().zip_eq(evaluations).for_each(|(acc, eval)| {
+            *acc += eval;
+        });
+    }
+
+    #[inline]
+    fn uniform_term_has_no_frontload_tail(&self, metadata: TermMetadata) -> bool {
+        match self.worker {
+            None => true,
+            Some((_worker_id, log_num_workers)) => {
+                log_num_workers == 0
+                    || metadata.global_num_vars > self.poly.aux_info.max_num_variables
+            }
+        }
+    }
+
+    fn add_evaluations(
+        &self,
+        acc: &mut [E],
+        degree: usize,
+        scalar: E,
+        evals: impl IntoIterator<Item = E>,
+    ) {
+        if degree == self.poly.aux_info.max_degree {
+            for (dst, eval) in acc.iter_mut().take(degree + 1).zip(evals) {
+                *dst += eval * scalar;
+            }
+            return;
+        }
+
+        let mut evaluations = vec![E::ZERO; self.poly.aux_info.max_degree + 1];
+        for (dst, eval) in evaluations.iter_mut().take(degree + 1).zip(evals) {
+            *dst = eval * scalar;
+        }
+        if degree < self.poly.aux_info.max_degree {
+            extrapolate_from_table(&mut evaluations, degree + 1);
+        }
+        acc.iter_mut().zip_eq(evaluations).for_each(|(acc, eval)| {
+            *acc += eval;
+        });
+    }
+
+    fn add_base_evaluations<const N: usize>(
+        &self,
+        acc: &mut [E],
+        degree: usize,
+        scalar: &either::Either<E::BaseField, E>,
+        evals: [E::BaseField; N],
+    ) {
+        let scale_eval = |eval: E::BaseField| match scalar {
+            either::Either::Left(base_scalar) => E::from(eval * *base_scalar),
+            either::Either::Right(ext_scalar) => E::from(eval) * *ext_scalar,
+        };
+
+        if degree == self.poly.aux_info.max_degree {
+            for (dst, eval) in acc.iter_mut().take(degree + 1).zip(evals) {
+                *dst += scale_eval(eval);
+            }
+            return;
+        }
+
+        let mut evaluations = vec![E::ZERO; self.poly.aux_info.max_degree + 1];
+        for (dst, eval) in evaluations.iter_mut().take(degree + 1).zip(evals) {
+            *dst = scale_eval(eval);
+        }
+        if degree < self.poly.aux_info.max_degree {
+            extrapolate_from_table(&mut evaluations, degree + 1);
+        }
+        acc.iter_mut().zip_eq(evaluations).for_each(|(acc, eval)| {
+            *acc += eval;
+        });
+    }
+
+    fn add_uniform_degree2(
+        &self,
+        term: &Term<either::Either<E::BaseField, E>, usize>,
+        metadata: TermMetadata,
+        round: usize,
+        acc: &mut [E],
+    ) -> bool {
+        let lhs_idx = term.product[0];
+        let rhs_idx = term.product[1];
+        let lhs_evals = self.mles[lhs_idx].evaluations();
+        let rhs_evals = self.mles[rhs_idx].evaluations();
+        let live_vars = metadata.local_num_vars.saturating_sub(round);
+        let lane_count = if live_vars == 0 {
+            1
+        } else {
+            1usize << (live_vars - 1)
+        };
+        let suffix_mask = uniform_suffix_mask(metadata.local_num_vars, round);
+        let mut eval_0 = E::ZERO;
+        let mut eval_1 = E::ZERO;
+        let mut eval_2 = E::ZERO;
+        match (lhs_evals, rhs_evals) {
+            (FieldType::Ext(lhs_evals), FieldType::Ext(rhs_evals)) => {
+                let lhs_evals = lhs_evals.as_slice();
+                let rhs_evals = rhs_evals.as_slice();
+                for lane in 0..lane_count {
+                    let base = (lane & suffix_mask) << 1;
+                    let lhs_0 = lhs_evals[base];
+                    let lhs_1 = lhs_evals[base + 1];
+                    let rhs_0 = rhs_evals[base];
+                    let rhs_1 = rhs_evals[base + 1];
+                    let lhs_2 = lhs_1 + (lhs_1 - lhs_0);
+                    let rhs_2 = rhs_1 + (rhs_1 - rhs_0);
+                    eval_0 += lhs_0 * rhs_0;
+                    eval_1 += lhs_1 * rhs_1;
+                    eval_2 += lhs_2 * rhs_2;
+                }
+            }
+            (FieldType::Base(lhs_evals), FieldType::Base(rhs_evals)) => {
+                let lhs_evals = lhs_evals.as_slice();
+                let rhs_evals = rhs_evals.as_slice();
+                let mut base_eval_0 = E::BaseField::ZERO;
+                let mut base_eval_1 = E::BaseField::ZERO;
+                let mut base_eval_2 = E::BaseField::ZERO;
+                for lane in 0..lane_count {
+                    let base = (lane & suffix_mask) << 1;
+                    let lhs_0 = lhs_evals[base];
+                    let lhs_1 = lhs_evals[base + 1];
+                    let rhs_0 = rhs_evals[base];
+                    let rhs_1 = rhs_evals[base + 1];
+                    let lhs_2 = lhs_1 + (lhs_1 - lhs_0);
+                    let rhs_2 = rhs_1 + (rhs_1 - rhs_0);
+                    base_eval_0 += lhs_0 * rhs_0;
+                    base_eval_1 += lhs_1 * rhs_1;
+                    base_eval_2 += lhs_2 * rhs_2;
+                }
+                self.add_base_evaluations(
+                    acc,
+                    2,
+                    &term.scalar,
+                    [base_eval_0, base_eval_1, base_eval_2],
+                );
+                return true;
+            }
+            (FieldType::Ext(lhs_evals), FieldType::Base(rhs_evals)) => {
+                let lhs_evals = lhs_evals.as_slice();
+                let rhs_evals = rhs_evals.as_slice();
+                for lane in 0..lane_count {
+                    let base = (lane & suffix_mask) << 1;
+                    let lhs_0 = lhs_evals[base];
+                    let lhs_1 = lhs_evals[base + 1];
+                    let rhs_0 = rhs_evals[base];
+                    let rhs_1 = rhs_evals[base + 1];
+                    let lhs_2 = lhs_1 + (lhs_1 - lhs_0);
+                    let rhs_2 = rhs_1 + (rhs_1 - rhs_0);
+                    eval_0 += lhs_0 * rhs_0;
+                    eval_1 += lhs_1 * rhs_1;
+                    eval_2 += lhs_2 * rhs_2;
+                }
+            }
+            (FieldType::Base(lhs_evals), FieldType::Ext(rhs_evals)) => {
+                let lhs_evals = lhs_evals.as_slice();
+                let rhs_evals = rhs_evals.as_slice();
+                for lane in 0..lane_count {
+                    let base = (lane & suffix_mask) << 1;
+                    let lhs_0 = lhs_evals[base];
+                    let lhs_1 = lhs_evals[base + 1];
+                    let rhs_0 = rhs_evals[base];
+                    let rhs_1 = rhs_evals[base + 1];
+                    let lhs_2 = lhs_1 + (lhs_1 - lhs_0);
+                    let rhs_2 = rhs_1 + (rhs_1 - rhs_0);
+                    eval_0 += rhs_0 * lhs_0;
+                    eval_1 += rhs_1 * lhs_1;
+                    eval_2 += rhs_2 * lhs_2;
+                }
+            }
+            _ => {
+                for lane in 0..lane_count {
+                    let (lhs_0, lhs_1) =
+                        uniform_round_endpoints(lhs_evals, metadata.local_num_vars, round, lane);
+                    let (rhs_0, rhs_1) =
+                        uniform_round_endpoints(rhs_evals, metadata.local_num_vars, round, lane);
+                    let lhs_2 = lhs_1 + (lhs_1 - lhs_0);
+                    let rhs_2 = rhs_1 + (rhs_1 - rhs_0);
+                    eval_0 += lhs_0 * rhs_0;
+                    eval_1 += lhs_1 * rhs_1;
+                    eval_2 += lhs_2 * rhs_2;
+                }
+            }
+        }
+        self.add_evaluations(
+            acc,
+            2,
+            scalar_to_ext(&term.scalar),
+            [eval_0, eval_1, eval_2],
+        );
+        true
+    }
+
+    fn add_uniform_degree3(
+        &self,
+        term: &Term<either::Either<E::BaseField, E>, usize>,
+        metadata: TermMetadata,
+        round: usize,
+        acc: &mut [E],
+    ) -> bool {
+        let idx0 = term.product[0];
+        let idx1 = term.product[1];
+        let idx2 = term.product[2];
+        let evals0 = self.mles[idx0].evaluations();
+        let evals1 = self.mles[idx1].evaluations();
+        let evals2 = self.mles[idx2].evaluations();
+        let live_vars = metadata.local_num_vars.saturating_sub(round);
+        let lane_count = if live_vars == 0 {
+            1
+        } else {
+            1usize << (live_vars - 1)
+        };
+        let suffix_mask = uniform_suffix_mask(metadata.local_num_vars, round);
+        let mut eval_0 = E::ZERO;
+        let mut eval_1 = E::ZERO;
+        let mut eval_2 = E::ZERO;
+        let mut eval_3 = E::ZERO;
+        match (evals0, evals1, evals2) {
+            (FieldType::Ext(evals0), FieldType::Ext(evals1), FieldType::Ext(evals2)) => {
+                let evals0 = evals0.as_slice();
+                let evals1 = evals1.as_slice();
+                let evals2 = evals2.as_slice();
+                for lane in 0..lane_count {
+                    let base = (lane & suffix_mask) << 1;
+                    let a0 = evals0[base];
+                    let a1 = evals0[base + 1];
+                    let b0 = evals1[base];
+                    let b1 = evals1[base + 1];
+                    let c0 = evals2[base];
+                    let c1 = evals2[base + 1];
+                    let a_delta = a1 - a0;
+                    let b_delta = b1 - b0;
+                    let c_delta = c1 - c0;
+                    let a2 = a1 + a_delta;
+                    let b2 = b1 + b_delta;
+                    let c2 = c1 + c_delta;
+                    let a3 = a2 + a_delta;
+                    let b3 = b2 + b_delta;
+                    let c3 = c2 + c_delta;
+                    eval_0 += a0 * b0 * c0;
+                    eval_1 += a1 * b1 * c1;
+                    eval_2 += a2 * b2 * c2;
+                    eval_3 += a3 * b3 * c3;
+                }
+            }
+            (FieldType::Base(evals0), FieldType::Base(evals1), FieldType::Base(evals2)) => {
+                let evals0 = evals0.as_slice();
+                let evals1 = evals1.as_slice();
+                let evals2 = evals2.as_slice();
+                let mut base_eval_0 = E::BaseField::ZERO;
+                let mut base_eval_1 = E::BaseField::ZERO;
+                let mut base_eval_2 = E::BaseField::ZERO;
+                let mut base_eval_3 = E::BaseField::ZERO;
+                for lane in 0..lane_count {
+                    let base = (lane & suffix_mask) << 1;
+                    let a0 = evals0[base];
+                    let a1 = evals0[base + 1];
+                    let b0 = evals1[base];
+                    let b1 = evals1[base + 1];
+                    let c0 = evals2[base];
+                    let c1 = evals2[base + 1];
+                    let a_delta = a1 - a0;
+                    let b_delta = b1 - b0;
+                    let c_delta = c1 - c0;
+                    let a2 = a1 + a_delta;
+                    let b2 = b1 + b_delta;
+                    let c2 = c1 + c_delta;
+                    let a3 = a2 + a_delta;
+                    let b3 = b2 + b_delta;
+                    let c3 = c2 + c_delta;
+                    base_eval_0 += a0 * b0 * c0;
+                    base_eval_1 += a1 * b1 * c1;
+                    base_eval_2 += a2 * b2 * c2;
+                    base_eval_3 += a3 * b3 * c3;
+                }
+                self.add_base_evaluations(
+                    acc,
+                    3,
+                    &term.scalar,
+                    [base_eval_0, base_eval_1, base_eval_2, base_eval_3],
+                );
+                return true;
+            }
+            (FieldType::Ext(evals0), FieldType::Base(evals1), FieldType::Base(evals2)) => {
+                let evals0 = evals0.as_slice();
+                let evals1 = evals1.as_slice();
+                let evals2 = evals2.as_slice();
+                for lane in 0..lane_count {
+                    let base = (lane & suffix_mask) << 1;
+                    let a0 = evals0[base];
+                    let a1 = evals0[base + 1];
+                    let b0 = evals1[base];
+                    let b1 = evals1[base + 1];
+                    let c0 = evals2[base];
+                    let c1 = evals2[base + 1];
+                    let a_delta = a1 - a0;
+                    let b_delta = b1 - b0;
+                    let c_delta = c1 - c0;
+                    let a2 = a1 + a_delta;
+                    let b2 = b1 + b_delta;
+                    let c2 = c1 + c_delta;
+                    let a3 = a2 + a_delta;
+                    let b3 = b2 + b_delta;
+                    let c3 = c2 + c_delta;
+                    eval_0 += a0 * (b0 * c0);
+                    eval_1 += a1 * (b1 * c1);
+                    eval_2 += a2 * (b2 * c2);
+                    eval_3 += a3 * (b3 * c3);
+                }
+            }
+            (FieldType::Base(evals0), FieldType::Ext(evals1), FieldType::Base(evals2)) => {
+                let evals0 = evals0.as_slice();
+                let evals1 = evals1.as_slice();
+                let evals2 = evals2.as_slice();
+                for lane in 0..lane_count {
+                    let base = (lane & suffix_mask) << 1;
+                    let a0 = evals0[base];
+                    let a1 = evals0[base + 1];
+                    let b0 = evals1[base];
+                    let b1 = evals1[base + 1];
+                    let c0 = evals2[base];
+                    let c1 = evals2[base + 1];
+                    let a_delta = a1 - a0;
+                    let b_delta = b1 - b0;
+                    let c_delta = c1 - c0;
+                    let a2 = a1 + a_delta;
+                    let b2 = b1 + b_delta;
+                    let c2 = c1 + c_delta;
+                    let a3 = a2 + a_delta;
+                    let b3 = b2 + b_delta;
+                    let c3 = c2 + c_delta;
+                    eval_0 += b0 * (a0 * c0);
+                    eval_1 += b1 * (a1 * c1);
+                    eval_2 += b2 * (a2 * c2);
+                    eval_3 += b3 * (a3 * c3);
+                }
+            }
+            (FieldType::Base(evals0), FieldType::Base(evals1), FieldType::Ext(evals2)) => {
+                let evals0 = evals0.as_slice();
+                let evals1 = evals1.as_slice();
+                let evals2 = evals2.as_slice();
+                for lane in 0..lane_count {
+                    let base = (lane & suffix_mask) << 1;
+                    let a0 = evals0[base];
+                    let a1 = evals0[base + 1];
+                    let b0 = evals1[base];
+                    let b1 = evals1[base + 1];
+                    let c0 = evals2[base];
+                    let c1 = evals2[base + 1];
+                    let a_delta = a1 - a0;
+                    let b_delta = b1 - b0;
+                    let c_delta = c1 - c0;
+                    let a2 = a1 + a_delta;
+                    let b2 = b1 + b_delta;
+                    let c2 = c1 + c_delta;
+                    let a3 = a2 + a_delta;
+                    let b3 = b2 + b_delta;
+                    let c3 = c2 + c_delta;
+                    eval_0 += c0 * (a0 * b0);
+                    eval_1 += c1 * (a1 * b1);
+                    eval_2 += c2 * (a2 * b2);
+                    eval_3 += c3 * (a3 * b3);
+                }
+            }
+            (FieldType::Ext(evals0), FieldType::Ext(evals1), FieldType::Base(evals2)) => {
+                let evals0 = evals0.as_slice();
+                let evals1 = evals1.as_slice();
+                let evals2 = evals2.as_slice();
+                for lane in 0..lane_count {
+                    let base = (lane & suffix_mask) << 1;
+                    let a0 = evals0[base];
+                    let a1 = evals0[base + 1];
+                    let b0 = evals1[base];
+                    let b1 = evals1[base + 1];
+                    let c0 = evals2[base];
+                    let c1 = evals2[base + 1];
+                    let a_delta = a1 - a0;
+                    let b_delta = b1 - b0;
+                    let c_delta = c1 - c0;
+                    let a2 = a1 + a_delta;
+                    let b2 = b1 + b_delta;
+                    let c2 = c1 + c_delta;
+                    let a3 = a2 + a_delta;
+                    let b3 = b2 + b_delta;
+                    let c3 = c2 + c_delta;
+                    eval_0 += a0 * b0 * c0;
+                    eval_1 += a1 * b1 * c1;
+                    eval_2 += a2 * b2 * c2;
+                    eval_3 += a3 * b3 * c3;
+                }
+            }
+            (FieldType::Ext(evals0), FieldType::Base(evals1), FieldType::Ext(evals2)) => {
+                let evals0 = evals0.as_slice();
+                let evals1 = evals1.as_slice();
+                let evals2 = evals2.as_slice();
+                for lane in 0..lane_count {
+                    let base = (lane & suffix_mask) << 1;
+                    let a0 = evals0[base];
+                    let a1 = evals0[base + 1];
+                    let b0 = evals1[base];
+                    let b1 = evals1[base + 1];
+                    let c0 = evals2[base];
+                    let c1 = evals2[base + 1];
+                    let a_delta = a1 - a0;
+                    let b_delta = b1 - b0;
+                    let c_delta = c1 - c0;
+                    let a2 = a1 + a_delta;
+                    let b2 = b1 + b_delta;
+                    let c2 = c1 + c_delta;
+                    let a3 = a2 + a_delta;
+                    let b3 = b2 + b_delta;
+                    let c3 = c2 + c_delta;
+                    eval_0 += a0 * c0 * b0;
+                    eval_1 += a1 * c1 * b1;
+                    eval_2 += a2 * c2 * b2;
+                    eval_3 += a3 * c3 * b3;
+                }
+            }
+            (FieldType::Base(evals0), FieldType::Ext(evals1), FieldType::Ext(evals2)) => {
+                let evals0 = evals0.as_slice();
+                let evals1 = evals1.as_slice();
+                let evals2 = evals2.as_slice();
+                for lane in 0..lane_count {
+                    let base = (lane & suffix_mask) << 1;
+                    let a0 = evals0[base];
+                    let a1 = evals0[base + 1];
+                    let b0 = evals1[base];
+                    let b1 = evals1[base + 1];
+                    let c0 = evals2[base];
+                    let c1 = evals2[base + 1];
+                    let a_delta = a1 - a0;
+                    let b_delta = b1 - b0;
+                    let c_delta = c1 - c0;
+                    let a2 = a1 + a_delta;
+                    let b2 = b1 + b_delta;
+                    let c2 = c1 + c_delta;
+                    let a3 = a2 + a_delta;
+                    let b3 = b2 + b_delta;
+                    let c3 = c2 + c_delta;
+                    eval_0 += b0 * c0 * a0;
+                    eval_1 += b1 * c1 * a1;
+                    eval_2 += b2 * c2 * a2;
+                    eval_3 += b3 * c3 * a3;
+                }
+            }
+            _ => {
+                for lane in 0..lane_count {
+                    let (a0, a1) =
+                        uniform_round_endpoints(evals0, metadata.local_num_vars, round, lane);
+                    let (b0, b1) =
+                        uniform_round_endpoints(evals1, metadata.local_num_vars, round, lane);
+                    let (c0, c1) =
+                        uniform_round_endpoints(evals2, metadata.local_num_vars, round, lane);
+                    let a_delta = a1 - a0;
+                    let b_delta = b1 - b0;
+                    let c_delta = c1 - c0;
+                    let a2 = a1 + a_delta;
+                    let b2 = b1 + b_delta;
+                    let c2 = c1 + c_delta;
+                    let a3 = a2 + a_delta;
+                    let b3 = b2 + b_delta;
+                    let c3 = c2 + c_delta;
+                    eval_0 += a0 * b0 * c0;
+                    eval_1 += a1 * b1 * c1;
+                    eval_2 += a2 * b2 * c2;
+                    eval_3 += a3 * b3 * c3;
+                }
+            }
+        }
+        self.add_evaluations(
+            acc,
+            3,
+            scalar_to_ext(&term.scalar),
+            [eval_0, eval_1, eval_2, eval_3],
+        );
+        true
+    }
+
+    fn add_uniform_degree4(
+        &self,
+        term: &Term<either::Either<E::BaseField, E>, usize>,
+        metadata: TermMetadata,
+        round: usize,
+        acc: &mut [E],
+    ) -> bool {
+        let idx0 = term.product[0];
+        let idx1 = term.product[1];
+        let idx2 = term.product[2];
+        let idx3 = term.product[3];
+        let evals0 = self.mles[idx0].evaluations();
+        let evals1 = self.mles[idx1].evaluations();
+        let evals2 = self.mles[idx2].evaluations();
+        let evals3 = self.mles[idx3].evaluations();
+        let live_vars = metadata.local_num_vars.saturating_sub(round);
+        let lane_count = if live_vars == 0 {
+            1
+        } else {
+            1usize << (live_vars - 1)
+        };
+        let suffix_mask = uniform_suffix_mask(metadata.local_num_vars, round);
+        let (evals0, evals1, evals2, evals3) = match (evals0, evals1, evals2, evals3) {
+            (FieldType::Base(_), FieldType::Ext(_), FieldType::Ext(_), FieldType::Ext(_)) => {
+                (evals1, evals2, evals3, evals0)
+            }
+            (FieldType::Ext(_), FieldType::Base(_), FieldType::Ext(_), FieldType::Ext(_)) => {
+                (evals0, evals2, evals3, evals1)
+            }
+            (FieldType::Ext(_), FieldType::Ext(_), FieldType::Base(_), FieldType::Ext(_)) => {
+                (evals0, evals1, evals3, evals2)
+            }
+            (FieldType::Base(_), FieldType::Base(_), FieldType::Ext(_), FieldType::Ext(_)) => {
+                (evals2, evals3, evals0, evals1)
+            }
+            (FieldType::Base(_), FieldType::Ext(_), FieldType::Base(_), FieldType::Ext(_)) => {
+                (evals1, evals3, evals0, evals2)
+            }
+            (FieldType::Base(_), FieldType::Ext(_), FieldType::Ext(_), FieldType::Base(_)) => {
+                (evals1, evals2, evals0, evals3)
+            }
+            (FieldType::Ext(_), FieldType::Base(_), FieldType::Base(_), FieldType::Ext(_)) => {
+                (evals0, evals3, evals1, evals2)
+            }
+            (FieldType::Ext(_), FieldType::Base(_), FieldType::Ext(_), FieldType::Base(_)) => {
+                (evals0, evals2, evals1, evals3)
+            }
+            (FieldType::Base(_), FieldType::Base(_), FieldType::Base(_), FieldType::Ext(_)) => {
+                (evals3, evals0, evals1, evals2)
+            }
+            (FieldType::Base(_), FieldType::Base(_), FieldType::Ext(_), FieldType::Base(_)) => {
+                (evals2, evals0, evals1, evals3)
+            }
+            (FieldType::Base(_), FieldType::Ext(_), FieldType::Base(_), FieldType::Base(_)) => {
+                (evals1, evals0, evals2, evals3)
+            }
+            _ => (evals0, evals1, evals2, evals3),
+        };
+        let mut eval_0 = E::ZERO;
+        let mut eval_1 = E::ZERO;
+        let mut eval_2 = E::ZERO;
+        let mut eval_3 = E::ZERO;
+        let mut eval_4 = E::ZERO;
+        match (evals0, evals1, evals2, evals3) {
+            (
+                FieldType::Ext(evals0),
+                FieldType::Ext(evals1),
+                FieldType::Ext(evals2),
+                FieldType::Ext(evals3),
+            ) => {
+                let evals0 = evals0.as_slice();
+                let evals1 = evals1.as_slice();
+                let evals2 = evals2.as_slice();
+                let evals3 = evals3.as_slice();
+                for lane in 0..lane_count {
+                    let base = (lane & suffix_mask) << 1;
+                    let a0 = evals0[base];
+                    let a1 = evals0[base + 1];
+                    let b0 = evals1[base];
+                    let b1 = evals1[base + 1];
+                    let c0 = evals2[base];
+                    let c1 = evals2[base + 1];
+                    let d0 = evals3[base];
+                    let d1 = evals3[base + 1];
+                    let a_delta = a1 - a0;
+                    let b_delta = b1 - b0;
+                    let c_delta = c1 - c0;
+                    let d_delta = d1 - d0;
+                    let a2 = a1 + a_delta;
+                    let b2 = b1 + b_delta;
+                    let c2 = c1 + c_delta;
+                    let d2 = d1 + d_delta;
+                    let a3 = a2 + a_delta;
+                    let b3 = b2 + b_delta;
+                    let c3 = c2 + c_delta;
+                    let d3 = d2 + d_delta;
+                    let a4 = a3 + a_delta;
+                    let b4 = b3 + b_delta;
+                    let c4 = c3 + c_delta;
+                    let d4 = d3 + d_delta;
+                    eval_0 += a0 * b0 * c0 * d0;
+                    eval_1 += a1 * b1 * c1 * d1;
+                    eval_2 += a2 * b2 * c2 * d2;
+                    eval_3 += a3 * b3 * c3 * d3;
+                    eval_4 += a4 * b4 * c4 * d4;
+                }
+            }
+            (
+                FieldType::Ext(evals0),
+                FieldType::Ext(evals1),
+                FieldType::Ext(evals2),
+                FieldType::Base(evals3),
+            ) => {
+                let evals0 = evals0.as_slice();
+                let evals1 = evals1.as_slice();
+                let evals2 = evals2.as_slice();
+                let evals3 = evals3.as_slice();
+                for lane in 0..lane_count {
+                    let base = (lane & suffix_mask) << 1;
+                    let a0 = evals0[base];
+                    let a1 = evals0[base + 1];
+                    let b0 = evals1[base];
+                    let b1 = evals1[base + 1];
+                    let c0 = evals2[base];
+                    let c1 = evals2[base + 1];
+                    let d0 = evals3[base];
+                    let d1 = evals3[base + 1];
+                    let a_delta = a1 - a0;
+                    let b_delta = b1 - b0;
+                    let c_delta = c1 - c0;
+                    let d_delta = d1 - d0;
+                    let a2 = a1 + a_delta;
+                    let b2 = b1 + b_delta;
+                    let c2 = c1 + c_delta;
+                    let d2 = d1 + d_delta;
+                    let a3 = a2 + a_delta;
+                    let b3 = b2 + b_delta;
+                    let c3 = c2 + c_delta;
+                    let d3 = d2 + d_delta;
+                    let a4 = a3 + a_delta;
+                    let b4 = b3 + b_delta;
+                    let c4 = c3 + c_delta;
+                    let d4 = d3 + d_delta;
+                    eval_0 += a0 * b0 * c0 * d0;
+                    eval_1 += a1 * b1 * c1 * d1;
+                    eval_2 += a2 * b2 * c2 * d2;
+                    eval_3 += a3 * b3 * c3 * d3;
+                    eval_4 += a4 * b4 * c4 * d4;
+                }
+            }
+            (
+                FieldType::Ext(evals0),
+                FieldType::Ext(evals1),
+                FieldType::Base(evals2),
+                FieldType::Base(evals3),
+            ) => {
+                let evals0 = evals0.as_slice();
+                let evals1 = evals1.as_slice();
+                let evals2 = evals2.as_slice();
+                let evals3 = evals3.as_slice();
+                for lane in 0..lane_count {
+                    let base = (lane & suffix_mask) << 1;
+                    let a0 = evals0[base];
+                    let a1 = evals0[base + 1];
+                    let b0 = evals1[base];
+                    let b1 = evals1[base + 1];
+                    let c0 = evals2[base];
+                    let c1 = evals2[base + 1];
+                    let d0 = evals3[base];
+                    let d1 = evals3[base + 1];
+                    let a_delta = a1 - a0;
+                    let b_delta = b1 - b0;
+                    let c_delta = c1 - c0;
+                    let d_delta = d1 - d0;
+                    let a2 = a1 + a_delta;
+                    let b2 = b1 + b_delta;
+                    let c2 = c1 + c_delta;
+                    let d2 = d1 + d_delta;
+                    let a3 = a2 + a_delta;
+                    let b3 = b2 + b_delta;
+                    let c3 = c2 + c_delta;
+                    let d3 = d2 + d_delta;
+                    let a4 = a3 + a_delta;
+                    let b4 = b3 + b_delta;
+                    let c4 = c3 + c_delta;
+                    let d4 = d3 + d_delta;
+                    eval_0 += a0 * b0 * (c0 * d0);
+                    eval_1 += a1 * b1 * (c1 * d1);
+                    eval_2 += a2 * b2 * (c2 * d2);
+                    eval_3 += a3 * b3 * (c3 * d3);
+                    eval_4 += a4 * b4 * (c4 * d4);
+                }
+            }
+            (
+                FieldType::Ext(evals0),
+                FieldType::Base(evals1),
+                FieldType::Base(evals2),
+                FieldType::Base(evals3),
+            ) => {
+                let evals0 = evals0.as_slice();
+                let evals1 = evals1.as_slice();
+                let evals2 = evals2.as_slice();
+                let evals3 = evals3.as_slice();
+                for lane in 0..lane_count {
+                    let base = (lane & suffix_mask) << 1;
+                    let a0 = evals0[base];
+                    let a1 = evals0[base + 1];
+                    let b0 = evals1[base];
+                    let b1 = evals1[base + 1];
+                    let c0 = evals2[base];
+                    let c1 = evals2[base + 1];
+                    let d0 = evals3[base];
+                    let d1 = evals3[base + 1];
+                    let a_delta = a1 - a0;
+                    let b_delta = b1 - b0;
+                    let c_delta = c1 - c0;
+                    let d_delta = d1 - d0;
+                    let a2 = a1 + a_delta;
+                    let b2 = b1 + b_delta;
+                    let c2 = c1 + c_delta;
+                    let d2 = d1 + d_delta;
+                    let a3 = a2 + a_delta;
+                    let b3 = b2 + b_delta;
+                    let c3 = c2 + c_delta;
+                    let d3 = d2 + d_delta;
+                    let a4 = a3 + a_delta;
+                    let b4 = b3 + b_delta;
+                    let c4 = c3 + c_delta;
+                    let d4 = d3 + d_delta;
+                    eval_0 += a0 * (b0 * c0 * d0);
+                    eval_1 += a1 * (b1 * c1 * d1);
+                    eval_2 += a2 * (b2 * c2 * d2);
+                    eval_3 += a3 * (b3 * c3 * d3);
+                    eval_4 += a4 * (b4 * c4 * d4);
+                }
+            }
+            (
+                FieldType::Base(evals0),
+                FieldType::Base(evals1),
+                FieldType::Base(evals2),
+                FieldType::Base(evals3),
+            ) => {
+                let evals0 = evals0.as_slice();
+                let evals1 = evals1.as_slice();
+                let evals2 = evals2.as_slice();
+                let evals3 = evals3.as_slice();
+                let mut base_eval_0 = E::BaseField::ZERO;
+                let mut base_eval_1 = E::BaseField::ZERO;
+                let mut base_eval_2 = E::BaseField::ZERO;
+                let mut base_eval_3 = E::BaseField::ZERO;
+                let mut base_eval_4 = E::BaseField::ZERO;
+                for lane in 0..lane_count {
+                    let base = (lane & suffix_mask) << 1;
+                    let a0 = evals0[base];
+                    let a1 = evals0[base + 1];
+                    let b0 = evals1[base];
+                    let b1 = evals1[base + 1];
+                    let c0 = evals2[base];
+                    let c1 = evals2[base + 1];
+                    let d0 = evals3[base];
+                    let d1 = evals3[base + 1];
+                    let a_delta = a1 - a0;
+                    let b_delta = b1 - b0;
+                    let c_delta = c1 - c0;
+                    let d_delta = d1 - d0;
+                    let a2 = a1 + a_delta;
+                    let b2 = b1 + b_delta;
+                    let c2 = c1 + c_delta;
+                    let d2 = d1 + d_delta;
+                    let a3 = a2 + a_delta;
+                    let b3 = b2 + b_delta;
+                    let c3 = c2 + c_delta;
+                    let d3 = d2 + d_delta;
+                    let a4 = a3 + a_delta;
+                    let b4 = b3 + b_delta;
+                    let c4 = c3 + c_delta;
+                    let d4 = d3 + d_delta;
+                    base_eval_0 += a0 * b0 * c0 * d0;
+                    base_eval_1 += a1 * b1 * c1 * d1;
+                    base_eval_2 += a2 * b2 * c2 * d2;
+                    base_eval_3 += a3 * b3 * c3 * d3;
+                    base_eval_4 += a4 * b4 * c4 * d4;
+                }
+                self.add_base_evaluations(
+                    acc,
+                    4,
+                    &term.scalar,
+                    [
+                        base_eval_0,
+                        base_eval_1,
+                        base_eval_2,
+                        base_eval_3,
+                        base_eval_4,
+                    ],
+                );
+                return true;
+            }
+            _ => {
+                for lane in 0..lane_count {
+                    let (a0, a1) =
+                        uniform_round_endpoints(evals0, metadata.local_num_vars, round, lane);
+                    let (b0, b1) =
+                        uniform_round_endpoints(evals1, metadata.local_num_vars, round, lane);
+                    let (c0, c1) =
+                        uniform_round_endpoints(evals2, metadata.local_num_vars, round, lane);
+                    let (d0, d1) =
+                        uniform_round_endpoints(evals3, metadata.local_num_vars, round, lane);
+                    let a_delta = a1 - a0;
+                    let b_delta = b1 - b0;
+                    let c_delta = c1 - c0;
+                    let d_delta = d1 - d0;
+                    let a2 = a1 + a_delta;
+                    let b2 = b1 + b_delta;
+                    let c2 = c1 + c_delta;
+                    let d2 = d1 + d_delta;
+                    let a3 = a2 + a_delta;
+                    let b3 = b2 + b_delta;
+                    let c3 = c2 + c_delta;
+                    let d3 = d2 + d_delta;
+                    let a4 = a3 + a_delta;
+                    let b4 = b3 + b_delta;
+                    let c4 = c3 + c_delta;
+                    let d4 = d3 + d_delta;
+                    eval_0 += a0 * b0 * c0 * d0;
+                    eval_1 += a1 * b1 * c1 * d1;
+                    eval_2 += a2 * b2 * c2 * d2;
+                    eval_3 += a3 * b3 * c3 * d3;
+                    eval_4 += a4 * b4 * c4 * d4;
+                }
+            }
+        }
+        self.add_evaluations(
+            acc,
+            4,
+            scalar_to_ext(&term.scalar),
+            [eval_0, eval_1, eval_2, eval_3, eval_4],
+        );
+        true
     }
 
     fn term_round_evaluations(
@@ -1173,6 +2047,37 @@ fn field_index<E: ExtensionField>(evals: &FieldType<'_, E>, idx: usize) -> E {
         either::Either::Left(base) => E::from(base),
         either::Either::Right(ext) => ext,
     }
+}
+
+#[inline]
+fn uniform_suffix_mask(original_num_vars: usize, round: usize) -> usize {
+    if round >= original_num_vars {
+        return 0;
+    }
+
+    let remaining_vars = original_num_vars - round;
+    if remaining_vars == 1 {
+        0
+    } else {
+        (1usize << (remaining_vars - 1)) - 1
+    }
+}
+
+fn uniform_round_endpoints<E: ExtensionField>(
+    evals: &FieldType<'_, E>,
+    original_num_vars: usize,
+    round: usize,
+    lane: usize,
+) -> (E, E) {
+    if round >= original_num_vars {
+        return (E::ZERO, field_index(evals, 0));
+    }
+
+    let suffix = lane & uniform_suffix_mask(original_num_vars, round);
+    (
+        field_index(evals, suffix << 1),
+        field_index(evals, (suffix << 1) + 1),
+    )
 }
 
 fn ext_round_endpoints<E: ExtensionField>(
