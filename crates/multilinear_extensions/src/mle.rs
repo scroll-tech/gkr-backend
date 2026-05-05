@@ -346,6 +346,13 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
         unimplemented!("type not support")
     }
 
+    pub fn from_evaluation_vec_smart_compact<T: Clone + 'static>(
+        num_vars: usize,
+        evaluations: Vec<T>,
+    ) -> Self {
+        Self::from_evaluation_vec_smart(num_vars, evaluations)
+    }
+
     /// Create vector from field type
     pub fn from_field_type(num_vars: usize, field_type: FieldType<'a, E>) -> Self {
         Self {
@@ -395,6 +402,10 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
         }
     }
 
+    pub fn from_evaluations_vec_compact(num_vars: usize, evaluations: Vec<E::BaseField>) -> Self {
+        Self::from_evaluations_vec(num_vars, evaluations)
+    }
+
     /// Identical to [`from_evaluations_slice`], with and exception that evaluation vector is in
     /// extension field
     pub fn from_evaluations_ext_slice(num_vars: usize, evaluations: &'a [E]) -> Self {
@@ -424,6 +435,10 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
             num_vars,
             evaluations: FieldType::Ext(SmartSlice::Owned(evaluations)),
         }
+    }
+
+    pub fn from_evaluations_ext_vec_compact(num_vars: usize, evaluations: Vec<E>) -> Self {
+        Self::from_evaluations_ext_vec(num_vars, evaluations)
     }
 
     /// Generate a random evaluation of a multilinear poly
