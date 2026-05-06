@@ -1283,7 +1283,7 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
     fn mle_round_endpoints(&self, mle_idx: usize, round: usize, lane: usize) -> (E, E) {
         let original_num_vars = self.poly.flattened_ml_extensions[mle_idx].num_vars();
         if round >= original_num_vars {
-            return (E::ZERO, read_eval(&self.mles[mle_idx], 0));
+            return (E::ZERO, read_eval_or_zero(&self.mles[mle_idx], 0));
         }
 
         let remaining_vars = original_num_vars - round;
@@ -1294,8 +1294,8 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         };
         let suffix = lane & suffix_mask;
         let evals = self.mles[mle_idx].evaluations();
-        let e0 = field_index(evals, suffix << 1);
-        let e1 = field_index(evals, (suffix << 1) + 1);
+        let e0 = field_index_or_zero(evals, suffix << 1);
+        let e1 = field_index_or_zero(evals, (suffix << 1) + 1);
         (e0, e1)
     }
 
@@ -1372,10 +1372,22 @@ fn read_eval<E: ExtensionField>(mle: &MultilinearExtension<'_, E>, idx: usize) -
     field_index(mle.evaluations(), idx)
 }
 
+fn read_eval_or_zero<E: ExtensionField>(mle: &MultilinearExtension<'_, E>, idx: usize) -> E {
+    field_index_or_zero(mle.evaluations(), idx)
+}
+
 fn field_index<E: ExtensionField>(evals: &FieldType<'_, E>, idx: usize) -> E {
     match evals.index(idx) {
         either::Either::Left(base) => E::from(base),
         either::Either::Right(ext) => ext,
+    }
+}
+
+fn field_index_or_zero<E: ExtensionField>(evals: &FieldType<'_, E>, idx: usize) -> E {
+    if idx >= evals.len() {
+        E::ZERO
+    } else {
+        field_index(evals, idx)
     }
 }
 
@@ -1400,7 +1412,7 @@ fn ext_round_endpoints<E: ExtensionField>(
     lane: usize,
 ) -> (E, E) {
     if round >= original_num_vars {
-        return (E::ZERO, evals[0]);
+        return (E::ZERO, evals.first().copied().unwrap_or(E::ZERO));
     }
 
     let remaining_vars = original_num_vars - round;
@@ -1410,7 +1422,10 @@ fn ext_round_endpoints<E: ExtensionField>(
         (1usize << (remaining_vars - 1)) - 1
     };
     let suffix = lane & suffix_mask;
-    (evals[suffix << 1], evals[(suffix << 1) + 1])
+    (
+        evals.get(suffix << 1).copied().unwrap_or(E::ZERO),
+        evals.get((suffix << 1) + 1).copied().unwrap_or(E::ZERO),
+    )
 }
 
 fn term_matches_frontload_tail<E: ExtensionField>(
