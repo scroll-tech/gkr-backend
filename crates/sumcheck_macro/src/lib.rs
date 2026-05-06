@@ -19,7 +19,7 @@ struct SumcheckCodegenMacroInput {
     get_poly_meta: ExprClosure,
 }
 
-struct FrontLoadedUniformCodegenMacroInput {
+struct FrontloadUniformCodegenMacroInput {
     degree: LitInt,
     product_access: ExprClosure,
     local_num_vars: Expr,
@@ -28,7 +28,7 @@ struct FrontLoadedUniformCodegenMacroInput {
     suffix_mask: Expr,
 }
 
-impl Parse for FrontLoadedUniformCodegenMacroInput {
+impl Parse for FrontloadUniformCodegenMacroInput {
     fn parse(input: ParseStream) -> Result<Self> {
         let degree = input.parse()?;
         input.parse::<Token![,]>()?;
@@ -440,11 +440,11 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
 }
 
 #[proc_macro]
-/// Generate front-loaded uniform-layout sumcheck kernels.
-pub fn front_loaded_uniform_sumcheck_code_gen(
+/// Generate frontload uniform-layout sumcheck kernels.
+pub fn frontload_uniform_sumcheck_code_gen(
     input: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    let input = parse_macro_input!(input as FrontLoadedUniformCodegenMacroInput);
+    let input = parse_macro_input!(input as FrontloadUniformCodegenMacroInput);
 
     let degree = input.degree.base10_parse::<u32>().unwrap();
     let product_access = input.product_access;

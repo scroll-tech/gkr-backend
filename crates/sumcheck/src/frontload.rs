@@ -17,7 +17,7 @@ use crate::{
     util::extrapolate_from_table,
 };
 
-macro_rules! front_loaded_sumcheck_code_gen {
+macro_rules! frontload_sumcheck_code_gen {
     ($state:expr, $term:expr, $round:expr, $degree:expr, $($specialized_degree:literal),* $(,)?) => {
         match $degree {
             $(
@@ -32,18 +32,18 @@ macro_rules! front_loaded_sumcheck_code_gen {
 }
 
 #[derive(Clone, Debug)]
-pub struct FrontLoadedProverState<E: ExtensionField> {
+pub struct FrontloadProverState<E: ExtensionField> {
     pub challenges: Vec<Challenge<E>>,
     pub final_evaluations: Vec<Vec<E>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FrontLoadedPolyMeta {
+enum FrontloadPolyMeta {
     Normal,
     Phase1Only,
 }
 
-impl From<PolyMeta> for FrontLoadedPolyMeta {
+impl From<PolyMeta> for FrontloadPolyMeta {
     fn from(meta: PolyMeta) -> Self {
         match meta {
             PolyMeta::Normal => Self::Normal,
@@ -55,20 +55,20 @@ impl From<PolyMeta> for FrontLoadedPolyMeta {
 pub fn prove<'a, E: ExtensionField>(
     poly: VirtualPolynomial<'a, E>,
     transcript: &mut impl Transcript<E>,
-) -> (IOPProof<E>, FrontLoadedProverState<E>) {
+) -> (IOPProof<E>, FrontloadProverState<E>) {
     prove_inner(WorkingState::new(poly), transcript, true)
 }
 
 pub fn prove_2phase<'a, E: ExtensionField>(
     virtual_poly: VirtualPolynomials<'a, E>,
     transcript: &mut impl Transcript<E>,
-) -> (IOPProof<E>, FrontLoadedProverState<E>) {
+) -> (IOPProof<E>, FrontloadProverState<E>) {
     let log_num_workers = p3::util::log2_strict_usize(virtual_poly.num_threads);
     let max_degree = virtual_poly.degree();
     let (polys, poly_meta) = virtual_poly.get_batched_polys();
-    let front_loaded_poly_meta = poly_meta
+    let frontload_poly_meta = poly_meta
         .into_iter()
-        .map(FrontLoadedPolyMeta::from)
+        .map(FrontloadPolyMeta::from)
         .collect_vec();
     let local_num_vars = polys
         .first()
@@ -84,10 +84,10 @@ pub fn prove_2phase<'a, E: ExtensionField>(
         .map(|poly| {
             poly.flattened_ml_extensions
                 .iter()
-                .zip_eq(&front_loaded_poly_meta)
+                .zip_eq(&frontload_poly_meta)
                 .map(|(mle, meta)| match meta {
-                    FrontLoadedPolyMeta::Normal => mle.num_vars() + log_num_workers,
-                    FrontLoadedPolyMeta::Phase1Only => mle.num_vars(),
+                    FrontloadPolyMeta::Normal => mle.num_vars() + log_num_workers,
+                    FrontloadPolyMeta::Phase1Only => mle.num_vars(),
                 })
                 .collect_vec()
         })
@@ -141,7 +141,7 @@ pub fn prove_2phase<'a, E: ExtensionField>(
 
     let phase2_poly = build_phase2_poly(
         &workers,
-        &front_loaded_poly_meta,
+        &frontload_poly_meta,
         local_num_vars,
         log_num_workers,
     );
@@ -151,7 +151,7 @@ pub fn prove_2phase<'a, E: ExtensionField>(
 
     (
         IOPProof { proofs },
-        FrontLoadedProverState {
+        FrontloadProverState {
             challenges: workers
                 .first()
                 .map(|worker| worker.challenges.clone())
@@ -168,7 +168,7 @@ fn prove_inner<'a, E: ExtensionField>(
     mut state: WorkingState<'a, E>,
     transcript: &mut impl Transcript<E>,
     append_header: bool,
-) -> (IOPProof<E>, FrontLoadedProverState<E>) {
+) -> (IOPProof<E>, FrontloadProverState<E>) {
     let num_vars = state.poly.aux_info.max_num_variables;
     let max_degree = state.poly.aux_info.max_degree;
 
@@ -201,7 +201,7 @@ fn prove_inner<'a, E: ExtensionField>(
     let final_evaluations = state.final_evaluations();
     (
         IOPProof { proofs: proof },
-        FrontLoadedProverState {
+        FrontloadProverState {
             challenges: state.challenges,
             final_evaluations,
         },
@@ -460,7 +460,7 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
             1usize << (live_vars - 1)
         };
         let suffix_mask = uniform_suffix_mask(metadata.local_num_vars, round);
-        sumcheck_macro::front_loaded_uniform_sumcheck_code_gen!(
+        sumcheck_macro::frontload_uniform_sumcheck_code_gen!(
             2,
             |i: usize| self.mles[term.product[i]].evaluations(),
             metadata.local_num_vars,
@@ -485,7 +485,7 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
             1usize << (live_vars - 1)
         };
         let suffix_mask = uniform_suffix_mask(metadata.local_num_vars, round);
-        sumcheck_macro::front_loaded_uniform_sumcheck_code_gen!(
+        sumcheck_macro::frontload_uniform_sumcheck_code_gen!(
             3,
             |i: usize| self.mles[term.product[i]].evaluations(),
             metadata.local_num_vars,
@@ -510,7 +510,7 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
             1usize << (live_vars - 1)
         };
         let suffix_mask = uniform_suffix_mask(metadata.local_num_vars, round);
-        sumcheck_macro::front_loaded_uniform_sumcheck_code_gen!(
+        sumcheck_macro::frontload_uniform_sumcheck_code_gen!(
             4,
             |i: usize| self.mles[term.product[i]].evaluations(),
             metadata.local_num_vars,
@@ -545,7 +545,7 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         if degree == 5 {
             return self.term_round_evaluations_degree5(term, round);
         }
-        front_loaded_sumcheck_code_gen!(self, term, round, degree, 3, 4, 5);
+        frontload_sumcheck_code_gen!(self, term, round, degree, 3, 4, 5);
 
         let live_vars = term
             .product
@@ -1339,24 +1339,24 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
 
 fn build_phase2_poly<'a, E: ExtensionField>(
     workers: &[WorkingState<'a, E>],
-    poly_meta: &[FrontLoadedPolyMeta],
+    poly_meta: &[FrontloadPolyMeta],
     local_num_vars: usize,
     log_num_workers: usize,
 ) -> VirtualPolynomial<'a, E> {
-    let first_worker = workers.first().expect("front_loaded 2phase needs workers");
+    let first_worker = workers.first().expect("frontload 2phase needs workers");
     let mut poly = VirtualPolynomial::new(log_num_workers);
     poly.aux_info.max_degree = first_worker.poly.aux_info.max_degree;
 
     for (mle_idx, meta) in poly_meta.iter().enumerate() {
         let mle = match meta {
-            FrontLoadedPolyMeta::Normal => {
+            FrontloadPolyMeta::Normal => {
                 let values = workers
                     .iter()
                     .map(|worker| read_eval(&worker.mles[mle_idx], 0))
                     .collect_vec();
                 MultilinearExtension::from_evaluations_ext_vec(log_num_workers, values)
             }
-            FrontLoadedPolyMeta::Phase1Only => {
+            FrontloadPolyMeta::Phase1Only => {
                 let value = read_eval(&first_worker.mles[mle_idx], 0)
                     * first_worker.fixed_frontload_factor(mle_idx, local_num_vars);
                 MultilinearExtension::from_evaluations_ext_vec(0, vec![value])

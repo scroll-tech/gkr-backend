@@ -17,7 +17,7 @@ use transcript::{Challenge, Transcript};
 
 use crate::{
     extrapolate::ExtrapolationCache,
-    front_loaded::{self, FrontLoadedProverState},
+    frontload::{self, FrontloadProverState},
     macros::{entered_span, exit_span},
     structs::{
         IOPProof, IOPProverMessage, IOPProverState, ProverInnerContext, ReducedPeakMemoryContext,
@@ -179,9 +179,9 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         );
     }
 
-    fn from_front_loaded_state(
+    fn from_frontload_state(
         max_num_variables: usize,
-        state: FrontLoadedProverState<E>,
+        state: FrontloadProverState<E>,
     ) -> IOPProverState<'a, E> {
         IOPProverState {
             is_main_worker: true,
@@ -213,7 +213,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         if std::env::var_os("CENO_SUMCHECK_FORCE_SUFFIX").is_some() {
             return Self::prove_suffix(virtual_poly, transcript);
         }
-        Self::prove_with_mode(virtual_poly, transcript, SumcheckProverMode::FrontLoaded)
+        Self::prove_with_mode(virtual_poly, transcript, SumcheckProverMode::Frontload)
     }
 
     pub fn prove_suffix(
@@ -240,9 +240,9 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         mode: SumcheckProverMode,
     ) -> (IOPProof<E>, IOPProverState<'a, E>) {
         Self::log_sumcheck_diag(&virtual_poly, mode);
-        if mode == SumcheckProverMode::FrontLoaded {
-            let (proof, state) = front_loaded::prove_2phase(virtual_poly, transcript);
-            let prover_state = Self::from_front_loaded_state(proof.proofs.len(), state);
+        if mode == SumcheckProverMode::Frontload {
+            let (proof, state) = frontload::prove_2phase(virtual_poly, transcript);
+            let prover_state = Self::from_frontload_state(proof.proofs.len(), state);
             return (proof, prover_state);
         }
 
@@ -845,8 +845,8 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
     pub fn set_prover_mode(&mut self, mode: SumcheckProverMode) {
         assert_ne!(
             mode,
-            SumcheckProverMode::FrontLoaded,
-            "front_loaded mode is only available through IOPProverState::prove"
+            SumcheckProverMode::Frontload,
+            "frontload mode is only available through IOPProverState::prove"
         );
         // This resets mode-specific transient state (e.g. deferred r0) intentionally.
         self.inner_ctx = ProverInnerContext::from_mode(mode);
@@ -859,7 +859,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
 
     pub fn prover_mode(&self) -> SumcheckProverMode {
         if self.final_evaluations.is_some() {
-            return SumcheckProverMode::FrontLoaded;
+            return SumcheckProverMode::Frontload;
         }
         self.inner_ctx.mode()
     }

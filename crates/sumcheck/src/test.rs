@@ -1,5 +1,5 @@
 use crate::{
-    front_loaded,
+    frontload,
     structs::{IOPProverState, IOPVerifierState, SumcheckProverMode},
     util::extrapolate_uni_poly,
 };
@@ -19,12 +19,12 @@ use std::sync::Arc;
 use transcript::{BasicTranscript, Transcript};
 
 #[test]
-fn test_front_loaded_mixed_size_sumcheck() {
-    test_front_loaded_mixed_size_sumcheck_helper::<GoldilocksExt2>();
-    test_front_loaded_mixed_size_sumcheck_helper::<BabyBearExt4>();
+fn test_frontload_mixed_size_sumcheck() {
+    test_frontload_mixed_size_sumcheck_helper::<GoldilocksExt2>();
+    test_frontload_mixed_size_sumcheck_helper::<BabyBearExt4>();
 }
 
-fn test_front_loaded_mixed_size_sumcheck_helper<E: ExtensionField>() {
+fn test_frontload_mixed_size_sumcheck_helper<E: ExtensionField>() {
     let mut rng = thread_rng();
     let num_vars = 8;
     let large = Arc::new(
@@ -45,15 +45,15 @@ fn test_front_loaded_mixed_size_sumcheck_helper<E: ExtensionField>() {
             }],
         });
 
-    let asserted_sum = front_loaded::claimed_sum(&poly);
-    let mut transcript = BasicTranscript::<E>::new(b"front-loaded-test");
-    let (proof, _) = front_loaded::prove(poly.as_view(), &mut transcript);
+    let asserted_sum = frontload::claimed_sum(&poly);
+    let mut transcript = BasicTranscript::<E>::new(b"frontload-test");
+    let (proof, _) = frontload::prove(poly.as_view(), &mut transcript);
 
-    let mut transcript = BasicTranscript::<E>::new(b"front-loaded-test");
+    let mut transcript = BasicTranscript::<E>::new(b"frontload-test");
     let subclaim = IOPVerifierState::<E>::verify(
         asserted_sum,
         &proof,
-        &front_loaded::aux_info(&poly),
+        &frontload::aux_info(&poly),
         &mut transcript,
     );
     let point = subclaim
@@ -63,13 +63,13 @@ fn test_front_loaded_mixed_size_sumcheck_helper<E: ExtensionField>() {
         .collect_vec();
 
     assert_eq!(
-        front_loaded::evaluate(&poly, &point),
+        frontload::evaluate(&poly, &point),
         subclaim.expected_evaluation
     );
 }
 
 #[test]
-fn test_front_loaded_2phase_sum_keeps_small_mle_compact() {
+fn test_frontload_2phase_sum_keeps_small_mle_compact() {
     let mut rng = thread_rng();
     let num_vars = 8;
     let num_threads = 4;
@@ -93,9 +93,9 @@ fn test_front_loaded_2phase_sum_keeps_small_mle_compact() {
         ],
     );
 
-    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"front-loaded-2phase-test");
+    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"frontload-2phase-test");
     let (proof, state) = IOPProverState::<GoldilocksExt2>::prove(poly, &mut transcript);
-    assert_eq!(state.prover_mode(), SumcheckProverMode::FrontLoaded);
+    assert_eq!(state.prover_mode(), SumcheckProverMode::Frontload);
 
     let mut direct_poly = VirtualPolynomial::new(num_vars);
     let large_idx = direct_poly.register_mle(Arc::new(large));
@@ -115,12 +115,12 @@ fn test_front_loaded_2phase_sum_keeps_small_mle_compact() {
                 },
             ],
         });
-    let asserted_sum = front_loaded::claimed_sum(&direct_poly);
-    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"front-loaded-2phase-test");
+    let asserted_sum = frontload::claimed_sum(&direct_poly);
+    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"frontload-2phase-test");
     let subclaim = IOPVerifierState::<GoldilocksExt2>::verify(
         asserted_sum,
         &proof,
-        &front_loaded::aux_info(&direct_poly),
+        &frontload::aux_info(&direct_poly),
         &mut transcript,
     );
     let point = subclaim
@@ -128,14 +128,14 @@ fn test_front_loaded_2phase_sum_keeps_small_mle_compact() {
         .iter()
         .map(|challenge| challenge.elements)
         .collect_vec();
-    let mut direct_transcript = BasicTranscript::<GoldilocksExt2>::new(b"front-loaded-2phase-test");
-    let (direct_proof, _) = front_loaded::prove(direct_poly.as_view(), &mut direct_transcript);
+    let mut direct_transcript = BasicTranscript::<GoldilocksExt2>::new(b"frontload-2phase-test");
+    let (direct_proof, _) = frontload::prove(direct_poly.as_view(), &mut direct_transcript);
     let mut direct_verify_transcript =
-        BasicTranscript::<GoldilocksExt2>::new(b"front-loaded-2phase-test");
+        BasicTranscript::<GoldilocksExt2>::new(b"frontload-2phase-test");
     let direct_subclaim = IOPVerifierState::<GoldilocksExt2>::verify(
         asserted_sum,
         &direct_proof,
-        &front_loaded::aux_info(&direct_poly),
+        &frontload::aux_info(&direct_poly),
         &mut direct_verify_transcript,
     );
     let direct_point = direct_subclaim
@@ -144,24 +144,24 @@ fn test_front_loaded_2phase_sum_keeps_small_mle_compact() {
         .map(|challenge| challenge.elements)
         .collect_vec();
     assert_eq!(
-        front_loaded::evaluate(&direct_poly, &direct_point),
+        frontload::evaluate(&direct_poly, &direct_point),
         direct_subclaim.expected_evaluation,
-        "single front-loaded proof failed"
+        "single frontload proof failed"
     );
     for (round, (direct, two_phase)) in direct_proof.proofs.iter().zip(&proof.proofs).enumerate() {
         assert_eq!(
             direct, two_phase,
-            "front-loaded 2phase diverged at round {round}"
+            "frontload 2phase diverged at round {round}"
         );
     }
     assert_eq!(
-        front_loaded::evaluate(&direct_poly, &point),
+        frontload::evaluate(&direct_poly, &point),
         subclaim.expected_evaluation
     );
 }
 
 #[test]
-fn test_front_loaded_small_only_sumcheck() {
+fn test_frontload_small_only_sumcheck() {
     let mut rng = thread_rng();
     let num_vars = 8;
     let small = Arc::new(multilinear_extensions::mle::MultilinearExtension::<
@@ -177,14 +177,14 @@ fn test_front_loaded_small_only_sumcheck() {
                 product: vec![small_idx],
             }],
         });
-    let asserted_sum = front_loaded::claimed_sum(&poly);
-    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"front-loaded-small-only");
-    let (proof, _) = front_loaded::prove(poly.as_view(), &mut transcript);
-    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"front-loaded-small-only");
+    let asserted_sum = frontload::claimed_sum(&poly);
+    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"frontload-small-only");
+    let (proof, _) = frontload::prove(poly.as_view(), &mut transcript);
+    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"frontload-small-only");
     let subclaim = IOPVerifierState::<GoldilocksExt2>::verify(
         asserted_sum,
         &proof,
-        &front_loaded::aux_info(&poly),
+        &frontload::aux_info(&poly),
         &mut transcript,
     );
     let point = subclaim
@@ -193,13 +193,13 @@ fn test_front_loaded_small_only_sumcheck() {
         .map(|challenge| challenge.elements)
         .collect_vec();
     assert_eq!(
-        front_loaded::evaluate(&poly, &point),
+        frontload::evaluate(&poly, &point),
         subclaim.expected_evaluation
     );
 }
 
 #[test]
-fn test_random_monimials_use_front_loaded_sum() {
+fn test_random_monimials_use_frontload_sum() {
     let mut rng = thread_rng();
     let nv = vec![2, 4, 6];
     let degree = 2;
@@ -223,9 +223,9 @@ fn test_random_monimials_use_front_loaded_sum() {
             .collect_vec(),
     );
 
-    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"front-loaded-random-monimials");
+    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"frontload-random-monimials");
     let (proof, _) = IOPProverState::<GoldilocksExt2>::prove(poly, &mut transcript);
-    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"front-loaded-random-monimials");
+    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"frontload-random-monimials");
     let subclaim = IOPVerifierState::<GoldilocksExt2>::verify(
         asserted_sum,
         &proof,

@@ -10,7 +10,7 @@ use itertools::Itertools;
 use p3::field::FieldAlgebra;
 use rand::{Rng, thread_rng};
 use sumcheck::{
-    front_loaded,
+    frontload,
     structs::{IOPProverState, SumcheckProverMode},
 };
 
@@ -30,12 +30,12 @@ criterion_group!(
     sumcheck_fn,
     devirgo_sumcheck_fn,
     devirgo_sumcheck_reduced_peak_memory_fn,
-    front_loaded_mixed_sumcheck_fn,
+    frontload_mixed_sumcheck_fn,
     suffix_phase2_expanded_mixed_sumcheck_fn,
-    mixed_sum_front_loaded_vs_suffix_fn,
-    mixed_sum_three_terms_front_loaded_vs_suffix_fn,
-    mixed_product_sum_front_loaded_vs_suffix_fn,
-    ceno_dense_uniform_front_loaded_vs_suffix_fn,
+    mixed_sum_frontload_vs_suffix_fn,
+    mixed_sum_three_terms_frontload_vs_suffix_fn,
+    mixed_product_sum_frontload_vs_suffix_fn,
+    ceno_dense_uniform_frontload_vs_suffix_fn,
 );
 criterion_main!(benches);
 
@@ -243,7 +243,7 @@ fn devirgo_sumcheck_fn(c: &mut Criterion) {
     }
 }
 
-fn front_loaded_mixed_poly<'a, E: ExtensionField>(
+fn frontload_mixed_poly<'a, E: ExtensionField>(
     large_nv: usize,
     small_nv: usize,
 ) -> VirtualPolynomial<'a, E> {
@@ -265,19 +265,19 @@ fn front_loaded_mixed_poly<'a, E: ExtensionField>(
     poly
 }
 
-fn front_loaded_mixed_sumcheck_fn(c: &mut Criterion) {
+fn frontload_mixed_sumcheck_fn(c: &mut Criterion) {
     type E = GoldilocksExt2;
 
-    let mut group = c.benchmark_group("front_loaded_mixed_nv_22_2");
+    let mut group = c.benchmark_group("frontload_mixed_nv_22_2");
     group.sample_size(NUM_SAMPLES);
-    group.bench_function("prove_front_loaded_mixed", |b| {
+    group.bench_function("prove_frontload_mixed", |b| {
         b.iter_custom(|iters| {
             let mut time = Duration::new(0, 0);
             for _ in 0..iters {
-                let mut prover_transcript = Transcript::new(b"front-loaded-bench");
-                let poly = front_loaded_mixed_poly::<E>(22, 2);
+                let mut prover_transcript = Transcript::new(b"frontload-bench");
+                let poly = frontload_mixed_poly::<E>(22, 2);
                 let instant = std::time::Instant::now();
-                let (_proof, _state) = front_loaded::prove(poly, &mut prover_transcript);
+                let (_proof, _state) = frontload::prove(poly, &mut prover_transcript);
                 time += instant.elapsed();
             }
             time
@@ -346,10 +346,10 @@ fn mixed_sum_poly<'a, E: ExtensionField>(
     )
 }
 
-fn mixed_sum_front_loaded_vs_suffix_case(
+fn mixed_sum_frontload_vs_suffix_case(
     c: &mut Criterion,
     group_name: &'static str,
-    front_loaded_name: &'static str,
+    frontload_name: &'static str,
     suffix_name: &'static str,
     num_variables: &'static [usize],
 ) {
@@ -360,11 +360,11 @@ fn mixed_sum_front_loaded_vs_suffix_case(
     let mut group = c.benchmark_group(group_name);
     group.sample_size(NUM_SAMPLES);
 
-    group.bench_function(front_loaded_name, |b| {
+    group.bench_function(frontload_name, |b| {
         b.iter_custom(|iters| {
             let mut time = Duration::new(0, 0);
             for _ in 0..iters {
-                let mut prover_transcript = Transcript::new(b"front-loaded-sum-bench");
+                let mut prover_transcript = Transcript::new(b"frontload-sum-bench");
                 let mut rng = thread_rng();
                 let mles = num_variables
                     .iter()
@@ -374,7 +374,7 @@ fn mixed_sum_front_loaded_vs_suffix_case(
                     .collect_vec();
                 let poly = mixed_sum_poly(threads, max_num_variables, &mles);
                 let instant = std::time::Instant::now();
-                let (_proof, _state) = front_loaded::prove_2phase(poly, &mut prover_transcript);
+                let (_proof, _state) = frontload::prove_2phase(poly, &mut prover_transcript);
                 time += instant.elapsed();
             }
             time
@@ -406,21 +406,21 @@ fn mixed_sum_front_loaded_vs_suffix_case(
     group.finish();
 }
 
-fn mixed_sum_front_loaded_vs_suffix_fn(c: &mut Criterion) {
-    mixed_sum_front_loaded_vs_suffix_case(
+fn mixed_sum_frontload_vs_suffix_fn(c: &mut Criterion) {
+    mixed_sum_frontload_vs_suffix_case(
         c,
         "mixed_sum_nv_22_2",
-        "front_loaded_compact_a_plus_b",
+        "frontload_compact_a_plus_b",
         "suffix_phase2_a_plus_b",
         &[22, 2],
     );
 }
 
-fn mixed_sum_three_terms_front_loaded_vs_suffix_fn(c: &mut Criterion) {
-    mixed_sum_front_loaded_vs_suffix_case(
+fn mixed_sum_three_terms_frontload_vs_suffix_fn(c: &mut Criterion) {
+    mixed_sum_frontload_vs_suffix_case(
         c,
         "mixed_sum_nv_22_16_2",
-        "front_loaded_compact_a_plus_b_plus_c",
+        "frontload_compact_a_plus_b_plus_c",
         "suffix_phase2_a_plus_b_plus_c",
         &[22, 16, 2],
     );
@@ -467,10 +467,10 @@ fn mixed_product_sum_mles<E: ExtensionField, R: Rng>(
     mles
 }
 
-fn mixed_product_sum_front_loaded_vs_suffix_case(
+fn mixed_product_sum_frontload_vs_suffix_case(
     c: &mut Criterion,
     group_name: &'static str,
-    front_loaded_name: &'static str,
+    frontload_name: &'static str,
     suffix_name: &'static str,
     num_variables: &'static [usize],
     product_degree: usize,
@@ -482,11 +482,11 @@ fn mixed_product_sum_front_loaded_vs_suffix_case(
     let mut group = c.benchmark_group(group_name);
     group.sample_size(NUM_SAMPLES);
 
-    group.bench_function(front_loaded_name, |b| {
+    group.bench_function(frontload_name, |b| {
         b.iter_custom(|iters| {
             let mut time = Duration::new(0, 0);
             for _ in 0..iters {
-                let mut prover_transcript = Transcript::<E>::new(b"front-loaded-product-sum-bench");
+                let mut prover_transcript = Transcript::<E>::new(b"frontload-product-sum-bench");
                 let mut rng = thread_rng();
                 let mles = mixed_product_sum_mles::<E, _>(num_variables, product_degree, &mut rng);
                 let poly = mixed_product_sum_poly(
@@ -497,7 +497,7 @@ fn mixed_product_sum_front_loaded_vs_suffix_case(
                     &mles,
                 );
                 let instant = std::time::Instant::now();
-                let (_proof, _state) = front_loaded::prove_2phase(poly, &mut prover_transcript);
+                let (_proof, _state) = frontload::prove_2phase(poly, &mut prover_transcript);
                 time += instant.elapsed();
             }
             time
@@ -530,27 +530,27 @@ fn mixed_product_sum_front_loaded_vs_suffix_case(
     group.finish();
 }
 
-fn mixed_product_sum_front_loaded_vs_suffix_fn(c: &mut Criterion) {
-    mixed_product_sum_front_loaded_vs_suffix_case(
+fn mixed_product_sum_frontload_vs_suffix_fn(c: &mut Criterion) {
+    mixed_product_sum_frontload_vs_suffix_case(
         c,
         "mixed_product_sum_nv_22_16_2",
-        "front_loaded_compact_product_sum",
+        "frontload_compact_product_sum",
         "suffix_phase2_product_sum",
         &[22, 16, 2],
         2,
     );
-    mixed_product_sum_front_loaded_vs_suffix_case(
+    mixed_product_sum_frontload_vs_suffix_case(
         c,
         "mixed_product3_sum_nv_22_16_2",
-        "front_loaded_compact_product3_sum",
+        "frontload_compact_product3_sum",
         "suffix_phase2_product3_sum",
         &[22, 16, 2],
         3,
     );
-    mixed_product_sum_front_loaded_vs_suffix_case(
+    mixed_product_sum_frontload_vs_suffix_case(
         c,
         "mixed_product4_sum_nv_22_16_2",
-        "front_loaded_compact_product4_sum",
+        "frontload_compact_product4_sum",
         "suffix_phase2_product4_sum",
         &[22, 16, 2],
         4,
@@ -637,7 +637,7 @@ fn dense_uniform_poly<'a, E: ExtensionField>(
     builder.to_virtual_polys_with_monomial_terms(&terms, &[], &[])
 }
 
-fn ceno_dense_uniform_front_loaded_vs_suffix_fn(c: &mut Criterion) {
+fn ceno_dense_uniform_frontload_vs_suffix_fn(c: &mut Criterion) {
     type E = GoldilocksExt2;
 
     let threads = max_usable_threads();
@@ -645,16 +645,16 @@ fn ceno_dense_uniform_front_loaded_vs_suffix_fn(c: &mut Criterion) {
         let mut group = c.benchmark_group(format!("ceno_dense_uniform_{}", shape.name));
         group.sample_size(NUM_SAMPLES);
 
-        group.bench_function("front_loaded", |b| {
+        group.bench_function("frontload", |b| {
             b.iter_custom(|iters| {
                 let mut time = Duration::new(0, 0);
                 for _ in 0..iters {
-                    let mut prover_transcript = Transcript::<E>::new(b"front-loaded-dense-bench");
+                    let mut prover_transcript = Transcript::<E>::new(b"frontload-dense-bench");
                     let mut rng = thread_rng();
                     let mles = dense_uniform_mles::<E, _>(*shape, &mut rng);
                     let poly = dense_uniform_poly(threads, *shape, &mles);
                     let instant = std::time::Instant::now();
-                    let (_proof, _state) = front_loaded::prove_2phase(poly, &mut prover_transcript);
+                    let (_proof, _state) = frontload::prove_2phase(poly, &mut prover_transcript);
                     time += instant.elapsed();
                 }
                 time

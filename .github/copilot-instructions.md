@@ -27,7 +27,9 @@ When reviewing a PR/diff, respond in this order:
 2. Open questions/assumptions.
 3. Brief change summary.
 
-**Do not commit, push, or propose code changes.** Provide review comments and findings only; authors will implement fixes.
+**Default to review-only mode.** In a remote GitHub sandbox, leave review comments and findings first; do not commit, push, or propose code changes unless the user explicitly asks for implementation.
+
+If the user explicitly asks for changes, submit them as a separate pull request by default. Do not push commits in-place to the current pull request branch unless the user explicitly asks to update the current PR branch directly.
 
 Prefer line-level review comments over an overall summary:
 
