@@ -37,6 +37,12 @@ Prefer line-level review comments over an overall summary:
 - If inline comments are not supported in the current surface, include an explicit location in the finding header as `path:line` and symbol.
 - Do not return summary-only reviews when actionable findings exist.
 
+Prefer line-level review comments over an overall summary:
+
+- For each actionable finding, attach an inline comment to the most relevant changed line when the review surface supports inline comments.
+- If inline comments are not supported in the current surface, include an explicit location in the finding header as `path:line` and symbol.
+- Do not return summary-only reviews when actionable findings exist.
+
 Before reviewing code, check PR metadata:
 
 - Verify the pull request description is non-empty.
