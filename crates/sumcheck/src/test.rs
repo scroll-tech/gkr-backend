@@ -76,6 +76,8 @@ fn test_frontload_2phase_sum_keeps_small_mle_compact() {
     let large = multilinear_extensions::mle::MultilinearExtension::<GoldilocksExt2>::random(
         num_vars, &mut rng,
     );
+    let medium =
+        multilinear_extensions::mle::MultilinearExtension::<GoldilocksExt2>::random(5, &mut rng);
     let small =
         multilinear_extensions::mle::MultilinearExtension::<GoldilocksExt2>::random(2, &mut rng);
     let poly = VirtualPolynomials::new_from_monimials(
@@ -85,6 +87,10 @@ fn test_frontload_2phase_sum_keeps_small_mle_compact() {
             Term {
                 scalar: Either::Right(GoldilocksExt2::ONE),
                 product: vec![Either::Left(&large)],
+            },
+            Term {
+                scalar: Either::Right(GoldilocksExt2::ONE),
+                product: vec![Either::Left(&medium)],
             },
             Term {
                 scalar: Either::Right(GoldilocksExt2::ONE),
@@ -99,6 +105,7 @@ fn test_frontload_2phase_sum_keeps_small_mle_compact() {
 
     let mut direct_poly = VirtualPolynomial::new(num_vars);
     let large_idx = direct_poly.register_mle(Arc::new(large));
+    let medium_idx = direct_poly.register_mle(Arc::new(medium));
     let small_idx = direct_poly.register_mle(Arc::new(small));
     direct_poly.aux_info.max_degree = 1;
     direct_poly
@@ -108,6 +115,10 @@ fn test_frontload_2phase_sum_keeps_small_mle_compact() {
                 Term {
                     scalar: Either::Right(GoldilocksExt2::ONE),
                     product: vec![large_idx],
+                },
+                Term {
+                    scalar: Either::Right(GoldilocksExt2::ONE),
+                    product: vec![medium_idx],
                 },
                 Term {
                     scalar: Either::Right(GoldilocksExt2::ONE),
