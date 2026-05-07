@@ -88,8 +88,7 @@ impl<'a, E: ExtensionField> JaggedSumcheckInput<'a, E> {
 
     /// Brute-force computation of sum_b q'(b) * f(b).
     /// O(2^n) time — only for debugging and tests.
-    #[cfg(test)]
-    fn compute_claimed_sum(&self) -> E {
+    pub fn compute_claimed_sum(&self) -> E {
         self.q_evals[..self.total_evaluations()]
             .iter()
             .zip(self.col_row_iter(0))
