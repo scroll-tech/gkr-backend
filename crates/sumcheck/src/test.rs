@@ -211,6 +211,26 @@ fn test_random_monimials_use_frontload_sum() {
         &mut rng,
     );
     let max_num_variables = *nv.iter().max().unwrap();
+
+    // Build a single-worker VirtualPolynomial for independent evaluation check.
+    let mut direct_poly = VirtualPolynomial::new(max_num_variables);
+    direct_poly.aux_info.max_degree = degree;
+    for term in &monimials {
+        let indices: Vec<usize> = term
+            .product
+            .iter()
+            .map(|mle| direct_poly.register_mle(Arc::new(mle.clone())))
+            .collect_vec();
+        direct_poly
+            .products
+            .push(multilinear_extensions::virtual_poly::MonomialTerms {
+                terms: vec![Term {
+                    scalar: Either::Right(term.scalar),
+                    product: indices,
+                }],
+            });
+    }
+
     let poly = VirtualPolynomials::<GoldilocksExt2>::new_from_monimials(
         4,
         max_num_variables,
@@ -237,6 +257,17 @@ fn test_random_monimials_use_frontload_sum() {
         &mut transcript,
     );
     assert_eq!(subclaim.point.len(), max_num_variables);
+
+    let point = subclaim
+        .point
+        .iter()
+        .map(|c| c.elements)
+        .collect_vec();
+    assert_eq!(
+        frontload::evaluate(&direct_poly, &point),
+        subclaim.expected_evaluation,
+        "frontload 2phase final evaluation mismatch for medium-sized Normal MLEs"
+    );
 }
 
 // test polynomial mixed with different num_var
