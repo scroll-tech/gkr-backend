@@ -31,6 +31,88 @@ macro_rules! frontload_sumcheck_code_gen {
     };
 }
 
+/// State returned by the frontload sumcheck prover.
+///
+/// Frontload embeds a compact `k`-variable MLE into an `N`-variable sumcheck
+/// domain by binding the real MLE to the early variables and representing every
+/// missing later variable as a multiplicative tail factor:
+///
+/// ```text
+/// F(x0, ..., x{N-1}) = f(x0, ..., x{k-1}) * product_{i=k}^{N-1} x_i
+/// ```
+///
+/// The compact MLE is not expanded to `2^N`. Once all of its real variables are
+/// fixed, it keeps contributing through those tail factors.
+///
+/// # Two-phase worker example
+///
+/// Suppose there are four workers, so `log2(num_workers) = 2`, and the global
+/// sumcheck domain has `2^10` points:
+///
+/// ```text
+/// global variables:  x0..x9
+/// phase-1 variables: x0..x7
+/// phase-2 variables: x8,x9
+/// polynomial:        a + b + c
+/// a size:            2^10
+/// b size:            2^1
+/// c size:            2^5
+/// ```
+///
+/// MLEs larger than the worker space are `Normal`: they are split across
+/// workers and then combined in phase 2. MLEs no larger than the worker space are
+/// duplicated to every worker by `VirtualPolynomials`; frontload treats that
+/// old `Phase2Only` metadata as `Phase1Only`.
+///
+/// ```text
+/// a: 10 variables > 2 worker bits => Normal
+/// b:  1 variable  <= 2 worker bits => Phase1Only
+/// c:  5 variables > 2 worker bits => Normal
+/// ```
+///
+/// For `a`, each worker receives a `2^8` chunk. Phase 1 folds each local chunk
+/// over `x0..x7`, producing four worker scalars. Phase 2 builds a two-variable
+/// MLE from those scalars and folds the worker bits `x8,x9`.
+///
+/// For `b`, each worker receives the same compact `2^1` MLE. Its frontload
+/// embedding is:
+///
+/// ```text
+/// B(x0..x9) = b(x0) * x1 * x2 * ... * x9
+/// ```
+///
+/// Round 0 folds the real `b` variable. Rounds 1..7 in phase 1 only multiply
+/// the local tail challenges. Because `b` has no worker-bit data, the missing
+/// worker-bit tail requires `x8 = 1` and `x9 = 1`, so only worker `3 = 0b11`
+/// contributes this term during phase 1. Phase 2 carries `b` as a compact
+/// constant with the remaining worker-bit tail.
+///
+/// For `c`, the MLE is split across workers because `2^5 > 2^2`. Each worker
+/// receives a `2^3` local chunk:
+///
+/// ```text
+/// worker 0: c_00(x0,x1,x2)
+/// worker 1: c_01(x0,x1,x2)
+/// worker 2: c_10(x0,x1,x2)
+/// worker 3: c_11(x0,x1,x2)
+/// ```
+///
+/// After phase-1 round 2, each worker has one scalar
+/// `s_w = c_w(r0,r1,r2)`. There is no exchange within phase 1 to squeeze those
+/// four scalars into one. During rounds 3..7, each worker independently applies
+/// the missing local-variable tail:
+///
+/// ```text
+/// s'_w = s_w * r3 * r4 * r5 * r6 * r7
+/// ```
+///
+/// Phase 2 then builds a two-variable MLE from `[s'_0, s'_1, s'_2, s'_3]` and
+/// folds the worker bits `x8,x9`.
+///
+/// The returned `challenges` are the verifier challenges sampled across both
+/// phases. `final_evaluations` contains the compact MLE evaluations after all
+/// relevant folding; for frontload this is stored explicitly because the
+/// internal working state is not the legacy suffix-loaded `IOPProverState`.
 #[derive(Clone, Debug)]
 pub struct FrontloadProverState<E: ExtensionField> {
     pub challenges: Vec<Challenge<E>>,
