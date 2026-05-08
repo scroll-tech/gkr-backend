@@ -1074,7 +1074,15 @@ fn build_phase2_poly<'a, E: ExtensionField>(
         let global_num_vars = first_worker.global_mle_num_vars[mle_idx];
         let mle = match meta {
             FrontloadPolyMeta::Normal => {
-                if global_num_vars <= local_num_vars {
+                let remaining_num_vars = global_num_vars.saturating_sub(local_num_vars);
+                // At the phase boundary a split Normal MLE has three canonical cases:
+                // - exhausted in phase 1: all worker-bit variables were already bound, so sum
+                //   every worker scalar into one compact constant.
+                // - partially live in phase 2: some worker-bit variables were bound in phase 1
+                //   and the suffix remains live; aggregate workers with the same live suffix.
+                // - fully live in phase 2: no worker-bit variables were bound in phase 1, so keep
+                //   the full worker-index MLE.
+                if remaining_num_vars == 0 {
                     let value = workers
                         .iter()
                         .map(|worker| {
@@ -1083,6 +1091,16 @@ fn build_phase2_poly<'a, E: ExtensionField>(
                         })
                         .sum();
                     MultilinearExtension::from_evaluations_ext_vec(0, vec![value])
+                } else if remaining_num_vars < log_num_workers {
+                    let mut values = vec![E::ZERO; 1usize << remaining_num_vars];
+                    let bound_worker_bits = log_num_workers - remaining_num_vars;
+                    workers.iter().for_each(|worker| {
+                        let (worker_id, _) = worker.worker.expect("frontload worker missing");
+                        let phase2_idx = worker_id >> bound_worker_bits;
+                        values[phase2_idx] += read_eval(&worker.mles[mle_idx], 0)
+                            * worker.fixed_frontload_factor(mle_idx, local_num_vars);
+                    });
+                    MultilinearExtension::from_evaluations_ext_vec(remaining_num_vars, values)
                 } else {
                     let values = workers
                         .iter()
