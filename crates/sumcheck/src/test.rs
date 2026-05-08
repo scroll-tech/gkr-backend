@@ -14,7 +14,7 @@ use multilinear_extensions::{
     virtual_polys::VirtualPolynomials,
 };
 use p3::field::FieldAlgebra;
-use rand::{Rng, thread_rng};
+use rand::{Rng, SeedableRng, rngs::StdRng, thread_rng};
 use std::sync::Arc;
 use transcript::{BasicTranscript, Transcript};
 
@@ -76,6 +76,8 @@ fn test_frontload_2phase_sum_keeps_small_mle_compact() {
     let large = multilinear_extensions::mle::MultilinearExtension::<GoldilocksExt2>::random(
         num_vars, &mut rng,
     );
+    let medium =
+        multilinear_extensions::mle::MultilinearExtension::<GoldilocksExt2>::random(5, &mut rng);
     let small =
         multilinear_extensions::mle::MultilinearExtension::<GoldilocksExt2>::random(2, &mut rng);
     let poly = VirtualPolynomials::new_from_monimials(
@@ -85,6 +87,10 @@ fn test_frontload_2phase_sum_keeps_small_mle_compact() {
             Term {
                 scalar: Either::Right(GoldilocksExt2::ONE),
                 product: vec![Either::Left(&large)],
+            },
+            Term {
+                scalar: Either::Right(GoldilocksExt2::ONE),
+                product: vec![Either::Left(&medium)],
             },
             Term {
                 scalar: Either::Right(GoldilocksExt2::ONE),
@@ -99,6 +105,7 @@ fn test_frontload_2phase_sum_keeps_small_mle_compact() {
 
     let mut direct_poly = VirtualPolynomial::new(num_vars);
     let large_idx = direct_poly.register_mle(Arc::new(large));
+    let medium_idx = direct_poly.register_mle(Arc::new(medium));
     let small_idx = direct_poly.register_mle(Arc::new(small));
     direct_poly.aux_info.max_degree = 1;
     direct_poly
@@ -108,6 +115,10 @@ fn test_frontload_2phase_sum_keeps_small_mle_compact() {
                 Term {
                     scalar: Either::Right(GoldilocksExt2::ONE),
                     product: vec![large_idx],
+                },
+                Term {
+                    scalar: Either::Right(GoldilocksExt2::ONE),
+                    product: vec![medium_idx],
                 },
                 Term {
                     scalar: Either::Right(GoldilocksExt2::ONE),
@@ -204,21 +215,42 @@ fn test_random_monimials_use_frontload_sum() {
     let nv = vec![2, 4, 6];
     let degree = 2;
     let num_products = 2;
-    let (mut monimials, asserted_sum) = VirtualPolynomials::<GoldilocksExt2>::random_monimials(
+    let (monimials, asserted_sum) = VirtualPolynomials::<GoldilocksExt2>::random_monimials(
         &nv,
         (degree, degree + 1),
         num_products,
         &mut rng,
     );
     let max_num_variables = *nv.iter().max().unwrap();
+
+    // Build a single-worker VirtualPolynomial for natural frontload evaluation check.
+    // Must be built before the mutable borrow in new_from_monimials below.
+    let mut direct_poly = VirtualPolynomial::new(max_num_variables);
+    direct_poly.aux_info.max_degree = degree;
+    for term in &monimials {
+        let indices: Vec<usize> = term
+            .product
+            .iter()
+            .map(|mle| direct_poly.register_mle(Arc::new(mle.clone())))
+            .collect_vec();
+        direct_poly
+            .products
+            .push(multilinear_extensions::virtual_poly::MonomialTerms {
+                terms: vec![Term {
+                    scalar: Either::Right(term.scalar),
+                    product: indices,
+                }],
+            });
+    }
+
     let poly = VirtualPolynomials::<GoldilocksExt2>::new_from_monimials(
         4,
         max_num_variables,
         monimials
-            .iter_mut()
+            .iter()
             .map(|Term { scalar, product }| Term {
                 scalar: Either::Right(*scalar),
-                product: product.iter_mut().map(Either::Right).collect_vec(),
+                product: product.iter().map(Either::Left).collect_vec(),
             })
             .collect_vec(),
     );
@@ -237,6 +269,116 @@ fn test_random_monimials_use_frontload_sum() {
         &mut transcript,
     );
     assert_eq!(subclaim.point.len(), max_num_variables);
+    let point = subclaim
+        .point
+        .iter()
+        .map(|challenge| challenge.elements)
+        .collect_vec();
+    assert_eq!(
+        frontload::evaluate(&direct_poly, &point),
+        subclaim.expected_evaluation,
+        "frontload 2phase final evaluation mismatch: natural frontload evaluation \
+         must agree with the verifier's expected evaluation"
+    );
+}
+
+#[test]
+fn test_frontload_2phase_mle_category_combinations() {
+    let cases = [
+        ("phase1_only", 2),
+        ("normal_exhausted_with_tail", 3),
+        ("normal_exhausted_at_phase1_end", 4),
+        ("normal_not_exhausted", 6),
+    ];
+    let degree = 2;
+    let max_num_variables = 6;
+    let num_threads = 4;
+    let mut rng = StdRng::seed_from_u64(50);
+
+    for mask in 1usize..(1 << cases.len()) {
+        let selected = cases
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| ((mask >> idx) & 1) == 1)
+            .collect_vec();
+        let mut asserted_sum = GoldilocksExt2::ZERO;
+        let monomials = selected
+            .iter()
+            .map(|(_, (_, num_variables))| {
+                let (product, product_sum) =
+                    MultilinearExtension::random_mle_list(*num_variables, degree, &mut rng);
+                let scalar = GoldilocksExt2::random(&mut rng);
+                asserted_sum += product_sum * scalar;
+                Term { scalar, product }
+            })
+            .collect_vec();
+
+        let poly = VirtualPolynomials::<GoldilocksExt2>::new_from_monimials(
+            num_threads,
+            max_num_variables,
+            monomials
+                .iter()
+                .map(|Term { scalar, product }| Term {
+                    scalar: Either::Right(*scalar),
+                    product: product.iter().map(Either::Left).collect_vec(),
+                })
+                .collect_vec(),
+        );
+
+        let mut transcript =
+            BasicTranscript::<GoldilocksExt2>::new(b"frontload-category-combinations");
+        let (proof, _) = IOPProverState::<GoldilocksExt2>::prove(poly, &mut transcript);
+        let selected_names = selected.iter().map(|(_, (name, _))| *name).join(", ");
+        let mut transcript =
+            BasicTranscript::<GoldilocksExt2>::new(b"frontload-category-combinations");
+        let subclaim = IOPVerifierState::<GoldilocksExt2>::verify(
+            asserted_sum,
+            &proof,
+            &VPAuxInfo {
+                max_degree: degree,
+                max_num_variables,
+                ..Default::default()
+            },
+            &mut transcript,
+        );
+        let point = subclaim
+            .point
+            .iter()
+            .map(|challenge| challenge.elements)
+            .collect_vec();
+        let mut direct_poly = VirtualPolynomial::new(max_num_variables);
+        direct_poly.aux_info.max_degree = degree;
+        for Term { scalar, product } in &monomials {
+            let indices = product
+                .iter()
+                .map(|mle| direct_poly.register_mle(Arc::new(mle.clone())))
+                .collect_vec();
+            direct_poly
+                .products
+                .push(multilinear_extensions::virtual_poly::MonomialTerms {
+                    terms: vec![Term {
+                        scalar: Either::Right(*scalar),
+                        product: indices,
+                    }],
+                });
+        }
+        let mut direct_transcript =
+            BasicTranscript::<GoldilocksExt2>::new(b"frontload-category-combinations");
+        let (direct_proof, _) = frontload::prove(direct_poly.as_view(), &mut direct_transcript);
+        for (round, (direct, two_phase)) in
+            direct_proof.proofs.iter().zip(&proof.proofs).enumerate()
+        {
+            assert_eq!(
+                direct, two_phase,
+                "frontload 2phase diverged at round {round} for {selected_names}"
+            );
+        }
+        assert_eq!(
+            frontload::evaluate(&direct_poly, &point),
+            subclaim.expected_evaluation,
+            "frontload 2phase failed for {selected_names}"
+        );
+    }
 }
 
 // test polynomial mixed with different num_var
