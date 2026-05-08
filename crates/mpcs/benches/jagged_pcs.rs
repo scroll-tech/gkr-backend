@@ -1,19 +1,23 @@
 use std::time::Duration;
 
 use criterion::*;
-use ff_ext::{FromUniformBytes, GoldilocksExt2};
+use ff_ext::{BabyBearExt4, FromUniformBytes};
 use mpcs::{
     Basefold, BasefoldRSParams, PolynomialCommitmentScheme, SecurityLevel, jagged_batch_open,
     jagged_commit,
 };
-use multilinear_extensions::{mle::MultilinearExtension, util::ceil_log2};
-use p3::{field::FieldAlgebra, goldilocks::Goldilocks, matrix::Matrix};
+use multilinear_extensions::{util::ceil_log2, virtual_poly::build_eq_x_r_vec_sequential};
+use p3::{
+    babybear::BabyBear,
+    field::FieldAlgebra,
+    matrix::{Matrix, dense::RowMajorMatrix},
+    maybe_rayon::prelude::*,
+};
 use rand::{Rng, thread_rng};
 use transcript::BasicTranscript;
-use witness::{InstancePaddingStrategy, RowMajorMatrix};
 
-type E = GoldilocksExt2;
-type F = Goldilocks;
+type E = BabyBearExt4;
+type F = BabyBear;
 type Pcs = Basefold<E, BasefoldRSParams>;
 
 const NUM_SAMPLES: usize = 10;
@@ -22,23 +26,35 @@ const NUM_COLS: usize = 32;
 
 fn make_rmm(num_rows: usize, num_cols: usize) -> RowMajorMatrix<F> {
     let values: Vec<F> = (0..num_rows * num_cols)
+        .into_par_iter()
         .map(|i| F::from_canonical_u32(((i as u64 * 13 + 7) % (1 << 30)) as u32))
         .collect();
-    RowMajorMatrix::<F>::new_by_values(values, num_cols, InstancePaddingStrategy::Default)
+    RowMajorMatrix::new(values, num_cols)
 }
 
 fn sample_heights(rng: &mut impl Rng, num_matrices: usize) -> Vec<usize> {
-    let log_range: Vec<usize> = (16..=22).collect();
     (0..num_matrices)
-        .map(|_| 1usize << log_range[rng.gen_range(0..log_range.len())])
+        .map(|_| {
+            let log = rng.gen_range(16u32..=22);
+            let base = 1usize << log;
+            // Jitter within ±25% of the power-of-two base.
+            let lo = base - base / 4;
+            let hi = base + base / 4;
+            rng.gen_range(lo..=hi)
+        })
         .collect()
 }
 
-fn eval_column_poly_at_point(col_evals: &[F], point: &[E]) -> E {
-    let s = point.len();
-    assert_eq!(col_evals.len(), 1 << s);
-    let mle = MultilinearExtension::from_evaluations_vec(s, col_evals.to_vec());
-    mle.evaluate(point)
+fn eval_all_columns_at_point(rmm: &RowMajorMatrix<F>, point: &[E]) -> Vec<E> {
+    let w = rmm.width();
+    let eq = build_eq_x_r_vec_sequential(point);
+    let mut col_evals = vec![E::ZERO; w];
+    for (eq_r, row) in eq.iter().zip(rmm.rows()) {
+        for (col_eval, val) in col_evals.iter_mut().zip(row) {
+            *col_eval += *eq_r * val;
+        }
+    }
+    col_evals
 }
 
 fn bench_jagged_pcs(c: &mut Criterion) {
@@ -48,10 +64,7 @@ fn bench_jagged_pcs(c: &mut Criterion) {
     let mut rng = thread_rng();
 
     let heights = sample_heights(&mut rng, NUM_MATRICES);
-    println!(
-        "Matrix heights (log2): {:?}",
-        heights.iter().map(|h| ceil_log2(*h)).collect::<Vec<_>>()
-    );
+    println!("Matrix heights: {:?}", heights);
 
     let rmms: Vec<_> = heights.iter().map(|&h| make_rmm(h, NUM_COLS)).collect();
 
@@ -65,34 +78,23 @@ fn bench_jagged_pcs(c: &mut Criterion) {
         NUM_MATRICES, NUM_COLS, total_evals, num_giga_vars, max_s
     );
 
-    // Prepare evaluation data (shared across all reshape_log_height values).
-    let col_polys: Vec<Vec<F>> = rmms
-        .iter()
-        .flat_map(|rmm| {
-            let h = rmm.height();
-            let w = rmm.width();
-            (0..w).map(move |c| (0..h).map(|r| rmm.values[r * w + c]).collect())
-        })
-        .collect();
-
     let point: Vec<E> = (0..max_s).map(|_| E::random(&mut rng)).collect();
 
-    let evals: Vec<E> = col_polys
+    let evals: Vec<E> = rmms
         .iter()
-        .zip(
-            log_heights
-                .iter()
-                .flat_map(|&s| std::iter::repeat_n(s, NUM_COLS)),
-        )
-        .map(|(col, s_i)| eval_column_poly_at_point(col, &point[(max_s - s_i)..]))
+        .zip(log_heights.iter())
+        .flat_map(|(rmm, &s_i)| eval_all_columns_at_point(rmm, &point[(max_s - s_i)..]))
         .collect();
 
-    // Sweep reshape_log_height values: baseline (no reshape) + a few smaller heights.
+    // BabyBear two-adicity is 27; RS rate_log=1 needs level+1 ≤ 27, so max poly_size is 2^25.
+    let max_log_h = 25usize;
     let reshape_log_heights: Vec<usize> = {
-        let mut vals = vec![num_giga_vars];
+        let start = num_giga_vars.min(max_log_h);
+        let mut vals = vec![start];
         for step in [2, 4, 6] {
-            if num_giga_vars > step {
-                vals.push(num_giga_vars - step);
+            let v = start.saturating_sub(step);
+            if v > 0 && !vals.contains(&v) {
+                vals.push(v);
             }
         }
         vals
@@ -141,8 +143,6 @@ fn bench_jagged_pcs(c: &mut Criterion) {
         Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_p).unwrap();
         let proof =
             jagged_batch_open::<E, Pcs>(&pp, &comm, &point, &evals, &mut transcript_p).unwrap();
-        let pure_comm = comm.to_commitment();
-
         let proof_size = bincode::serialize(&proof).map(|v| v.len()).unwrap_or(0);
         println!("{label}: proof_size={proof_size} bytes, col_evals.len={w}");
 
@@ -150,13 +150,13 @@ fn bench_jagged_pcs(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     let mut transcript = BasicTranscript::<E>::new(b"jagged_bench");
-                    Pcs::write_commitment(&pure_comm.inner, &mut transcript).unwrap();
+                    Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript).unwrap();
                     transcript
                 },
                 |mut transcript| {
                     mpcs::jagged_batch_verify::<E, Pcs>(
                         &vp,
-                        &pure_comm,
+                        &comm.to_commitment(),
                         &point,
                         &evals,
                         &proof,

@@ -162,12 +162,12 @@ use multilinear_extensions::{
 };
 use p3::{
     field::FieldAlgebra,
-    matrix::{Matrix, bitrev::BitReversableMatrix},
+    matrix::{Matrix, bitrev::BitReversableMatrix, dense::RowMajorMatrix},
     maybe_rayon::prelude::*,
 };
 use transcript::Transcript;
 use types::int_to_field_bits;
-use witness::{InstancePaddingStrategy, RowMajorMatrix};
+use witness::{InstancePaddingStrategy, RowMajorMatrix as WitnessRowMajorMatrix};
 
 /// Commit to a sequence of row-major matrices using the Jagged PCS scheme.
 ///
@@ -198,6 +198,7 @@ pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
     }
 
     // --- Step 1: Compute cumulative heights ---
+    // Each column polynomial is padded to the next power of two.
     let mut poly_heights: Vec<usize> = Vec::new();
     for rmm in &rmms {
         let num_rows = rmm.height();
@@ -213,8 +214,9 @@ pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
                 "jagged_commit: matrix has zero columns".to_string(),
             ));
         }
+        let padded_height = num_rows.next_power_of_two();
         for _ in 0..num_cols {
-            poly_heights.push(num_rows);
+            poly_heights.push(padded_height);
         }
     }
     if poly_heights.is_empty() {
@@ -246,10 +248,17 @@ pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
     // `poly_idx` tracks which poly (column index in cumulative_heights) is the
     // first polynomial of the current matrix.
     let mut poly_idx = 0;
-    for rmm in &rmms {
+    for rmm in rmms {
+        // Pad to next power-of-two height for bit-reversal.
+        let padded_height = rmm.height().next_power_of_two();
+        let mut padded = rmm;
+        if padded.height() < padded_height {
+            padded.pad_to_height(padded_height, E::BaseField::ZERO);
+        }
+
         // Step 2: Bit-reverse the rows (suffix-to-prefix transformation).
         // br.values[i * n_cols + j] = original[bitrev(i)][j]
-        let br = rmm.as_view().bit_reverse_rows().to_row_major_matrix();
+        let br = padded.as_view().bit_reverse_rows().to_row_major_matrix();
 
         let n_cols = br.width();
         let n_rows = br.height();
@@ -313,7 +322,7 @@ pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
         row_major
     };
 
-    let giga_rmm = RowMajorMatrix::<E::BaseField>::new_by_values(
+    let giga_rmm = WitnessRowMajorMatrix::<E::BaseField>::new_by_values(
         giga_data,
         w,
         InstancePaddingStrategy::Default,
@@ -669,7 +678,7 @@ mod tests {
         let values: Vec<F> = (0..num_rows * num_cols)
             .map(|i| F::from_canonical_u64(i as u64 + 1))
             .collect();
-        RowMajorMatrix::<F>::new_by_values(values, num_cols, InstancePaddingStrategy::Default)
+        RowMajorMatrix::new(values, num_cols)
     }
 
     #[test]

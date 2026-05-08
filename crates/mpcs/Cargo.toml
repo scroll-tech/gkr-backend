@@ -62,3 +62,7 @@ name = "jagged_sumcheck"
 [[bench]]
 harness = false
 name = "jagged_pcs"
+
+[[bench]]
+harness = false
+name = "comparison"
