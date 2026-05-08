@@ -275,10 +275,6 @@ fn test_random_monimials_use_frontload_sum() {
         .map(|challenge| challenge.elements)
         .collect_vec();
     assert_eq!(
-        worker_aware_frontload_evaluate(4, max_num_variables, &monimials, &point),
-        subclaim.expected_evaluation
-    );
-    assert_eq!(
         frontload::evaluate(&direct_poly, &point),
         subclaim.expected_evaluation,
         "frontload 2phase final evaluation mismatch: natural frontload evaluation \
@@ -350,52 +346,28 @@ fn test_frontload_2phase_mle_category_combinations() {
             .iter()
             .map(|challenge| challenge.elements)
             .collect_vec();
+        let mut direct_poly = VirtualPolynomial::new(max_num_variables);
+        direct_poly.aux_info.max_degree = degree;
+        for Term { scalar, product } in &monomials {
+            let indices = product
+                .iter()
+                .map(|mle| direct_poly.register_mle(Arc::new(mle.clone())))
+                .collect_vec();
+            direct_poly
+                .products
+                .push(multilinear_extensions::virtual_poly::MonomialTerms {
+                    terms: vec![Term {
+                        scalar: Either::Right(*scalar),
+                        product: indices,
+                    }],
+                });
+        }
         assert_eq!(
-            worker_aware_frontload_evaluate(num_threads, max_num_variables, &monomials, &point),
+            frontload::evaluate(&direct_poly, &point),
             subclaim.expected_evaluation,
             "frontload 2phase failed for {selected_names}"
         );
     }
-}
-
-fn worker_aware_frontload_evaluate<E: ExtensionField>(
-    num_threads: usize,
-    max_num_variables: usize,
-    monomials: &[Term<E, MultilinearExtension<'_, E>>],
-    point: &[E],
-) -> E {
-    let log_num_workers = p3::util::log2_strict_usize(num_threads);
-    let local_num_vars = max_num_variables - log_num_workers;
-    monomials
-        .iter()
-        .map(|Term { scalar, product }| {
-            product
-                .iter()
-                .map(|mle| {
-                    let mle_num_vars = mle.num_vars();
-                    if mle_num_vars > log_num_workers {
-                        let local_real_vars = mle_num_vars - log_num_workers;
-                        let mle_point = point[..local_real_vars]
-                            .iter()
-                            .chain(&point[local_num_vars..max_num_variables])
-                            .copied()
-                            .collect_vec();
-                        let local_tail = point[local_real_vars..local_num_vars]
-                            .iter()
-                            .copied()
-                            .product::<E>();
-                        mle.evaluate(&mle_point) * local_tail
-                    } else {
-                        let local_eval = mle.evaluate(&point[..mle_num_vars]);
-                        point[mle_num_vars..max_num_variables]
-                            .iter()
-                            .fold(local_eval, |acc, point| acc * *point)
-                    }
-                })
-                .product::<E>()
-                * *scalar
-        })
-        .sum()
 }
 
 // test polynomial mixed with different num_var
