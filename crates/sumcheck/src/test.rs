@@ -329,7 +329,7 @@ fn test_frontload_2phase_mle_category_combinations() {
 
             let mut transcript =
                 BasicTranscript::<GoldilocksExt2>::new(b"frontload-category-combinations");
-            let (proof, _) = IOPProverState::<GoldilocksExt2>::prove(poly, &mut transcript);
+            let (proof, state) = IOPProverState::<GoldilocksExt2>::prove(poly, &mut transcript);
             let selected_names = selected.iter().map(|(_, (name, _))| *name).join(", ");
             let mut transcript =
                 BasicTranscript::<GoldilocksExt2>::new(b"frontload-category-combinations");
@@ -382,39 +382,21 @@ fn test_frontload_2phase_mle_category_combinations() {
                 "frontload 2phase failed for {selected_names}, \
                  log_num_workers={log_num_workers}"
             );
+            let final_evals = state.get_mle_flatten_final_evaluations();
+            assert_eq!(final_evals.len(), monomials.len() * degree);
+            for (actual, mle) in final_evals
+                .iter()
+                .zip_eq(monomials.iter().flat_map(|term| &term.product))
+            {
+                assert_eq!(
+                    *actual,
+                    mle.evaluate(&point[..mle.num_vars()]),
+                    "frontload 2phase final eval should be canonical raw MLE opening for \
+                     {selected_names}, log_num_workers={log_num_workers}"
+                );
+            }
         }
     }
-}
-
-#[test]
-fn test_frontload_2phase_exhausted_normal_final_eval_is_canonical() {
-    let max_num_variables = 6;
-    let mle_num_variables = 4;
-    let num_threads = 4;
-    let evals = (0..(1 << mle_num_variables))
-        .map(|idx| GoldilocksExt2::from_canonical_u64(idx as u64 + 1))
-        .collect_vec();
-    let mle = MultilinearExtension::from_evaluations_ext_vec(mle_num_variables, evals);
-    let poly = VirtualPolynomials::new_from_monimials(
-        num_threads,
-        max_num_variables,
-        vec![Term {
-            scalar: Either::Right(GoldilocksExt2::ONE),
-            product: vec![Either::Left(&mle)],
-        }],
-    );
-
-    let mut transcript = BasicTranscript::<GoldilocksExt2>::new(b"frontload-final-eval");
-    let (_proof, state) = IOPProverState::<GoldilocksExt2>::prove(poly, &mut transcript);
-    let point = state.collect_raw_challenges();
-    let final_evals = state.get_mle_flatten_final_evaluations();
-
-    assert_eq!(final_evals.len(), 1);
-    assert_eq!(
-        final_evals[0],
-        mle.evaluate(&point[..mle_num_variables]),
-        "exhausted Normal MLE final eval should be its canonical raw evaluation"
-    );
 }
 
 // test polynomial mixed with different num_var

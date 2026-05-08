@@ -230,18 +230,25 @@ pub fn prove_2phase<'a, E: ExtensionField>(
     let (phase2_proof, phase2_state) =
         prove_inner(WorkingState::new(phase2_poly), transcript, false);
     proofs.extend(phase2_proof.proofs);
+    let challenges = workers
+        .first()
+        .map(|worker| worker.challenges.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .chain(phase2_state.challenges)
+        .collect_vec();
+    let final_evaluations = normalize_phase2_final_evaluations(
+        phase2_state.final_evaluations,
+        &global_mle_num_vars,
+        local_num_vars,
+        &challenges,
+    );
 
     (
         IOPProof { proofs },
         FrontloadProverState {
-            challenges: workers
-                .first()
-                .map(|worker| worker.challenges.clone())
-                .unwrap_or_default()
-                .into_iter()
-                .chain(phase2_state.challenges)
-                .collect(),
-            final_evaluations: phase2_state.final_evaluations,
+            challenges,
+            final_evaluations,
         },
     )
 }
@@ -1122,6 +1129,28 @@ fn build_phase2_poly<'a, E: ExtensionField>(
     }
     poly.products = first_worker.poly.products.clone();
     poly
+}
+
+fn normalize_phase2_final_evaluations<E: ExtensionField>(
+    mut final_evaluations: Vec<Vec<E>>,
+    global_mle_num_vars: &[usize],
+    local_num_vars: usize,
+    challenges: &[Challenge<E>],
+) -> Vec<Vec<E>> {
+    final_evaluations
+        .iter_mut()
+        .zip_eq(global_mle_num_vars)
+        .for_each(|(evals, &global_num_vars)| {
+            if global_num_vars >= local_num_vars {
+                return;
+            }
+            let baked_tail = challenges[global_num_vars..local_num_vars]
+                .iter()
+                .fold(E::ONE, |acc, challenge| acc * challenge.elements);
+            let baked_tail_inv = baked_tail.inverse();
+            evals.iter_mut().for_each(|eval| *eval *= baked_tail_inv);
+        });
+    final_evaluations
 }
 
 fn read_eval<E: ExtensionField>(mle: &MultilinearExtension<'_, E>, idx: usize) -> E {
