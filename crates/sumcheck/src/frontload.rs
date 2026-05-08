@@ -168,6 +168,10 @@ pub fn prove_2phase<'a, E: ExtensionField>(
             WorkingState::new_with_metadata(
                 poly,
                 global_mle_num_vars.clone(),
+                frontload_poly_meta
+                    .iter()
+                    .map(|meta| *meta == FrontloadPolyMeta::Normal)
+                    .collect_vec(),
                 Some((worker_id, log_num_workers)),
             )
         })
@@ -324,6 +328,7 @@ struct WorkingState<'a, E: ExtensionField> {
     term_metadata: Vec<Vec<TermMetadata>>,
     challenges: Vec<Challenge<E>>,
     global_mle_num_vars: Vec<usize>,
+    mle_has_worker_bits: Vec<bool>,
     worker: Option<(usize, usize)>,
 }
 
@@ -343,12 +348,14 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
             .iter()
             .map(|mle| mle.num_vars())
             .collect_vec();
-        Self::new_with_metadata(poly, global_mle_num_vars, None)
+        let mle_has_worker_bits = vec![false; global_mle_num_vars.len()];
+        Self::new_with_metadata(poly, global_mle_num_vars, mle_has_worker_bits, None)
     }
 
     fn new_with_metadata(
         poly: VirtualPolynomial<'a, E>,
         global_mle_num_vars: Vec<usize>,
+        mle_has_worker_bits: Vec<bool>,
         worker: Option<(usize, usize)>,
     ) -> Self {
         let mles = poly
@@ -357,6 +364,7 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
             .map(|mle| mle.as_ref().as_owned())
             .collect_vec();
         assert_eq!(global_mle_num_vars.len(), mles.len());
+        assert_eq!(mle_has_worker_bits.len(), mles.len());
         let term_metadata = poly
             .products
             .iter()
@@ -403,6 +411,7 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
             term_metadata,
             challenges: vec![],
             global_mle_num_vars,
+            mle_has_worker_bits,
             worker,
         }
     }
@@ -663,13 +672,14 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         let Some((worker_id, log_num_workers)) = self.worker else {
             return true;
         };
-        let local_num_vars = self.poly.aux_info.max_num_variables;
-        term_matches_frontload_tail(
-            local_num_vars,
-            &self.global_mle_num_vars,
-            Some((worker_id, log_num_workers)),
-            term,
-        )
+        if term
+            .product
+            .iter()
+            .any(|&idx| self.mle_has_worker_bits[idx])
+        {
+            return true;
+        }
+        worker_id == (1usize << log_num_workers) - 1
     }
 
     fn required_future_frontload_mask(
@@ -686,7 +696,7 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
             let needs_frontload = term
                 .product
                 .iter()
-                .any(|&idx| self.global_mle_num_vars[idx] <= var_idx);
+                .any(|&idx| self.frontload_tail_start(idx) <= var_idx);
             if needs_frontload {
                 mask | (1usize << (var_idx - round - 1))
             } else {
@@ -731,13 +741,21 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
     }
 
     fn fixed_frontload_factor(&self, mle_idx: usize, round: usize) -> E {
-        let original_num_vars = self.global_mle_num_vars[mle_idx];
-        if round <= original_num_vars {
+        let tail_start = self.frontload_tail_start(mle_idx);
+        if round <= tail_start {
             return E::ONE;
         }
-        self.challenges[original_num_vars..round]
+        self.challenges[tail_start..round]
             .iter()
             .fold(E::ONE, |acc, challenge| acc * challenge.elements)
+    }
+
+    fn frontload_tail_start(&self, mle_idx: usize) -> usize {
+        if self.worker.is_some() {
+            self.poly.flattened_ml_extensions[mle_idx].num_vars()
+        } else {
+            self.global_mle_num_vars[mle_idx]
+        }
     }
 
     fn fold_round(&mut self, challenge: E) {
@@ -783,7 +801,10 @@ fn build_phase2_poly<'a, E: ExtensionField>(
             FrontloadPolyMeta::Normal => {
                 let values = workers
                     .iter()
-                    .map(|worker| read_eval(&worker.mles[mle_idx], 0))
+                    .map(|worker| {
+                        read_eval(&worker.mles[mle_idx], 0)
+                            * worker.fixed_frontload_factor(mle_idx, local_num_vars)
+                    })
                     .collect_vec();
                 MultilinearExtension::from_evaluations_ext_vec(log_num_workers, values)
             }
@@ -857,27 +878,6 @@ fn ext_round_endpoints<E: ExtensionField>(
         evals.get(suffix << 1).copied().unwrap_or(E::ZERO),
         evals.get((suffix << 1) + 1).copied().unwrap_or(E::ZERO),
     )
-}
-
-fn term_matches_frontload_tail<E: ExtensionField>(
-    local_num_vars: usize,
-    global_mle_num_vars: &[usize],
-    worker: Option<(usize, usize)>,
-    term: &Term<either::Either<E::BaseField, E>, usize>,
-) -> bool {
-    let Some((worker_id, log_num_workers)) = worker else {
-        return true;
-    };
-    let term_num_vars = term
-        .product
-        .iter()
-        .map(|&idx| global_mle_num_vars[idx])
-        .max()
-        .unwrap_or(0);
-    (0..log_num_workers).all(|phase2_bit| {
-        let global_var = local_num_vars + phase2_bit;
-        term_num_vars > global_var || ((worker_id >> phase2_bit) & 1) == 1
-    })
 }
 
 fn scalar_to_ext<E: ExtensionField>(scalar: &either::Either<E::BaseField, E>) -> E {
