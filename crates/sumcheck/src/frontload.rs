@@ -180,24 +180,31 @@ pub fn prove_2phase<'a, E: ExtensionField>(
     let mut challenge: Option<Challenge<E>> = None;
 
     for round in 0..local_num_vars {
-        let mut evaluations = workers
-            .par_iter_mut()
-            .map(|worker| {
-                if let Some(challenge) = challenge {
-                    worker.challenges.push(challenge);
-                    worker.fold_round(challenge.elements);
-                }
-                worker.round_evaluations(round)
-            })
-            .reduce(
-                || vec![E::ZERO; max_degree + 1],
-                |mut acc, evals| {
-                    acc.iter_mut().zip_eq(evals).for_each(|(acc, eval)| {
-                        *acc += eval;
-                    });
-                    acc
-                },
-            );
+        workers.par_iter_mut().for_each(|worker| {
+            if let Some(challenge) = challenge {
+                worker.challenges.push(challenge);
+                worker.fold_round(challenge.elements);
+            }
+        });
+        let mut evaluations = if workers
+            .first()
+            .is_some_and(|worker| worker.any_mle_round_needs_canonical_merge(round))
+        {
+            round_evaluations_across_workers(&workers, round, max_degree)
+        } else {
+            workers
+                .par_iter()
+                .map(|worker| worker.round_evaluations(round))
+                .reduce(
+                    || vec![E::ZERO; max_degree + 1],
+                    |mut acc, evals| {
+                        acc.iter_mut().zip_eq(evals).for_each(|(acc, eval)| {
+                            *acc += eval;
+                        });
+                        acc
+                    },
+                )
+        };
         evaluations.remove(0);
         transcript.append_field_element_exts(&evaluations);
         proofs.push(IOPProverMessage { evaluations });
@@ -607,13 +614,39 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         if !self.worker_matches_frontload_tail(term) {
             return vec![E::ZERO; self.poly.aux_info.max_degree + 1];
         }
-        match degree {
-            1 => return sumcheck_macro::frontload_mixed_sumcheck_code_gen!(1, self, term, round),
-            2 => return sumcheck_macro::frontload_mixed_sumcheck_code_gen!(2, self, term, round),
-            3 => return sumcheck_macro::frontload_mixed_sumcheck_code_gen!(3, self, term, round),
-            4 => return sumcheck_macro::frontload_mixed_sumcheck_code_gen!(4, self, term, round),
-            5 => return sumcheck_macro::frontload_mixed_sumcheck_code_gen!(5, self, term, round),
-            _ => {}
+        let has_worker_bit_round = term
+            .product
+            .iter()
+            .any(|&idx| self.mle_round_is_worker_bit(idx, round));
+        if !has_worker_bit_round {
+            match degree {
+                1 => {
+                    return sumcheck_macro::frontload_mixed_sumcheck_code_gen!(
+                        1, self, term, round
+                    );
+                }
+                2 => {
+                    return sumcheck_macro::frontload_mixed_sumcheck_code_gen!(
+                        2, self, term, round
+                    );
+                }
+                3 => {
+                    return sumcheck_macro::frontload_mixed_sumcheck_code_gen!(
+                        3, self, term, round
+                    );
+                }
+                4 => {
+                    return sumcheck_macro::frontload_mixed_sumcheck_code_gen!(
+                        4, self, term, round
+                    );
+                }
+                5 => {
+                    return sumcheck_macro::frontload_mixed_sumcheck_code_gen!(
+                        5, self, term, round
+                    );
+                }
+                _ => {}
+            }
         }
 
         let live_vars = term
@@ -722,12 +755,21 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
     }
 
     fn mle_round_endpoints(&self, mle_idx: usize, round: usize, lane: usize) -> (E, E) {
-        let original_num_vars = self.poly.flattened_ml_extensions[mle_idx].num_vars();
-        if round >= original_num_vars {
-            return (E::ZERO, read_eval_or_zero(&self.mles[mle_idx], 0));
+        let local_num_vars = self.poly.flattened_ml_extensions[mle_idx].num_vars();
+        let global_num_vars = self.global_mle_num_vars[mle_idx];
+        if round >= local_num_vars {
+            let value = read_eval_or_zero(&self.mles[mle_idx], 0);
+            if round < global_num_vars {
+                return if self.worker_round_bit(mle_idx, round) == 0 {
+                    (value, E::ZERO)
+                } else {
+                    (E::ZERO, value)
+                };
+            }
+            return (E::ZERO, value);
         }
 
-        let remaining_vars = original_num_vars - round;
+        let remaining_vars = local_num_vars - round;
         let suffix_mask = if remaining_vars == 1 {
             0
         } else {
@@ -741,21 +783,50 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
     }
 
     fn fixed_frontload_factor(&self, mle_idx: usize, round: usize) -> E {
-        let tail_start = self.frontload_tail_start(mle_idx);
-        if round <= tail_start {
+        let local_num_vars = self.poly.flattened_ml_extensions[mle_idx].num_vars();
+        let global_num_vars = self.global_mle_num_vars[mle_idx];
+        if round <= local_num_vars {
             return E::ONE;
         }
-        self.challenges[tail_start..round]
-            .iter()
-            .fold(E::ONE, |acc, challenge| acc * challenge.elements)
+        (local_num_vars..round).fold(E::ONE, |acc, fixed_round| {
+            let challenge = self.challenges[fixed_round].elements;
+            if fixed_round < global_num_vars {
+                if self.worker_round_bit(mle_idx, fixed_round) == 0 {
+                    acc * (E::ONE - challenge)
+                } else {
+                    acc * challenge
+                }
+            } else {
+                acc * challenge
+            }
+        })
     }
 
     fn frontload_tail_start(&self, mle_idx: usize) -> usize {
-        if self.worker.is_some() {
-            self.poly.flattened_ml_extensions[mle_idx].num_vars()
-        } else {
-            self.global_mle_num_vars[mle_idx]
-        }
+        self.global_mle_num_vars[mle_idx]
+    }
+
+    fn mle_round_is_worker_bit(&self, mle_idx: usize, round: usize) -> bool {
+        self.worker.is_some()
+            && self.mle_has_worker_bits[mle_idx]
+            && round >= self.poly.flattened_ml_extensions[mle_idx].num_vars()
+            && round < self.global_mle_num_vars[mle_idx]
+    }
+
+    fn worker_round_bit(&self, mle_idx: usize, round: usize) -> usize {
+        let local_num_vars = self.poly.flattened_ml_extensions[mle_idx].num_vars();
+        debug_assert!(round >= local_num_vars);
+        self.worker
+            .map(|(worker_id, _log_num_workers)| (worker_id >> (round - local_num_vars)) & 1)
+            .unwrap_or(1)
+    }
+
+    fn any_mle_round_needs_canonical_merge(&self, round: usize) -> bool {
+        self.worker.is_some()
+            && (0..self.mles.len()).any(|mle_idx| {
+                self.mle_has_worker_bits[mle_idx]
+                    && round >= self.poly.flattened_ml_extensions[mle_idx].num_vars()
+            })
     }
 
     fn fold_round(&mut self, challenge: E) {
@@ -786,6 +857,173 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
     }
 }
 
+fn round_evaluations_across_workers<'a, E: ExtensionField>(
+    workers: &[WorkingState<'a, E>],
+    round: usize,
+    max_degree: usize,
+) -> Vec<E> {
+    let first_worker = workers.first().expect("frontload 2phase needs workers");
+    let mut evaluations = vec![E::ZERO; max_degree + 1];
+    for MonomialTerms { terms } in &first_worker.poly.products {
+        for term in terms {
+            let term_evaluations = term_round_evaluations_across_workers(workers, term, round);
+            evaluations
+                .iter_mut()
+                .zip_eq(term_evaluations)
+                .for_each(|(acc, eval)| *acc += eval);
+        }
+    }
+    evaluations
+}
+
+fn term_round_evaluations_across_workers<'a, E: ExtensionField>(
+    workers: &[WorkingState<'a, E>],
+    term: &Term<either::Either<E::BaseField, E>, usize>,
+    round: usize,
+) -> Vec<E> {
+    let first_worker = workers.first().expect("frontload 2phase needs workers");
+    let degree = term.product.len();
+    let phase1_num_vars = first_worker.poly.aux_info.max_num_variables;
+    let live_vars = term
+        .product
+        .iter()
+        .map(|&idx| {
+            first_worker.global_mle_num_vars[idx]
+                .min(phase1_num_vars)
+                .saturating_sub(round)
+        })
+        .max()
+        .unwrap_or(0);
+    let lane_count = if live_vars == 0 {
+        1
+    } else {
+        1usize << (live_vars - 1)
+    };
+    let required_ones_mask = first_worker.required_future_frontload_mask(term, round, live_vars);
+    let scalar = scalar_to_ext(&term.scalar);
+    let mut evaluations = vec![E::ZERO; degree + 1];
+
+    for_each_active_lane(lane_count, required_ones_mask, |lane| {
+        for (z_idx, eval) in evaluations.iter_mut().enumerate() {
+            let z = E::from_canonical_u64(z_idx as u64);
+            let mut term_eval = E::ZERO;
+            for group_key in worker_future_group_keys(workers, term, round) {
+                let product = term
+                    .product
+                    .iter()
+                    .map(|&idx| {
+                        canonical_worker_group_value(workers, idx, round, lane, z, group_key)
+                    })
+                    .product::<E>();
+                term_eval += product;
+            }
+            *eval += term_eval * scalar;
+        }
+    });
+
+    if degree == first_worker.poly.aux_info.max_degree {
+        evaluations
+    } else {
+        let mut extrapolated = vec![E::ZERO; first_worker.poly.aux_info.max_degree + 1];
+        extrapolated[..=degree].copy_from_slice(&evaluations);
+        extrapolate_from_table(&mut extrapolated, degree + 1);
+        extrapolated
+    }
+}
+
+fn worker_future_group_keys<'a, E: ExtensionField>(
+    workers: &[WorkingState<'a, E>],
+    term: &Term<either::Either<E::BaseField, E>, usize>,
+    round: usize,
+) -> Vec<usize> {
+    let first_worker = workers.first().expect("frontload 2phase needs workers");
+    let phase1_num_vars = first_worker.poly.aux_info.max_num_variables;
+    let mut keys = workers
+        .iter()
+        .map(|worker| {
+            term.product.iter().fold(0usize, |key, &mle_idx| {
+                if !first_worker.mle_has_worker_bits[mle_idx] {
+                    return key;
+                }
+                let local_num_vars = first_worker.poly.flattened_ml_extensions[mle_idx].num_vars();
+                let global_num_vars = first_worker.global_mle_num_vars[mle_idx];
+                (phase1_num_vars.max(round + 1).max(local_num_vars)..global_num_vars).fold(
+                    key,
+                    |key, var_idx| {
+                        key | (worker.worker_round_bit(mle_idx, var_idx)
+                            << (var_idx - phase1_num_vars))
+                    },
+                )
+            })
+        })
+        .collect_vec();
+    keys.sort_unstable();
+    keys.dedup();
+    if keys.is_empty() { vec![0] } else { keys }
+}
+
+fn canonical_worker_group_value<'a, E: ExtensionField>(
+    workers: &[WorkingState<'a, E>],
+    mle_idx: usize,
+    round: usize,
+    lane: usize,
+    z: E,
+    group_key: usize,
+) -> E {
+    let first_worker = workers.first().expect("frontload 2phase needs workers");
+    if !first_worker.mle_has_worker_bits[mle_idx] {
+        return first_worker.mle_round_value(mle_idx, round, lane, z)
+            * first_worker.fixed_frontload_factor(mle_idx, round);
+    }
+
+    let local_num_vars = first_worker.poly.flattened_ml_extensions[mle_idx].num_vars();
+    let global_num_vars = first_worker.global_mle_num_vars[mle_idx];
+    let phase1_num_vars = first_worker.poly.aux_info.max_num_variables;
+
+    workers
+        .iter()
+        .filter_map(|worker| {
+            for var_idx in phase1_num_vars.max(round + 1).max(local_num_vars)..global_num_vars {
+                let group_bit = (group_key >> (var_idx - phase1_num_vars)) & 1;
+                if worker.worker_round_bit(mle_idx, var_idx) != group_bit {
+                    return None;
+                }
+            }
+
+            let future_data_end = global_num_vars.min(phase1_num_vars);
+            for var_idx in local_num_vars.max(round + 1)..future_data_end {
+                let lane_bit = (lane >> (var_idx - round - 1)) & 1;
+                if worker.worker_round_bit(mle_idx, var_idx) != lane_bit {
+                    return None;
+                }
+            }
+
+            if round < local_num_vars {
+                return Some(
+                    worker.mle_round_value(mle_idx, round, lane, z)
+                        * worker.fixed_frontload_factor(mle_idx, round),
+                );
+            }
+
+            let current_factor = if round < global_num_vars {
+                if worker.worker_round_bit(mle_idx, round) == 0 {
+                    E::ONE - z
+                } else {
+                    z
+                }
+            } else {
+                z
+            };
+
+            Some(
+                read_eval(&worker.mles[mle_idx], 0)
+                    * worker.fixed_frontload_factor(mle_idx, round)
+                    * current_factor,
+            )
+        })
+        .sum()
+}
+
 fn build_phase2_poly<'a, E: ExtensionField>(
     workers: &[WorkingState<'a, E>],
     poly_meta: &[FrontloadPolyMeta],
@@ -797,16 +1035,28 @@ fn build_phase2_poly<'a, E: ExtensionField>(
     poly.aux_info.max_degree = first_worker.poly.aux_info.max_degree;
 
     for (mle_idx, meta) in poly_meta.iter().enumerate() {
+        let global_num_vars = first_worker.global_mle_num_vars[mle_idx];
         let mle = match meta {
             FrontloadPolyMeta::Normal => {
-                let values = workers
-                    .iter()
-                    .map(|worker| {
-                        read_eval(&worker.mles[mle_idx], 0)
-                            * worker.fixed_frontload_factor(mle_idx, local_num_vars)
-                    })
-                    .collect_vec();
-                MultilinearExtension::from_evaluations_ext_vec(log_num_workers, values)
+                if global_num_vars <= local_num_vars {
+                    let value = workers
+                        .iter()
+                        .map(|worker| {
+                            read_eval(&worker.mles[mle_idx], 0)
+                                * worker.fixed_frontload_factor(mle_idx, local_num_vars)
+                        })
+                        .sum();
+                    MultilinearExtension::from_evaluations_ext_vec(0, vec![value])
+                } else {
+                    let values = workers
+                        .iter()
+                        .map(|worker| {
+                            read_eval(&worker.mles[mle_idx], 0)
+                                * worker.fixed_frontload_factor(mle_idx, local_num_vars)
+                        })
+                        .collect_vec();
+                    MultilinearExtension::from_evaluations_ext_vec(log_num_workers, values)
+                }
             }
             FrontloadPolyMeta::Phase1Only => {
                 let value = read_eval(&first_worker.mles[mle_idx], 0)
