@@ -76,6 +76,8 @@ fn test_frontload_2phase_sum_keeps_small_mle_compact() {
     let large = multilinear_extensions::mle::MultilinearExtension::<GoldilocksExt2>::random(
         num_vars, &mut rng,
     );
+    let medium =
+        multilinear_extensions::mle::MultilinearExtension::<GoldilocksExt2>::random(5, &mut rng);
     let small =
         multilinear_extensions::mle::MultilinearExtension::<GoldilocksExt2>::random(2, &mut rng);
     let poly = VirtualPolynomials::new_from_monimials(
@@ -85,6 +87,10 @@ fn test_frontload_2phase_sum_keeps_small_mle_compact() {
             Term {
                 scalar: Either::Right(GoldilocksExt2::ONE),
                 product: vec![Either::Left(&large)],
+            },
+            Term {
+                scalar: Either::Right(GoldilocksExt2::ONE),
+                product: vec![Either::Left(&medium)],
             },
             Term {
                 scalar: Either::Right(GoldilocksExt2::ONE),
@@ -99,6 +105,7 @@ fn test_frontload_2phase_sum_keeps_small_mle_compact() {
 
     let mut direct_poly = VirtualPolynomial::new(num_vars);
     let large_idx = direct_poly.register_mle(Arc::new(large));
+    let medium_idx = direct_poly.register_mle(Arc::new(medium));
     let small_idx = direct_poly.register_mle(Arc::new(small));
     direct_poly.aux_info.max_degree = 1;
     direct_poly
@@ -108,6 +115,10 @@ fn test_frontload_2phase_sum_keeps_small_mle_compact() {
                 Term {
                     scalar: Either::Right(GoldilocksExt2::ONE),
                     product: vec![large_idx],
+                },
+                Term {
+                    scalar: Either::Right(GoldilocksExt2::ONE),
+                    product: vec![medium_idx],
                 },
                 Term {
                     scalar: Either::Right(GoldilocksExt2::ONE),
@@ -211,6 +222,27 @@ fn test_random_monimials_use_frontload_sum() {
         &mut rng,
     );
     let max_num_variables = *nv.iter().max().unwrap();
+
+    // Build a single-worker VirtualPolynomial for natural frontload evaluation check.
+    // Must be built before the mutable borrow in new_from_monimials below.
+    let mut direct_poly = VirtualPolynomial::new(max_num_variables);
+    direct_poly.aux_info.max_degree = degree;
+    for term in &monimials {
+        let indices: Vec<usize> = term
+            .product
+            .iter()
+            .map(|mle| direct_poly.register_mle(Arc::new(mle.clone())))
+            .collect_vec();
+        direct_poly
+            .products
+            .push(multilinear_extensions::virtual_poly::MonomialTerms {
+                terms: vec![Term {
+                    scalar: Either::Right(term.scalar),
+                    product: indices,
+                }],
+            });
+    }
+
     let poly = VirtualPolynomials::<GoldilocksExt2>::new_from_monimials(
         4,
         max_num_variables,
@@ -245,6 +277,12 @@ fn test_random_monimials_use_frontload_sum() {
     assert_eq!(
         worker_aware_frontload_evaluate(4, max_num_variables, &monimials, &point),
         subclaim.expected_evaluation
+    );
+    assert_eq!(
+        frontload::evaluate(&direct_poly, &point),
+        subclaim.expected_evaluation,
+        "frontload 2phase final evaluation mismatch: natural frontload evaluation \
+         must agree with the verifier's expected evaluation"
     );
 }
 
