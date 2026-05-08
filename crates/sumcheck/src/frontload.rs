@@ -176,6 +176,9 @@ pub fn prove_2phase<'a, E: ExtensionField>(
             )
         })
         .collect_vec();
+    if let Some(worker) = workers.first() {
+        worker.assert_uniform_product_num_vars();
+    }
     let mut proofs = Vec::with_capacity(global_num_vars);
     let mut challenge: Option<Challenge<E>> = None;
 
@@ -829,6 +832,22 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
             })
     }
 
+    fn assert_uniform_product_num_vars(&self) {
+        for MonomialTerms { terms } in &self.poly.products {
+            for term in terms {
+                let Some((&first_idx, rest)) = term.product.split_first() else {
+                    continue;
+                };
+                let first_num_vars = self.global_mle_num_vars[first_idx];
+                assert!(
+                    rest.iter()
+                        .all(|&idx| self.global_mle_num_vars[idx] == first_num_vars),
+                    "frontload 2phase expects every MLE in a product term to have the same canonical num_vars"
+                );
+            }
+        }
+    }
+
     fn fold_round(&mut self, challenge: E) {
         let round = self.challenges.len() - 1;
         self.fold_round_at(round, challenge);
@@ -882,18 +901,14 @@ fn term_round_evaluations_across_workers<'a, E: ExtensionField>(
     round: usize,
 ) -> Vec<E> {
     let first_worker = workers.first().expect("frontload 2phase needs workers");
+    let Some(layout) = TermWorkerLayout::new(first_worker, term) else {
+        return workers
+            .last()
+            .expect("frontload 2phase needs workers")
+            .term_round_evaluations(term, round);
+    };
     let degree = term.product.len();
-    let phase1_num_vars = first_worker.poly.aux_info.max_num_variables;
-    let live_vars = term
-        .product
-        .iter()
-        .map(|&idx| {
-            first_worker.global_mle_num_vars[idx]
-                .min(phase1_num_vars)
-                .saturating_sub(round)
-        })
-        .max()
-        .unwrap_or(0);
+    let live_vars = layout.phase1_end.saturating_sub(round);
     let lane_count = if live_vars == 0 {
         1
     } else {
@@ -907,12 +922,14 @@ fn term_round_evaluations_across_workers<'a, E: ExtensionField>(
         for (z_idx, eval) in evaluations.iter_mut().enumerate() {
             let z = E::from_canonical_u64(z_idx as u64);
             let mut term_eval = E::ZERO;
-            for group_key in worker_future_group_keys(workers, term, round) {
+            for group_key in layout.future_group_keys(workers, round) {
                 let product = term
                     .product
                     .iter()
                     .map(|&idx| {
-                        canonical_worker_group_value(workers, idx, round, lane, z, group_key)
+                        canonical_worker_group_value(
+                            workers, layout, idx, round, lane, z, group_key,
+                        )
                     })
                     .product::<E>();
                 term_eval += product;
@@ -931,81 +948,100 @@ fn term_round_evaluations_across_workers<'a, E: ExtensionField>(
     }
 }
 
-fn worker_future_group_keys<'a, E: ExtensionField>(
-    workers: &[WorkingState<'a, E>],
-    term: &Term<either::Either<E::BaseField, E>, usize>,
-    round: usize,
-) -> Vec<usize> {
-    let first_worker = workers.first().expect("frontload 2phase needs workers");
-    let phase1_num_vars = first_worker.poly.aux_info.max_num_variables;
-    let mut keys = workers
-        .iter()
-        .map(|worker| {
-            term.product.iter().fold(0usize, |key, &mle_idx| {
-                if !first_worker.mle_has_worker_bits[mle_idx] {
-                    return key;
-                }
-                let local_num_vars = first_worker.poly.flattened_ml_extensions[mle_idx].num_vars();
-                let global_num_vars = first_worker.global_mle_num_vars[mle_idx];
-                (phase1_num_vars.max(round + 1).max(local_num_vars)..global_num_vars).fold(
-                    key,
-                    |key, var_idx| {
-                        key | (worker.worker_round_bit(mle_idx, var_idx)
-                            << (var_idx - phase1_num_vars))
-                    },
-                )
-            })
+#[derive(Clone, Copy)]
+struct TermWorkerLayout {
+    local_num_vars: usize,
+    global_num_vars: usize,
+    phase1_num_vars: usize,
+    phase1_end: usize,
+    first_mle_idx: usize,
+}
+
+impl TermWorkerLayout {
+    fn new<E: ExtensionField>(
+        worker: &WorkingState<'_, E>,
+        term: &Term<either::Either<E::BaseField, E>, usize>,
+    ) -> Option<Self> {
+        let first_mle_idx = term
+            .product
+            .iter()
+            .copied()
+            .find(|&idx| worker.mle_has_worker_bits[idx])?;
+        let local_num_vars = worker.poly.flattened_ml_extensions[first_mle_idx].num_vars();
+        let global_num_vars = worker.global_mle_num_vars[first_mle_idx];
+        let phase1_num_vars = worker.poly.aux_info.max_num_variables;
+        Some(Self {
+            local_num_vars,
+            global_num_vars,
+            phase1_num_vars,
+            phase1_end: global_num_vars.min(phase1_num_vars),
+            first_mle_idx,
         })
-        .collect_vec();
-    keys.sort_unstable();
-    keys.dedup();
-    if keys.is_empty() { vec![0] } else { keys }
+    }
+
+    fn future_group_keys<E: ExtensionField>(
+        self,
+        workers: &[WorkingState<'_, E>],
+        round: usize,
+    ) -> Vec<usize> {
+        let group_start = self.phase1_num_vars.max(round + 1).max(self.local_num_vars);
+        if group_start >= self.global_num_vars {
+            return vec![0];
+        }
+
+        let mut keys = workers
+            .iter()
+            .map(|worker| {
+                (group_start..self.global_num_vars).fold(0usize, |key, var_idx| {
+                    key | (worker.worker_round_bit(self.first_mle_idx, var_idx)
+                        << (var_idx - self.phase1_num_vars))
+                })
+            })
+            .collect_vec();
+        keys.sort_unstable();
+        keys.dedup();
+        keys
+    }
 }
 
 fn canonical_worker_group_value<'a, E: ExtensionField>(
     workers: &[WorkingState<'a, E>],
+    layout: TermWorkerLayout,
     mle_idx: usize,
     round: usize,
     lane: usize,
     z: E,
     group_key: usize,
 ) -> E {
-    let first_worker = workers.first().expect("frontload 2phase needs workers");
-    if !first_worker.mle_has_worker_bits[mle_idx] {
-        return first_worker.mle_round_value(mle_idx, round, lane, z)
-            * first_worker.fixed_frontload_factor(mle_idx, round);
-    }
-
-    let local_num_vars = first_worker.poly.flattened_ml_extensions[mle_idx].num_vars();
-    let global_num_vars = first_worker.global_mle_num_vars[mle_idx];
-    let phase1_num_vars = first_worker.poly.aux_info.max_num_variables;
-
     workers
         .iter()
         .filter_map(|worker| {
-            for var_idx in phase1_num_vars.max(round + 1).max(local_num_vars)..global_num_vars {
-                let group_bit = (group_key >> (var_idx - phase1_num_vars)) & 1;
+            for var_idx in layout
+                .phase1_num_vars
+                .max(round + 1)
+                .max(layout.local_num_vars)..layout.global_num_vars
+            {
+                let group_bit = (group_key >> (var_idx - layout.phase1_num_vars)) & 1;
                 if worker.worker_round_bit(mle_idx, var_idx) != group_bit {
                     return None;
                 }
             }
 
-            let future_data_end = global_num_vars.min(phase1_num_vars);
-            for var_idx in local_num_vars.max(round + 1)..future_data_end {
+            for var_idx in layout.local_num_vars.max(round + 1)..layout.phase1_end {
                 let lane_bit = (lane >> (var_idx - round - 1)) & 1;
                 if worker.worker_round_bit(mle_idx, var_idx) != lane_bit {
                     return None;
                 }
             }
 
-            if round < local_num_vars {
+            if round < layout.local_num_vars {
                 return Some(
                     worker.mle_round_value(mle_idx, round, lane, z)
                         * worker.fixed_frontload_factor(mle_idx, round),
                 );
             }
 
-            let current_factor = if round < global_num_vars {
+            let current_factor = if round < layout.global_num_vars {
                 if worker.worker_round_bit(mle_idx, round) == 0 {
                     E::ONE - z
                 } else {
