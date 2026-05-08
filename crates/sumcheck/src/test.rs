@@ -63,9 +63,19 @@ fn test_frontload_mixed_size_sumcheck_helper<E: ExtensionField>() {
         .collect_vec();
 
     assert_eq!(
-        frontload::evaluate(&poly, &point),
+        frontload::evaluate(&poly, &point, &frontload_raw_mle_evals(&poly, &point)),
         subclaim.expected_evaluation
     );
+}
+
+fn frontload_raw_mle_evals<E: ExtensionField>(
+    poly: &VirtualPolynomial<'_, E>,
+    point: &[E],
+) -> Vec<E> {
+    poly.flattened_ml_extensions
+        .iter()
+        .map(|mle| mle.evaluate(&point[..mle.num_vars()]))
+        .collect_vec()
 }
 
 #[test]
@@ -155,7 +165,11 @@ fn test_frontload_2phase_sum_keeps_small_mle_compact() {
         .map(|challenge| challenge.elements)
         .collect_vec();
     assert_eq!(
-        frontload::evaluate(&direct_poly, &direct_point),
+        frontload::evaluate(
+            &direct_poly,
+            &direct_point,
+            &frontload_raw_mle_evals(&direct_poly, &direct_point),
+        ),
         direct_subclaim.expected_evaluation,
         "single frontload proof failed"
     );
@@ -166,7 +180,11 @@ fn test_frontload_2phase_sum_keeps_small_mle_compact() {
         );
     }
     assert_eq!(
-        frontload::evaluate(&direct_poly, &point),
+        frontload::evaluate(
+            &direct_poly,
+            &point,
+            &frontload_raw_mle_evals(&direct_poly, &point),
+        ),
         subclaim.expected_evaluation
     );
 }
@@ -204,7 +222,7 @@ fn test_frontload_small_only_sumcheck() {
         .map(|challenge| challenge.elements)
         .collect_vec();
     assert_eq!(
-        frontload::evaluate(&poly, &point),
+        frontload::evaluate(&poly, &point, &frontload_raw_mle_evals(&poly, &point)),
         subclaim.expected_evaluation
     );
 }
@@ -275,7 +293,11 @@ fn test_random_monimials_use_frontload_sum() {
         .map(|challenge| challenge.elements)
         .collect_vec();
     assert_eq!(
-        frontload::evaluate(&direct_poly, &point),
+        frontload::evaluate(
+            &direct_poly,
+            &point,
+            &frontload_raw_mle_evals(&direct_poly, &point),
+        ),
         subclaim.expected_evaluation,
         "frontload 2phase final evaluation mismatch: natural frontload evaluation \
          must agree with the verifier's expected evaluation"
@@ -377,7 +399,11 @@ fn test_frontload_2phase_mle_category_combinations() {
                 );
             }
             assert_eq!(
-                frontload::evaluate(&direct_poly, &point),
+                frontload::evaluate(
+                    &direct_poly,
+                    &point,
+                    &frontload_raw_mle_evals(&direct_poly, &point),
+                ),
                 subclaim.expected_evaluation,
                 "frontload 2phase failed for {selected_names}, \
                  log_num_workers={log_num_workers}"
@@ -395,6 +421,12 @@ fn test_frontload_2phase_mle_category_combinations() {
                      {selected_names}, log_num_workers={log_num_workers}"
                 );
             }
+            assert_eq!(
+                frontload::evaluate(&direct_poly, &point, &final_evals),
+                subclaim.expected_evaluation,
+                "frontload 2phase raw final evals should reconstruct subclaim expected \
+                 evaluation for {selected_names}, log_num_workers={log_num_workers}"
+            );
         }
     }
 }

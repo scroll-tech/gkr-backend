@@ -303,23 +303,23 @@ pub fn claimed_sum<E: ExtensionField>(poly: &VirtualPolynomial<'_, E>) -> E {
     evaluations[0] + evaluations[1]
 }
 
-pub fn evaluate<E: ExtensionField>(poly: &VirtualPolynomial<'_, E>, point: &[E]) -> E {
+pub fn evaluate<E: ExtensionField>(
+    poly: &VirtualPolynomial<'_, E>,
+    point: &[E],
+    raw_mle_evals: &[E],
+) -> E {
     assert_eq!(poly.aux_info.max_num_variables, point.len());
+    assert_eq!(poly.flattened_ml_extensions.len(), raw_mle_evals.len());
     let mle_evals = poly
         .flattened_ml_extensions
         .iter()
-        .map(|mle| {
-            let local_eval = if mle.num_vars() == 0 {
-                read_eval(mle, 0)
-            } else {
-                mle.evaluate(&point[..mle.num_vars()])
-            };
+        .zip_eq(raw_mle_evals)
+        .map(|(mle, &raw_eval)| {
             point[mle.num_vars()..]
                 .iter()
-                .fold(local_eval, |acc, point| acc * *point)
+                .fold(raw_eval, |acc, point| acc * *point)
         })
         .collect_vec();
-
     poly.products
         .iter()
         .map(|MonomialTerms { terms }| {
