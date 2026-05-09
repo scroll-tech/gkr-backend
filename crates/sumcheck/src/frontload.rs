@@ -230,18 +230,25 @@ pub fn prove_2phase<'a, E: ExtensionField>(
     let (phase2_proof, phase2_state) =
         prove_inner(WorkingState::new(phase2_poly), transcript, false);
     proofs.extend(phase2_proof.proofs);
+    let challenges = workers
+        .first()
+        .map(|worker| worker.challenges.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .chain(phase2_state.challenges)
+        .collect_vec();
+    let final_evaluations = normalize_phase2_final_evaluations(
+        phase2_state.final_evaluations,
+        &global_mle_num_vars,
+        local_num_vars,
+        &challenges,
+    );
 
     (
         IOPProof { proofs },
         FrontloadProverState {
-            challenges: workers
-                .first()
-                .map(|worker| worker.challenges.clone())
-                .unwrap_or_default()
-                .into_iter()
-                .chain(phase2_state.challenges)
-                .collect(),
-            final_evaluations: phase2_state.final_evaluations,
+            challenges,
+            final_evaluations,
         },
     )
 }
@@ -296,23 +303,23 @@ pub fn claimed_sum<E: ExtensionField>(poly: &VirtualPolynomial<'_, E>) -> E {
     evaluations[0] + evaluations[1]
 }
 
-pub fn evaluate<E: ExtensionField>(poly: &VirtualPolynomial<'_, E>, point: &[E]) -> E {
+pub fn evaluate<E: ExtensionField>(
+    poly: &VirtualPolynomial<'_, E>,
+    point: &[E],
+    raw_mle_evals: &[E],
+) -> E {
     assert_eq!(poly.aux_info.max_num_variables, point.len());
+    assert_eq!(poly.flattened_ml_extensions.len(), raw_mle_evals.len());
     let mle_evals = poly
         .flattened_ml_extensions
         .iter()
-        .map(|mle| {
-            let local_eval = if mle.num_vars() == 0 {
-                read_eval(mle, 0)
-            } else {
-                mle.evaluate(&point[..mle.num_vars()])
-            };
+        .zip_eq(raw_mle_evals)
+        .map(|(mle, &raw_eval)| {
             point[mle.num_vars()..]
                 .iter()
-                .fold(local_eval, |acc, point| acc * *point)
+                .fold(raw_eval, |acc, point| acc * *point)
         })
         .collect_vec();
-
     poly.products
         .iter()
         .map(|MonomialTerms { terms }| {
@@ -1074,7 +1081,15 @@ fn build_phase2_poly<'a, E: ExtensionField>(
         let global_num_vars = first_worker.global_mle_num_vars[mle_idx];
         let mle = match meta {
             FrontloadPolyMeta::Normal => {
-                if global_num_vars <= local_num_vars {
+                let remaining_num_vars = global_num_vars.saturating_sub(local_num_vars);
+                // At the phase boundary a split Normal MLE has three canonical cases:
+                // - exhausted in phase 1: all worker-bit variables were already bound, so sum
+                //   every worker scalar into one compact constant.
+                // - partially live in phase 2: some worker-bit variables were bound in phase 1
+                //   and the suffix remains live; aggregate workers with the same live suffix.
+                // - fully live in phase 2: no worker-bit variables were bound in phase 1, so keep
+                //   the full worker-index MLE.
+                if remaining_num_vars == 0 {
                     let value = workers
                         .iter()
                         .map(|worker| {
@@ -1083,6 +1098,16 @@ fn build_phase2_poly<'a, E: ExtensionField>(
                         })
                         .sum();
                     MultilinearExtension::from_evaluations_ext_vec(0, vec![value])
+                } else if remaining_num_vars < log_num_workers {
+                    let mut values = vec![E::ZERO; 1usize << remaining_num_vars];
+                    let bound_worker_bits = log_num_workers - remaining_num_vars;
+                    workers.iter().for_each(|worker| {
+                        let (worker_id, _) = worker.worker.expect("frontload worker missing");
+                        let phase2_idx = worker_id >> bound_worker_bits;
+                        values[phase2_idx] += read_eval(&worker.mles[mle_idx], 0)
+                            * worker.fixed_frontload_factor(mle_idx, local_num_vars);
+                    });
+                    MultilinearExtension::from_evaluations_ext_vec(remaining_num_vars, values)
                 } else {
                     let values = workers
                         .iter()
@@ -1104,6 +1129,28 @@ fn build_phase2_poly<'a, E: ExtensionField>(
     }
     poly.products = first_worker.poly.products.clone();
     poly
+}
+
+fn normalize_phase2_final_evaluations<E: ExtensionField>(
+    mut final_evaluations: Vec<Vec<E>>,
+    global_mle_num_vars: &[usize],
+    local_num_vars: usize,
+    challenges: &[Challenge<E>],
+) -> Vec<Vec<E>> {
+    final_evaluations
+        .iter_mut()
+        .zip_eq(global_mle_num_vars)
+        .for_each(|(evals, &global_num_vars)| {
+            if global_num_vars >= local_num_vars {
+                return;
+            }
+            let baked_tail = challenges[global_num_vars..local_num_vars]
+                .iter()
+                .fold(E::ONE, |acc, challenge| acc * challenge.elements);
+            let baked_tail_inv = baked_tail.inverse();
+            evals.iter_mut().for_each(|eval| *eval *= baked_tail_inv);
+        });
+    final_evaluations
 }
 
 fn read_eval<E: ExtensionField>(mle: &MultilinearExtension<'_, E>, idx: usize) -> E {
