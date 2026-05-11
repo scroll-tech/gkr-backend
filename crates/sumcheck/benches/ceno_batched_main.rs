@@ -240,7 +240,6 @@ fn ceno_batched_main(c: &mut Criterion) {
     let max_vars_override = std::env::var("GKR_CENO_BENCH_MAX_VARS")
         .ok()
         .and_then(|value| value.parse().ok());
-    let include_suffix = std::env::var_os("GKR_CENO_BENCH_SUFFIX").is_some();
 
     let case = build_case(&scale, max_vars_override);
     let mut group = c.benchmark_group(format!(
@@ -252,12 +251,10 @@ fn ceno_batched_main(c: &mut Criterion) {
     ));
     group.sample_size(sample_size);
 
-    let mut modes = vec![SumcheckProverMode::Frontload];
-    if include_suffix {
-        modes.push(SumcheckProverMode::LegacyStable);
-    }
-
-    for mode in modes {
+    for mode in [
+        SumcheckProverMode::Frontload,
+        SumcheckProverMode::LegacyStable,
+    ] {
         group.bench_function(BenchmarkId::from_parameter(mode_name(mode)), |b| {
             b.iter_custom(|iters| {
                 let mut total = Duration::ZERO;
