@@ -56,8 +56,8 @@ impl CenoBatchedMainCase<'_> {
                 .iter()
                 .map(|&mle_idx| lifted[mle_idx].clone())
                 .fold(Expression::ONE, |acc, expr| acc * expr);
-            global_expr = global_expr
-                + product_expr * Expression::Constant(itertools::Either::Right(term.scalar));
+            global_expr +=
+                product_expr * Expression::Constant(itertools::Either::Right(term.scalar));
         }
 
         builder.to_virtual_polys(&[global_expr], &[])
@@ -208,7 +208,7 @@ fn build_case<'a>(scale: &str, max_vars_override: Option<usize>) -> CenoBatchedM
             let degree = match term_idx % 8 {
                 0 => 1,
                 1 | 2 => 2,
-                3 | 4 | 5 => 3,
+                3..=5 => 3,
                 _ => 4,
             };
             let product = (0..degree)
