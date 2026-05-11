@@ -41,3 +41,7 @@ name = "devirgo_sumcheck"
 [[bench]]
 harness = false
 name = "memory_usage"
+
+[[bench]]
+harness = false
+name = "ceno_batched_main"
