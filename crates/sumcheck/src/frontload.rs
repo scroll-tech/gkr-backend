@@ -191,7 +191,7 @@ pub fn prove_2phase<'a, E: ExtensionField>(
         });
         let mut evaluations = if workers
             .first()
-            .is_some_and(|worker| worker.any_mle_round_needs_worker_bit_merge(round))
+            .is_some_and(|worker| worker.any_mle_round_needs_canonical_merge(round))
         {
             round_evaluations_across_workers(&workers, round, max_degree)
         } else {
@@ -445,20 +445,6 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         evaluations
     }
 
-    fn round_without_worker_bit_merge_evaluations(&self, round: usize) -> Vec<E> {
-        let mut evaluations = vec![E::ZERO; self.poly.aux_info.max_degree + 1];
-        for (MonomialTerms { terms }, metadata) in
-            self.poly.products.iter().zip_eq(&self.term_metadata)
-        {
-            for (term, metadata) in terms.iter().zip_eq(metadata) {
-                if !self.term_needs_worker_bit_merge(term, round) {
-                    self.add_term_round_evaluations(term, *metadata, round, &mut evaluations);
-                }
-            }
-        }
-        evaluations
-    }
-
     fn add_term_round_evaluations(
         &self,
         term: &Term<either::Either<E::BaseField, E>, usize>,
@@ -467,51 +453,15 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         acc: &mut [E],
     ) {
         debug_assert_eq!(metadata.degree, term.product.len());
-        if !self.worker_matches_frontload_tail(term) {
-            return;
-        }
-
-        if self.add_same_height_no_worker_bits(term, metadata, round, acc) {
-            return;
-        }
-
         if metadata.all_same_local_num_vars
             && metadata.all_same_global_num_vars
             && metadata.local_num_vars == self.poly.aux_info.max_num_variables
             && self.uniform_term_has_no_frontload_tail(metadata)
         {
-            macro_rules! add_uniform {
-                ($degree:literal) => {{
-                    let live_vars = metadata.local_num_vars.saturating_sub(round);
-                    let lane_count = if live_vars == 0 {
-                        1
-                    } else {
-                        1usize << (live_vars - 1)
-                    };
-                    let suffix_mask = uniform_suffix_mask(metadata.local_num_vars, round);
-                    sumcheck_macro::frontload_uniform_sumcheck_code_gen!(
-                        $degree,
-                        |i: usize| self.mles[term.product[i]].evaluations(),
-                        metadata.local_num_vars,
-                        round,
-                        lane_count,
-                        suffix_mask
-                    );
-                }};
-            }
             match metadata.degree {
-                2 => {
-                    add_uniform!(2);
-                    return;
-                }
-                3 => {
-                    add_uniform!(3);
-                    return;
-                }
-                4 => {
-                    add_uniform!(4);
-                    return;
-                }
+                2 if self.add_uniform_degree2(term, metadata, round, acc) => return,
+                3 if self.add_uniform_degree3(term, metadata, round, acc) => return,
+                4 if self.add_uniform_degree4(term, metadata, round, acc) => return,
                 _ => {}
             }
         }
@@ -520,68 +470,6 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         acc.iter_mut().zip_eq(evaluations).for_each(|(acc, eval)| {
             *acc += eval;
         });
-    }
-
-    fn add_same_height_no_worker_bits(
-        &self,
-        term: &Term<either::Either<E::BaseField, E>, usize>,
-        metadata: TermMetadata,
-        round: usize,
-        acc: &mut [E],
-    ) -> bool {
-        if !metadata.all_same_local_num_vars
-            || !metadata.all_same_global_num_vars
-            || term
-                .product
-                .iter()
-                .any(|&idx| self.mle_has_worker_bits[idx])
-        {
-            return false;
-        }
-
-        if round < metadata.local_num_vars {
-            macro_rules! add_uniform {
-                ($degree:literal) => {{
-                    let live_vars = metadata.local_num_vars.saturating_sub(round);
-                    let lane_count = if live_vars == 0 {
-                        1
-                    } else {
-                        1usize << (live_vars - 1)
-                    };
-                    let suffix_mask = uniform_suffix_mask(metadata.local_num_vars, round);
-                    sumcheck_macro::frontload_uniform_sumcheck_code_gen!(
-                        $degree,
-                        |i: usize| self.mles[term.product[i]].evaluations(),
-                        metadata.local_num_vars,
-                        round,
-                        lane_count,
-                        suffix_mask
-                    );
-                }};
-            }
-            match metadata.degree {
-                1 => add_uniform!(1),
-                2 => add_uniform!(2),
-                3 => add_uniform!(3),
-                4 => add_uniform!(4),
-                5 => add_uniform!(5),
-                _ => return false,
-            }
-            return true;
-        }
-
-        let product = term
-            .product
-            .iter()
-            .map(|&idx| read_eval(&self.mles[idx], 0) * self.fixed_frontload_factor(idx, round))
-            .product::<E>();
-        let degree = metadata.degree;
-        let evals = (0..=degree).map(|eval_idx| {
-            let z = E::from_canonical_u64(eval_idx as u64);
-            product * (0..degree).map(|_| z).product::<E>()
-        });
-        self.add_evaluations(acc, degree, scalar_to_ext(&term.scalar), evals);
-        true
     }
 
     #[inline]
@@ -652,12 +540,90 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         });
     }
 
+    fn add_uniform_degree2(
+        &self,
+        term: &Term<either::Either<E::BaseField, E>, usize>,
+        metadata: TermMetadata,
+        round: usize,
+        acc: &mut [E],
+    ) -> bool {
+        let live_vars = metadata.local_num_vars.saturating_sub(round);
+        let lane_count = if live_vars == 0 {
+            1
+        } else {
+            1usize << (live_vars - 1)
+        };
+        let suffix_mask = uniform_suffix_mask(metadata.local_num_vars, round);
+        sumcheck_macro::frontload_uniform_sumcheck_code_gen!(
+            2,
+            |i: usize| self.mles[term.product[i]].evaluations(),
+            metadata.local_num_vars,
+            round,
+            lane_count,
+            suffix_mask
+        );
+        true
+    }
+
+    fn add_uniform_degree3(
+        &self,
+        term: &Term<either::Either<E::BaseField, E>, usize>,
+        metadata: TermMetadata,
+        round: usize,
+        acc: &mut [E],
+    ) -> bool {
+        let live_vars = metadata.local_num_vars.saturating_sub(round);
+        let lane_count = if live_vars == 0 {
+            1
+        } else {
+            1usize << (live_vars - 1)
+        };
+        let suffix_mask = uniform_suffix_mask(metadata.local_num_vars, round);
+        sumcheck_macro::frontload_uniform_sumcheck_code_gen!(
+            3,
+            |i: usize| self.mles[term.product[i]].evaluations(),
+            metadata.local_num_vars,
+            round,
+            lane_count,
+            suffix_mask
+        );
+        true
+    }
+
+    fn add_uniform_degree4(
+        &self,
+        term: &Term<either::Either<E::BaseField, E>, usize>,
+        metadata: TermMetadata,
+        round: usize,
+        acc: &mut [E],
+    ) -> bool {
+        let live_vars = metadata.local_num_vars.saturating_sub(round);
+        let lane_count = if live_vars == 0 {
+            1
+        } else {
+            1usize << (live_vars - 1)
+        };
+        let suffix_mask = uniform_suffix_mask(metadata.local_num_vars, round);
+        sumcheck_macro::frontload_uniform_sumcheck_code_gen!(
+            4,
+            |i: usize| self.mles[term.product[i]].evaluations(),
+            metadata.local_num_vars,
+            round,
+            lane_count,
+            suffix_mask
+        );
+        true
+    }
+
     fn term_round_evaluations(
         &self,
         term: &Term<either::Either<E::BaseField, E>, usize>,
         round: usize,
     ) -> Vec<E> {
         let degree = term.product.len();
+        if !self.worker_matches_frontload_tail(term) {
+            return vec![E::ZERO; self.poly.aux_info.max_degree + 1];
+        }
         let has_worker_bit_round = term
             .product
             .iter()
@@ -756,9 +722,7 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         {
             return true;
         }
-        let worker_mask = (1usize << log_num_workers) - 1;
-        let owner = term.product.iter().fold(0usize, |acc, &idx| acc ^ idx) & worker_mask;
-        worker_id == owner
+        worker_id == (1usize << log_num_workers) - 1
     }
 
     fn required_future_frontload_mask(
@@ -867,21 +831,9 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
             .unwrap_or(1)
     }
 
-    fn any_mle_round_needs_worker_bit_merge(&self, round: usize) -> bool {
+    fn any_mle_round_needs_canonical_merge(&self, round: usize) -> bool {
         self.worker.is_some()
             && (0..self.mles.len()).any(|mle_idx| {
-                self.mle_has_worker_bits[mle_idx]
-                    && round >= self.poly.flattened_ml_extensions[mle_idx].num_vars()
-            })
-    }
-
-    fn term_needs_worker_bit_merge(
-        &self,
-        term: &Term<either::Either<E::BaseField, E>, usize>,
-        round: usize,
-    ) -> bool {
-        self.worker.is_some()
-            && term.product.iter().any(|&mle_idx| {
                 self.mle_has_worker_bits[mle_idx]
                     && round >= self.poly.flattened_ml_extensions[mle_idx].num_vars()
             })
@@ -897,7 +849,7 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
                 assert!(
                     rest.iter()
                         .all(|&idx| self.global_mle_num_vars[idx] == first_num_vars),
-                    "frontload 2phase expects every MLE in a product term to have the same global num_vars"
+                    "frontload 2phase expects every MLE in a product term to have the same canonical num_vars"
                 );
             }
         }
@@ -937,44 +889,17 @@ fn round_evaluations_across_workers<'a, E: ExtensionField>(
     max_degree: usize,
 ) -> Vec<E> {
     let first_worker = workers.first().expect("frontload 2phase needs workers");
-    let no_worker_bit_merge_evaluations = workers
-        .par_iter()
-        .map(|worker| worker.round_without_worker_bit_merge_evaluations(round))
-        .reduce(
-            || vec![E::ZERO; max_degree + 1],
-            |mut acc, evals| {
-                acc.iter_mut()
-                    .zip_eq(evals)
-                    .for_each(|(acc, eval)| *acc += eval);
-                acc
-            },
-        );
-
-    let worker_bit_merge_evaluations = first_worker
-        .poly
-        .products
-        .iter()
-        .zip_eq(&first_worker.term_metadata)
-        .flat_map(|(MonomialTerms { terms }, metadata)| terms.iter().zip_eq(metadata))
-        .filter(|(term, _metadata)| first_worker.term_needs_worker_bit_merge(term, round))
-        .collect_vec()
-        .into_par_iter()
-        .map(|(term, _metadata)| term_round_evaluations_across_workers(workers, term, round))
-        .reduce(
-            || vec![E::ZERO; max_degree + 1],
-            |mut acc, evals| {
-                acc.iter_mut()
-                    .zip_eq(evals)
-                    .for_each(|(acc, eval)| *acc += eval);
-                acc
-            },
-        );
-
-    no_worker_bit_merge_evaluations
-        .into_iter()
-        .zip_eq(worker_bit_merge_evaluations)
-        .map(|(left, right)| left + right)
-        .collect()
+    let mut evaluations = vec![E::ZERO; max_degree + 1];
+    for MonomialTerms { terms } in &first_worker.poly.products {
+        for term in terms {
+            let term_evaluations = term_round_evaluations_across_workers(workers, term, round);
+            evaluations
+                .iter_mut()
+                .zip_eq(term_evaluations)
+                .for_each(|(acc, eval)| *acc += eval);
+        }
+    }
+    evaluations
 }
 
 fn term_round_evaluations_across_workers<'a, E: ExtensionField>(
@@ -1009,7 +934,7 @@ fn term_round_evaluations_across_workers<'a, E: ExtensionField>(
                     .product
                     .iter()
                     .map(|&idx| {
-                        frontload_tail_worker_group_value(
+                        canonical_worker_group_value(
                             workers, layout, idx, round, lane, z, group_key,
                         )
                     })
@@ -1086,7 +1011,7 @@ impl TermWorkerLayout {
     }
 }
 
-fn frontload_tail_worker_group_value<'a, E: ExtensionField>(
+fn canonical_worker_group_value<'a, E: ExtensionField>(
     workers: &[WorkingState<'a, E>],
     layout: TermWorkerLayout,
     mle_idx: usize,
@@ -1157,7 +1082,7 @@ fn build_phase2_poly<'a, E: ExtensionField>(
         let mle = match meta {
             FrontloadPolyMeta::Normal => {
                 let remaining_num_vars = global_num_vars.saturating_sub(local_num_vars);
-                // At the phase boundary a split Normal MLE has three frontload-tail cases:
+                // At the phase boundary a split Normal MLE has three canonical cases:
                 // - exhausted in phase 1: all worker-bit variables were already bound, so sum
                 //   every worker scalar into one compact constant.
                 // - partially live in phase 2: some worker-bit variables were bound in phase 1
