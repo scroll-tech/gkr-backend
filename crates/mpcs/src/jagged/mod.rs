@@ -114,7 +114,7 @@ mod types;
 
 pub use assist::{assist_sumcheck_prove, compute_q_at_assist_point};
 pub use evaluator::{evaluate_g, evaluate_g_backward, evaluate_g_forward};
-pub use sumcheck::{JaggedSumcheckInput, jagged_sumcheck_prove};
+pub use sumcheck::{JaggedSumcheckInput, QPrimeEvaluations, jagged_sumcheck_prove};
 pub use types::{JaggedBatchOpenProof, JaggedCommitment, JaggedCommitmentWithWitness, JaggedProof};
 
 use std::{iter::once, marker::PhantomData};
@@ -482,35 +482,20 @@ pub fn jagged_batch_open<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme
 
     let eq_col = build_eq_x_r_vec(&z_col);
 
-    // Reconstruct the flat q' evaluation table from the inner PCS MLEs.
-    // The inner PCS stores w column MLEs; concatenating them gives q'[0..w*h].
+    // Reuse q' from the inner PCS MLEs. The inner PCS stores w column MLEs;
+    // indexing them as (index >> log_h, index & (h - 1)) gives q' without
+    // reconstructing a second flat buffer.
     let q_mles = InnerPcs::get_arc_mle_witness_from_commitment(&comm.inner);
     assert_eq!(q_mles.len(), w);
-    let q_evals_base_owned: Vec<E::BaseField>;
-    let q_evals_base: &[E::BaseField] = if w == 1 {
-        match q_mles[0].evaluations() {
-            FieldType::Base(slice) => slice,
-            _ => {
-                return Err(Error::InvalidPcsParam(
-                    "jagged_batch_open: expected base-field evaluations for q'".into(),
-                ));
-            }
-        }
-    } else {
-        let target_len = 1usize << num_giga_vars;
-        q_evals_base_owned = q_mles
-            .iter()
-            .flat_map(|mle| match mle.evaluations() {
-                FieldType::Base(slice) => slice.iter().copied(),
-                _ => unreachable!("expected base-field evaluations"),
-            })
-            .chain(std::iter::repeat_n(
-                E::BaseField::ZERO,
-                target_len - padded_total,
-            ))
-            .collect();
-        &q_evals_base_owned
-    };
+    let q_columns = q_mles
+        .iter()
+        .map(|mle| match mle.evaluations() {
+            FieldType::Base(slice) => Ok(slice.as_slice()),
+            _ => Err(Error::InvalidPcsParam(
+                "jagged_batch_open: expected base-field evaluations for q'".into(),
+            )),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     // Batched opening claim: v = Σ_i eq_col[i] · C_i · p_i(z_row[..s_i])
     // where C_i = Π_{j=s_i}^{max_s-1}(1 - z_row[j]) is the correction factor for poly i.
@@ -519,7 +504,10 @@ pub fn jagged_batch_open<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme
     // the jagged sumcheck sum Σ_{i,r} eq_col[i]*eq_row[r]*q'(t_i+r) equals the batched claim.
     let eq_row = build_eq_x_r_vec(&z_row);
     let input = JaggedSumcheckInput {
-        q_evals: q_evals_base,
+        q_evals: QPrimeEvaluations::Columns {
+            columns: q_columns,
+            log_h,
+        },
         num_giga_vars,
         cumulative_heights: &comm.cumulative_heights,
         eq_row,
