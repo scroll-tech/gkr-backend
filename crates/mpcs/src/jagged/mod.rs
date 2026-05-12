@@ -128,11 +128,7 @@ use multilinear_extensions::{
     util::ceil_log2,
     virtual_poly::{VPAuxInfo, build_eq_x_r_vec},
 };
-use p3::{
-    field::FieldAlgebra,
-    matrix::Matrix,
-    maybe_rayon::prelude::*,
-};
+use p3::{field::FieldAlgebra, matrix::Matrix, maybe_rayon::prelude::*};
 use serde::{Serialize, Serializer, de::DeserializeOwned};
 use std::sync::Arc;
 use transcript::Transcript;
@@ -335,7 +331,11 @@ fn flatten_padded_openings_as_native<E: ExtensionField>(
     poly_heights: &[usize],
     openings: Vec<(Point<E>, Vec<E>)>,
 ) -> Result<(Point<E>, Vec<E>), Error> {
-    let max_native_point_len = poly_heights.iter().map(|&h| ceil_log2(h)).max().unwrap_or(0);
+    let max_native_point_len = poly_heights
+        .iter()
+        .map(|&h| ceil_log2(h))
+        .max()
+        .unwrap_or(0);
     let mut common_point = vec![None; max_native_point_len];
     let mut evals = Vec::with_capacity(poly_heights.len());
     let mut poly_idx = 0;
@@ -752,9 +752,8 @@ where
         transcript: &mut impl Transcript<E>,
     ) -> Result<(), Error> {
         InnerPcs::write_commitment(&comm.inner, transcript)?;
-        transcript.append_field_element(&E::BaseField::from_canonical_usize(
-            comm.reshape_log_height,
-        ));
+        transcript
+            .append_field_element(&E::BaseField::from_canonical_usize(comm.reshape_log_height));
         transcript.append_field_element(&E::BaseField::from_canonical_usize(
             comm.cumulative_heights.len(),
         ));
@@ -789,10 +788,7 @@ where
 
     fn batch_open(
         pp: &Self::ProverParam,
-        rounds: Vec<(
-            &Self::CommitmentWithWitness,
-            Vec<(Point<E>, Vec<E>)>,
-        )>,
+        rounds: Vec<(&Self::CommitmentWithWitness, Vec<(Point<E>, Vec<E>)>)>,
         transcript: &mut impl Transcript<E>,
     ) -> Result<Self::Proof, Error> {
         let mut proofs = Vec::with_capacity(rounds.len());
@@ -829,10 +825,7 @@ where
 
     fn batch_verify(
         vp: &Self::VerifierParam,
-        rounds: Vec<(
-            Self::Commitment,
-            Vec<(usize, (Point<E>, Vec<E>))>,
-        )>,
+        rounds: Vec<(Self::Commitment, Vec<(usize, (Point<E>, Vec<E>))>)>,
         proof: &Self::Proof,
         transcript: &mut impl Transcript<E>,
     ) -> Result<(), Error> {
@@ -961,12 +954,7 @@ mod tests {
         // 3 logical rows with 4-way rotation occupy 12 real physical rows, padded to 16.
         let reshape_log_height = 4;
         let (pp, _vp) = setup_pcs::<E, Pcs>(reshape_log_height);
-        let rmm = WitnessRowMajorMatrix::new_by_rotation(
-            3,
-            2,
-            2,
-            InstancePaddingStrategy::Default,
-        );
+        let rmm = WitnessRowMajorMatrix::new_by_rotation(3, 2, 2, InstancePaddingStrategy::Default);
 
         let comm = jagged_commit::<E, Pcs>(&pp, vec![rmm], reshape_log_height)
             .expect("commit should succeed");
