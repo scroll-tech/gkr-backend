@@ -217,6 +217,10 @@ pub enum PowStrategy {
 
 pub trait PCSFriParam {
     fn get_pow_bits_by_level(&self, pow_strategy: PowStrategy) -> usize;
+
+    fn get_max_message_size_log(&self) -> usize {
+        usize::MAX
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -270,8 +274,9 @@ pub use basefold::{
 pub mod jagged;
 pub use jagged::{
     JaggedBatchOpenProof, JaggedCommitment, JaggedCommitmentWithWitness, JaggedSumcheckInput,
-    assist_sumcheck_prove, evaluate_g, evaluate_g_backward, evaluate_g_forward, jagged_batch_open,
-    jagged_batch_verify, jagged_commit, jagged_sumcheck_prove,
+    Jagged, JaggedProof, assist_sumcheck_prove, evaluate_g, evaluate_g_backward,
+    evaluate_g_forward, jagged_batch_open, jagged_batch_verify, jagged_commit,
+    jagged_sumcheck_prove,
 };
 #[cfg(feature = "whir")]
 extern crate whir as whir_external;

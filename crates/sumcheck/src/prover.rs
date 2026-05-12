@@ -17,6 +17,7 @@ use transcript::{Challenge, Transcript};
 
 use crate::{
     extrapolate::ExtrapolationCache,
+    frontload::{self, FrontloadProverState},
     macros::{entered_span, exit_span},
     structs::{
         IOPProof, IOPProverMessage, IOPProverState, ProverInnerContext, ReducedPeakMemoryContext,
@@ -116,6 +117,85 @@ impl<'a, E: ExtensionField> Phase1WorkerState<'a, E> {
 }
 
 impl<'a, E: ExtensionField> IOPProverState<'a, E> {
+    fn log_sumcheck_diag(virtual_poly: &VirtualPolynomials<'a, E>, mode: SumcheckProverMode) {
+        if std::env::var_os("CENO_SUMCHECK_DIAG").is_none() {
+            return;
+        }
+
+        let (polys, poly_meta) = virtual_poly.as_view().get_batched_polys();
+        let Some(first_poly) = polys.first() else {
+            tracing::info!("[sumcheck-diag] mode={mode:?} empty=true");
+            return;
+        };
+
+        let mut degree_hist = std::collections::BTreeMap::<usize, usize>::new();
+        let mut term_max_vars_hist = std::collections::BTreeMap::<usize, usize>::new();
+        let mut mixed_term_count = 0usize;
+        let mut phase2_only_mles = 0usize;
+        let mut normal_mles = 0usize;
+
+        for meta in &poly_meta {
+            match meta {
+                PolyMeta::Normal => normal_mles += 1,
+                PolyMeta::Phase2Only => phase2_only_mles += 1,
+            }
+        }
+
+        for monomial_terms in &first_poly.products {
+            for Term { product, .. } in &monomial_terms.terms {
+                *degree_hist.entry(product.len()).or_default() += 1;
+                let max_vars = product
+                    .iter()
+                    .map(|idx| first_poly.flattened_ml_extensions[*idx].num_vars())
+                    .max()
+                    .unwrap_or(0);
+                let min_vars = product
+                    .iter()
+                    .map(|idx| first_poly.flattened_ml_extensions[*idx].num_vars())
+                    .min()
+                    .unwrap_or(0);
+                if min_vars != max_vars {
+                    mixed_term_count += 1;
+                }
+                *term_max_vars_hist.entry(max_vars).or_default() += 1;
+            }
+        }
+
+        let total_terms = degree_hist.values().sum::<usize>();
+        tracing::info!(
+            "[sumcheck-diag] mode={mode:?} threads={} local_vars={} global_vars={} max_degree={} mles={} normal_mles={} phase2_only_mles={} products={} terms={} mixed_terms={} degree_hist={:?} term_max_vars_hist={:?}",
+            virtual_poly.num_threads,
+            first_poly.aux_info.max_num_variables,
+            first_poly.aux_info.max_num_variables + ceil_log2(virtual_poly.num_threads),
+            first_poly.aux_info.max_degree,
+            first_poly.flattened_ml_extensions.len(),
+            normal_mles,
+            phase2_only_mles,
+            first_poly.products.len(),
+            total_terms,
+            mixed_term_count,
+            degree_hist,
+            term_max_vars_hist,
+        );
+    }
+
+    fn from_frontload_state(
+        max_num_variables: usize,
+        state: FrontloadProverState<E>,
+    ) -> IOPProverState<'a, E> {
+        IOPProverState {
+            is_main_worker: true,
+            challenges: state.challenges,
+            inner_ctx: ProverInnerContext::from_mode(SumcheckProverMode::LegacyStable),
+            round: max_num_variables,
+            poly: VirtualPolynomial::default(),
+            max_num_variables,
+            poly_meta: vec![],
+            final_evaluations: Some(state.final_evaluations),
+            phase2_numvar: None,
+        }
+    }
+
     /// Given a virtual polynomial, generate an IOP proof.
     /// multi-threads model follow https://arxiv.org/pdf/2210.00264#page=8 "distributed sumcheck"
     /// This is experiment features. It's preferable that we move parallel level up more to
@@ -127,6 +207,16 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         fields(profiling_5)
     )]
     pub fn prove(
+        virtual_poly: VirtualPolynomials<'a, E>,
+        transcript: &mut impl Transcript<E>,
+    ) -> (IOPProof<E>, IOPProverState<'a, E>) {
+        if std::env::var_os("CENO_SUMCHECK_FORCE_SUFFIX").is_some() {
+            return Self::prove_suffix(virtual_poly, transcript);
+        }
+        Self::prove_with_mode(virtual_poly, transcript, SumcheckProverMode::Frontload)
+    }
+
+    pub fn prove_suffix(
         virtual_poly: VirtualPolynomials<'a, E>,
         transcript: &mut impl Transcript<E>,
     ) -> (IOPProof<E>, IOPProverState<'a, E>) {
@@ -149,6 +239,13 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         transcript: &mut impl Transcript<E>,
         mode: SumcheckProverMode,
     ) -> (IOPProof<E>, IOPProverState<'a, E>) {
+        Self::log_sumcheck_diag(&virtual_poly, mode);
+        if mode == SumcheckProverMode::Frontload {
+            let (proof, state) = frontload::prove_2phase(virtual_poly, transcript);
+            let prover_state = Self::from_frontload_state(proof.proofs.len(), state);
+            return (proof, prover_state);
+        }
+
         // Runtime mode is threaded through both phase-1 workers and merged phase-2 state
         // so a caller gets consistent flow selection for the full proof.
         let max_thread_id = virtual_poly.num_threads;
@@ -351,6 +448,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             round: 0,
             poly: polynomial,
             poly_meta: poly_meta.unwrap_or_else(|| vec![PolyMeta::Normal; num_polys]),
+            final_evaluations: None,
             phase2_numvar,
         }
     }
@@ -721,6 +819,9 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
 
     /// collect all mle evaluation (claim) after sumcheck
     pub fn get_mle_final_evaluations(&self) -> Vec<Vec<E>> {
+        if let Some(final_evaluations) = &self.final_evaluations {
+            return final_evaluations.clone();
+        }
         self.poly
             .flattened_ml_extensions
             .iter()
@@ -811,6 +912,11 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
     }
 
     pub fn set_prover_mode(&mut self, mode: SumcheckProverMode) {
+        assert_ne!(
+            mode,
+            SumcheckProverMode::Frontload,
+            "frontload mode is only available through IOPProverState::prove"
+        );
         // This resets mode-specific transient state (e.g. deferred r0) intentionally.
         self.inner_ctx = ProverInnerContext::from_mode(mode);
     }
@@ -821,6 +927,9 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
     }
 
     pub fn prover_mode(&self) -> SumcheckProverMode {
+        if self.final_evaluations.is_some() {
+            return SumcheckProverMode::Frontload;
+        }
         self.inner_ctx.mode()
     }
 }
@@ -911,6 +1020,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             round: 0,
             poly: polynomial,
             poly_meta,
+            final_evaluations: None,
             phase2_numvar: None,
         };
 

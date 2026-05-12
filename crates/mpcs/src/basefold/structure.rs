@@ -81,8 +81,25 @@ pub struct BasefoldVerifierParams<E: ExtensionField, Spec: BasefoldSpec<E>> {
     pub(super) security_level: SecurityLevel,
 }
 
-impl_pcs_fri_param!(BasefoldProverParams);
 impl_pcs_fri_param!(BasefoldVerifierParams);
+
+impl<E: ExtensionField, Spec: BasefoldSpec<E>> PCSFriParam for BasefoldProverParams<E, Spec> {
+    fn get_pow_bits_by_level(&self, pow_strategy: crate::PowStrategy) -> usize {
+        match (
+            &self.security_level,
+            pow_strategy,
+            <Spec::EncodingScheme as EncodingScheme<E>>::get_rate_log(),
+            <Spec::EncodingScheme as EncodingScheme<E>>::get_number_queries(),
+        ) {
+            (SecurityLevel::Conjecture100bits, crate::PowStrategy::FriPow, 1, 100) => 16,
+            _ => unimplemented!(),
+        }
+    }
+
+    fn get_max_message_size_log(&self) -> usize {
+        self.encoding_params.get_max_message_size_log()
+    }
+}
 
 /// A polynomial commitment together with all the data (e.g., the codeword, and Merkle tree)
 /// used to generate this commitment and for assistant in opening

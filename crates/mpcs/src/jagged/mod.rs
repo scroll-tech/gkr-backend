@@ -115,27 +115,47 @@ mod types;
 pub use assist::{assist_sumcheck_prove, compute_q_at_assist_point};
 pub use evaluator::{evaluate_g, evaluate_g_backward, evaluate_g_forward};
 pub use sumcheck::{JaggedSumcheckInput, jagged_sumcheck_prove};
-pub use types::{JaggedBatchOpenProof, JaggedCommitment, JaggedCommitmentWithWitness};
+pub use types::{JaggedBatchOpenProof, JaggedCommitment, JaggedCommitmentWithWitness, JaggedProof};
 
 use std::{iter::once, marker::PhantomData};
 
-use crate::{Error, PolynomialCommitmentScheme};
+use crate::{Error, PCSFriParam, Point, PolynomialCommitmentScheme};
 use ::sumcheck::structs::IOPVerifierState;
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use multilinear_extensions::{
-    mle::FieldType,
+    mle::{ArcMultilinearExtension, FieldType},
     util::ceil_log2,
     virtual_poly::{VPAuxInfo, build_eq_x_r_vec},
 };
 use p3::{
     field::FieldAlgebra,
-    matrix::{Matrix, dense::RowMajorMatrix},
+    matrix::Matrix,
     maybe_rayon::prelude::*,
 };
+use serde::{Serialize, Serializer, de::DeserializeOwned};
+use std::sync::Arc;
 use transcript::Transcript;
 use types::int_to_field_bits;
 use witness::{InstancePaddingStrategy, RowMajorMatrix as WitnessRowMajorMatrix};
+
+#[derive(Debug)]
+pub struct Jagged<InnerPcs>(PhantomData<InnerPcs>);
+
+impl<InnerPcs> Clone for Jagged<InnerPcs> {
+    fn clone(&self) -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<InnerPcs> Serialize for Jagged<InnerPcs> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str("jagged")
+    }
+}
 
 /// Commit to a sequence of row-major matrices using the Jagged PCS scheme.
 ///
@@ -155,7 +175,7 @@ use witness::{InstancePaddingStrategy, RowMajorMatrix as WitnessRowMajorMatrix};
 /// Any error from the inner `InnerPcs::batch_commit` is propagated as-is.
 pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>(
     pp: &InnerPcs::ProverParam,
-    rmms: Vec<RowMajorMatrix<E::BaseField>>,
+    rmms: Vec<WitnessRowMajorMatrix<E::BaseField>>,
     reshape_log_height: usize,
 ) -> Result<JaggedCommitmentWithWitness<E, InnerPcs>, Error> {
     if rmms.is_empty() {
@@ -164,10 +184,15 @@ pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
         ));
     }
 
+    let polys = rmms
+        .iter()
+        .flat_map(|rmm| rmm.to_mles().into_iter().map(Arc::new))
+        .collect_vec();
+
     // --- Step 1: Compute cumulative heights from real matrix heights ---
     let mut poly_heights: Vec<usize> = Vec::new();
     for rmm in &rmms {
-        let num_rows = rmm.height();
+        let num_rows = rmm.occupied_physical_rows();
         let num_cols = rmm.width();
 
         if num_rows == 0 {
@@ -215,7 +240,7 @@ pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
     let mut poly_idx = 0;
     for rmm in rmms {
         let n_cols = rmm.width();
-        let n_rows = rmm.height();
+        let n_rows = rmm.occupied_physical_rows();
         let n_cells = n_cols * n_rows;
 
         // The start position in `concatenated` for this matrix's block of polynomials.
@@ -229,6 +254,7 @@ pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
             .for_each(|(j, chunk)| {
                 rmm.values
                     .iter()
+                    .take(n_cells)
                     .skip(j)
                     .step_by(n_cols)
                     .zip_eq(chunk.iter_mut())
@@ -239,7 +265,7 @@ pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
     }
 
     // --- Step 4: Reshape and commit via the inner PCS ---
-    let log_h = reshape_log_height;
+    let log_h = reshape_log_height.min(ceil_log2(total_size.max(1)));
     let h = 1usize << log_h;
     let w = total_size.div_ceil(h);
 
@@ -288,8 +314,102 @@ pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
         inner,
         cumulative_heights,
         poly_heights,
-        reshape_log_height,
+        reshape_log_height: log_h,
+        polys,
     })
+}
+
+fn default_reshape_log_height<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>(
+    pp: &InnerPcs::ProverParam,
+    rmms: &[WitnessRowMajorMatrix<E::BaseField>],
+) -> usize {
+    let total_evals = rmms
+        .iter()
+        .map(|rmm| rmm.occupied_physical_rows() * rmm.width())
+        .sum::<usize>();
+    let total_log = ceil_log2(total_evals.max(1));
+    pp.get_max_message_size_log().min(total_log)
+}
+
+fn flatten_openings<E: ExtensionField>(
+    poly_heights: &[usize],
+    openings: Vec<(Point<E>, Vec<E>)>,
+) -> Result<(Point<E>, Vec<E>), Error> {
+    let openings = openings
+        .into_iter()
+        .map(|(point, evals)| (point.len(), point, evals))
+        .collect_vec();
+    let (point, evals, _) = flatten_openings_with_num_vars(poly_heights, openings)?;
+    Ok((point, evals))
+}
+
+fn flatten_openings_with_num_vars<E: ExtensionField>(
+    poly_heights: &[usize],
+    openings: Vec<(usize, Point<E>, Vec<E>)>,
+) -> Result<(Point<E>, Vec<E>, Vec<usize>), Error> {
+    let max_point_len = openings
+        .iter()
+        .map(|(_, point, _)| point.len())
+        .max()
+        .unwrap_or(0);
+    let mut common_point = vec![None; max_point_len];
+    let mut evals = Vec::with_capacity(poly_heights.len());
+    let mut eval_num_vars = Vec::with_capacity(poly_heights.len());
+    let mut poly_idx = 0;
+
+    for (num_vars, point, point_evals) in openings {
+        if num_vars > point.len() {
+            return Err(Error::InvalidPcsParam(format!(
+                "jagged: opening num_vars {} exceeds point length {}",
+                num_vars,
+                point.len()
+            )));
+        }
+        for value in point_evals {
+            let height = poly_heights.get(poly_idx).ok_or_else(|| {
+                Error::InvalidPcsParam("jagged: too many opening evaluations".to_string())
+            })?;
+            let min_num_vars = ceil_log2(*height);
+            if num_vars < min_num_vars {
+                return Err(Error::InvalidPcsParam(format!(
+                    "jagged: opening num_vars {} is smaller than poly num_vars {}",
+                    num_vars, min_num_vars
+                )));
+            }
+            for (dst, src) in common_point.iter_mut().zip(point.iter()) {
+                match dst {
+                    Some(existing) if *existing != *src => {
+                        return Err(Error::InvalidPcsParam(
+                            "jagged: opening points are not prefix-compatible".to_string(),
+                        ));
+                    }
+                    Some(_) => {}
+                    None => *dst = Some(*src),
+                }
+            }
+            evals.push(value);
+            eval_num_vars.push(num_vars);
+            poly_idx += 1;
+        }
+    }
+
+    if poly_idx != poly_heights.len() {
+        return Err(Error::InvalidPcsParam(format!(
+            "jagged: expected {} opening evaluations, got {}",
+            poly_heights.len(),
+            poly_idx
+        )));
+    }
+
+    let point = common_point
+        .into_iter()
+        .map(|value| {
+            value.ok_or_else(|| {
+                Error::InvalidPcsParam("jagged: missing common opening point".to_string())
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((point, evals, eval_num_vars))
 }
 
 // ---------------------------------------------------------------------------
@@ -487,12 +607,47 @@ pub fn jagged_batch_verify<E: ExtensionField, InnerPcs: PolynomialCommitmentSche
     proof: &JaggedBatchOpenProof<E, InnerPcs>,
     transcript: &mut impl Transcript<E>,
 ) -> Result<(), Error> {
+    let eval_num_vars = comm
+        .cumulative_heights
+        .windows(2)
+        .map(|window| ceil_log2(window[1] - window[0]))
+        .collect_vec();
+    jagged_batch_verify_with_eval_num_vars::<E, InnerPcs>(
+        vp,
+        comm,
+        point,
+        evals,
+        &eval_num_vars,
+        proof,
+        transcript,
+    )
+}
+
+fn jagged_batch_verify_with_eval_num_vars<
+    E: ExtensionField,
+    InnerPcs: PolynomialCommitmentScheme<E>,
+>(
+    vp: &InnerPcs::VerifierParam,
+    comm: &JaggedCommitment<E, InnerPcs>,
+    point: &[E],
+    evals: &[E],
+    eval_num_vars: &[usize],
+    proof: &JaggedBatchOpenProof<E, InnerPcs>,
+    transcript: &mut impl Transcript<E>,
+) -> Result<(), Error> {
     let num_polys = comm.cumulative_heights.len() - 1;
     if evals.len() != num_polys {
         return Err(Error::InvalidPcsOpen(format!(
             "jagged_batch_verify: expected {} evals, got {}",
             num_polys,
             evals.len()
+        )));
+    }
+    if eval_num_vars.len() != num_polys {
+        return Err(Error::InvalidPcsOpen(format!(
+            "jagged_batch_verify: expected {} eval num_vars, got {}",
+            num_polys,
+            eval_num_vars.len()
         )));
     }
 
@@ -503,7 +658,6 @@ pub fn jagged_batch_verify<E: ExtensionField, InnerPcs: PolynomialCommitmentSche
     let padded_total = w * h;
     let num_giga_vars = ceil_log2(padded_total);
     let max_s = point.len();
-
     let z_row: Vec<E> = point.to_vec();
 
     // Replay transcript: write evals, sample z_col.
@@ -513,7 +667,7 @@ pub fn jagged_batch_verify<E: ExtensionField, InnerPcs: PolynomialCommitmentSche
 
     // Batched opening claim: v = Σ_i eq_col[i] · C_i · evals[i]
     // where C_i = eq(z_row[s_i..], 0) = Π_{j=s_i}^{max_s-1} (1 - z_row[j]) is the
-    // correction factor from zero-padding p_i to max_s variables (see module docs).
+    // correction factor from zero-padding p_i to max_s variables.
     let eq_col = build_eq_x_r_vec(&z_col);
     let mut tail_zero_prod = vec![E::ONE; max_s + 1];
     for j in (0..max_s).rev() {
@@ -521,8 +675,7 @@ pub fn jagged_batch_verify<E: ExtensionField, InnerPcs: PolynomialCommitmentSche
     }
     let claimed_sum: E = (0..num_polys)
         .map(|i| {
-            let h_i = comm.cumulative_heights[i + 1] - comm.cumulative_heights[i];
-            let s_i = ceil_log2(h_i);
+            let s_i = eval_num_vars[i];
             eq_col[i] * tail_zero_prod[s_i] * evals[i]
         })
         .sum();
@@ -611,6 +764,177 @@ pub fn jagged_batch_verify<E: ExtensionField, InnerPcs: PolynomialCommitmentSche
     Ok(())
 }
 
+impl<E, InnerPcs> PolynomialCommitmentScheme<E> for Jagged<InnerPcs>
+where
+    E: ExtensionField + Serialize + DeserializeOwned,
+    E::BaseField: Serialize + DeserializeOwned,
+    InnerPcs: PolynomialCommitmentScheme<E>,
+{
+    type Param = InnerPcs::Param;
+    type ProverParam = InnerPcs::ProverParam;
+    type VerifierParam = InnerPcs::VerifierParam;
+    type CommitmentWithWitness = JaggedCommitmentWithWitness<E, InnerPcs>;
+    type Commitment = JaggedCommitment<E, InnerPcs>;
+    type CommitmentChunk = InnerPcs::CommitmentChunk;
+    type Proof = JaggedProof<E, InnerPcs>;
+
+    fn setup(poly_size: usize, security_level: crate::SecurityLevel) -> Result<Self::Param, Error> {
+        InnerPcs::setup(poly_size, security_level)
+    }
+
+    fn trim(
+        param: Self::Param,
+        poly_size: usize,
+    ) -> Result<(Self::ProverParam, Self::VerifierParam), Error> {
+        InnerPcs::trim(param, poly_size)
+    }
+
+    fn commit(
+        pp: &Self::ProverParam,
+        rmm: WitnessRowMajorMatrix<E::BaseField>,
+    ) -> Result<Self::CommitmentWithWitness, Error> {
+        Self::batch_commit(pp, vec![rmm])
+    }
+
+    fn write_commitment(
+        comm: &Self::Commitment,
+        transcript: &mut impl Transcript<E>,
+    ) -> Result<(), Error> {
+        InnerPcs::write_commitment(&comm.inner, transcript)?;
+        transcript.append_field_element(&E::BaseField::from_canonical_usize(
+            comm.reshape_log_height,
+        ));
+        transcript.append_field_element(&E::BaseField::from_canonical_usize(
+            comm.cumulative_heights.len(),
+        ));
+        for height in &comm.cumulative_heights {
+            transcript.append_field_element(&E::BaseField::from_canonical_usize(*height));
+        }
+        Ok(())
+    }
+
+    fn get_pure_commitment(comm: &Self::CommitmentWithWitness) -> Self::Commitment {
+        comm.to_commitment()
+    }
+
+    fn batch_commit(
+        pp: &Self::ProverParam,
+        rmms: Vec<WitnessRowMajorMatrix<E::BaseField>>,
+    ) -> Result<Self::CommitmentWithWitness, Error> {
+        let reshape_log_height = default_reshape_log_height::<E, InnerPcs>(pp, &rmms);
+        jagged_commit::<E, InnerPcs>(pp, rmms, reshape_log_height)
+    }
+
+    fn open(
+        _pp: &Self::ProverParam,
+        _poly: &ArcMultilinearExtension<E>,
+        _comm: &Self::CommitmentWithWitness,
+        _point: &[E],
+        _eval: &E,
+        _transcript: &mut impl Transcript<E>,
+    ) -> Result<Self::Proof, Error> {
+        unimplemented!()
+    }
+
+    fn batch_open(
+        pp: &Self::ProverParam,
+        rounds: Vec<(
+            &Self::CommitmentWithWitness,
+            Vec<(Point<E>, Vec<E>)>,
+        )>,
+        transcript: &mut impl Transcript<E>,
+    ) -> Result<Self::Proof, Error> {
+        let mut proofs = Vec::with_capacity(rounds.len());
+        for (comm, openings) in rounds {
+            let (point, evals) = flatten_openings(&comm.poly_heights, openings)?;
+            proofs.push(jagged_batch_open::<E, InnerPcs>(
+                pp, comm, &point, &evals, transcript,
+            )?);
+        }
+        Ok(JaggedProof { rounds: proofs })
+    }
+
+    fn simple_batch_open(
+        _pp: &Self::ProverParam,
+        _polys: &[ArcMultilinearExtension<E>],
+        _comm: &Self::CommitmentWithWitness,
+        _point: &[E],
+        _evals: &[E],
+        _transcript: &mut impl Transcript<E>,
+    ) -> Result<Self::Proof, Error> {
+        unimplemented!()
+    }
+
+    fn verify(
+        _vp: &Self::VerifierParam,
+        _comm: &Self::Commitment,
+        _point: &[E],
+        _eval: &E,
+        _proof: &Self::Proof,
+        _transcript: &mut impl Transcript<E>,
+    ) -> Result<(), Error> {
+        unimplemented!()
+    }
+
+    fn batch_verify(
+        vp: &Self::VerifierParam,
+        rounds: Vec<(
+            Self::Commitment,
+            Vec<(usize, (Point<E>, Vec<E>))>,
+        )>,
+        proof: &Self::Proof,
+        transcript: &mut impl Transcript<E>,
+    ) -> Result<(), Error> {
+        if rounds.len() != proof.rounds.len() {
+            return Err(Error::InvalidPcsOpeningProof(format!(
+                "jagged: expected {} proof rounds, got {}",
+                rounds.len(),
+                proof.rounds.len()
+            )));
+        }
+        for ((comm, openings), round_proof) in rounds.into_iter().zip_eq(proof.rounds.iter()) {
+            let poly_heights = comm
+                .cumulative_heights
+                .windows(2)
+                .map(|window| window[1] - window[0])
+                .collect_vec();
+            let openings = openings
+                .into_iter()
+                .map(|(num_vars, (point, evals))| (num_vars, point, evals))
+                .collect_vec();
+            let (point, evals, eval_num_vars) =
+                flatten_openings_with_num_vars(&poly_heights, openings)?;
+            jagged_batch_verify_with_eval_num_vars::<E, InnerPcs>(
+                vp,
+                &comm,
+                &point,
+                &evals,
+                &eval_num_vars,
+                round_proof,
+                transcript,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn simple_batch_verify(
+        _vp: &Self::VerifierParam,
+        _comm: &Self::Commitment,
+        _point: &[E],
+        _evals: &[E],
+        _proof: &Self::Proof,
+        _transcript: &mut impl Transcript<E>,
+    ) -> Result<(), Error> {
+        unimplemented!()
+    }
+
+    fn get_arc_mle_witness_from_commitment(
+        commitment: &Self::CommitmentWithWitness,
+    ) -> Vec<ArcMultilinearExtension<'static, E>> {
+        commitment.polys.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,17 +944,20 @@ mod tests {
     };
     use ff_ext::GoldilocksExt2;
     use multilinear_extensions::mle::MultilinearExtension;
-    use p3::{field::FieldAlgebra, goldilocks::Goldilocks};
+    use p3::{field::FieldAlgebra, goldilocks::Goldilocks, matrix::dense::RowMajorMatrix};
 
     type F = Goldilocks;
     type E = GoldilocksExt2;
     type Pcs = Basefold<E, BasefoldRSParams>;
 
-    fn make_rmm(num_rows: usize, num_cols: usize) -> RowMajorMatrix<F> {
+    fn make_rmm(num_rows: usize, num_cols: usize) -> WitnessRowMajorMatrix<F> {
         let values: Vec<F> = (0..num_rows * num_cols)
             .map(|i| F::from_canonical_u64(i as u64 + 1))
             .collect();
-        RowMajorMatrix::new(values, num_cols)
+        WitnessRowMajorMatrix::new_by_inner_matrix(
+            RowMajorMatrix::new(values, num_cols),
+            InstancePaddingStrategy::Default,
+        )
     }
 
     #[test]
@@ -688,6 +1015,27 @@ mod tests {
     }
 
     #[test]
+    fn test_jagged_commit_uses_unpadded_physical_rotation_height() {
+        // 3 logical rows with 4-way rotation occupy 12 real physical rows, padded to 16.
+        let reshape_log_height = 4;
+        let (pp, _vp) = setup_pcs::<E, Pcs>(reshape_log_height);
+        let rmm = WitnessRowMajorMatrix::new_by_rotation(
+            3,
+            2,
+            2,
+            InstancePaddingStrategy::Default,
+        );
+
+        let comm = jagged_commit::<E, Pcs>(&pp, vec![rmm], reshape_log_height)
+            .expect("commit should succeed");
+
+        assert_eq!(comm.num_polys(), 2);
+        assert_eq!(comm.poly_heights, vec![12, 12]);
+        assert_eq!(comm.cumulative_heights, vec![0, 12, 24]);
+        assert_eq!(comm.total_evaluations(), 24);
+    }
+
+    #[test]
     fn test_jagged_commit_smoke() {
         // Two matrices: 4x1 and 4x2 → 3 polynomials, total 12 evals, padded to 16
         let num_giga_vars = 4;
@@ -736,14 +1084,15 @@ mod tests {
     use rand::thread_rng;
     use transcript::basic::BasicTranscript;
 
-    /// Evaluate a single column polynomial at `point`, zero-padding to `2^point.len()`.
+    /// Evaluate a single column polynomial at its native prefix of `point`.
     fn eval_column_poly_at_point(col_evals: &[F], point: &[E]) -> E {
-        let s = point.len();
+        let s = ceil_log2(col_evals.len());
+        assert!(point.len() >= s);
         assert!(col_evals.len() <= 1 << s);
         let mut padded = col_evals.to_vec();
         padded.resize(1 << s, F::ZERO);
         let mle = MultilinearExtension::from_evaluations_vec(s, padded);
-        mle.evaluate(point)
+        mle.evaluate(&point[..s])
     }
 
     #[test]
@@ -773,13 +1122,13 @@ mod tests {
         Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_p).unwrap();
 
         // Random evaluation point of length max_s.
-        // Poly i with s_i variables is evaluated at the prefix point[..s_i].
+        // Poly i is evaluated at its native prefix of the common point.
         let point: Vec<E> = (0..max_s).map(|_| E::random(&mut rng)).collect();
 
         let evals: Vec<E> = col_polys
             .iter()
             .zip(log_heights.iter())
-            .map(|(col, &s_i)| eval_column_poly_at_point(col, &point[..s_i]))
+            .map(|(col, _)| eval_column_poly_at_point(col, &point))
             .collect();
 
         // Prover: batch open.
@@ -865,7 +1214,7 @@ mod tests {
         let evals: Vec<E> = col_polys
             .iter()
             .zip(log_heights.iter())
-            .map(|(col, &s_i)| eval_column_poly_at_point(col, &point[..s_i]))
+            .map(|(col, _)| eval_column_poly_at_point(col, &point))
             .collect();
 
         let proof = jagged_batch_open::<E, Pcs>(&pp, &comm, &point, &evals, &mut transcript_p)
@@ -1008,7 +1357,7 @@ mod tests {
         let evals: Vec<E> = col_polys
             .iter()
             .zip(log_heights.iter())
-            .map(|(col, &s_i)| eval_column_poly_at_point(col, &point[..s_i]))
+            .map(|(col, _)| eval_column_poly_at_point(col, &point))
             .collect();
 
         let proof = jagged_batch_open::<E, Pcs>(&pp, &comm, &point, &evals, &mut transcript_p)
@@ -1027,5 +1376,54 @@ mod tests {
             &mut transcript_v,
         )
         .expect("batch verify should succeed");
+    }
+
+    #[test]
+    fn test_jagged_reshape_non_power_of_two_heights() {
+        let mut rng = thread_rng();
+
+        let heights = [1023usize, 777, 513];
+        let log_heights: Vec<usize> = heights.iter().map(|&h| ceil_log2(h)).collect();
+        let max_s = *log_heights.iter().max().unwrap();
+        let total_evals: usize = heights.iter().sum();
+        let reshape_log_height = 8;
+        let h = 1usize << reshape_log_height;
+        let w = total_evals.div_ceil(h);
+
+        let (pp, vp) = setup_pcs::<E, Pcs>(reshape_log_height);
+        let rmms: Vec<_> = heights.iter().map(|&h| make_rmm(h, 1)).collect();
+
+        let col_polys: Vec<Vec<F>> = rmms
+            .iter()
+            .map(|rmm| (0..rmm.height()).map(|r| rmm.values[r]).collect())
+            .collect();
+
+        let mut transcript_p = BasicTranscript::<E>::new(b"jagged_reshape_non_power");
+        let comm = jagged_commit::<E, Pcs>(&pp, rmms, reshape_log_height).expect("commit");
+        Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_p).unwrap();
+
+        let point: Vec<E> = (0..max_s).map(|_| E::random(&mut rng)).collect();
+        let evals: Vec<E> = col_polys
+            .iter()
+            .zip(log_heights.iter())
+            .map(|(col, _)| eval_column_poly_at_point(col, &point))
+            .collect();
+
+        let proof = jagged_batch_open::<E, Pcs>(&pp, &comm, &point, &evals, &mut transcript_p)
+            .expect("batch open");
+        assert_eq!(proof.col_evals.len(), w);
+
+        let mut transcript_v = BasicTranscript::<E>::new(b"jagged_reshape_non_power");
+        Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_v).unwrap();
+
+        jagged_batch_verify::<E, Pcs>(
+            &vp,
+            &comm.to_commitment(),
+            &point,
+            &evals,
+            &proof,
+            &mut transcript_v,
+        )
+        .expect("batch verify");
     }
 }
