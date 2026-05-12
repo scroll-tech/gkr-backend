@@ -1,6 +1,8 @@
 use criterion::*;
 use ff_ext::{BabyBearExt4, ExtensionField, FieldFrom, FromUniformBytes};
-use mpcs::{JaggedSumcheckInput, assist_sumcheck_prove, jagged_sumcheck_prove};
+use mpcs::jagged::{
+    JaggedSumcheckInput, QPrimeEvaluations, assist_sumcheck_prove, jagged_sumcheck_prove,
+};
 use multilinear_extensions::{util::ceil_log2, virtual_poly::build_eq_x_r_vec};
 use rand::thread_rng;
 use transcript::BasicTranscript;
@@ -40,7 +42,7 @@ fn bench_jagged_sumcheck(c: &mut Criterion) {
         let z_col: Vec<E> = (0..z_col_vars).map(|_| E::random(&mut rng)).collect();
 
         let input = JaggedSumcheckInput {
-            q_evals: &q_evals,
+            q_evals: QPrimeEvaluations::Flat(&q_evals),
             num_giga_vars,
             cumulative_heights: &cumulative_heights,
             eq_row: build_eq_x_r_vec(&z_row),
