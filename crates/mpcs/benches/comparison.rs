@@ -8,8 +8,8 @@ use mpcs::{
 };
 use multilinear_extensions::{util::ceil_log2, virtual_poly::build_eq_x_r_vec_sequential};
 use p3::{
-    field::FieldAlgebra,
     babybear::BabyBear,
+    field::FieldAlgebra,
     matrix::{Matrix, dense::RowMajorMatrix},
     maybe_rayon::prelude::*,
 };
@@ -82,7 +82,7 @@ fn bench_comparison(c: &mut Criterion) {
     let evals: Vec<E> = rmms
         .iter()
         .zip(log_heights.iter())
-        .flat_map(|(rmm, &s_i)| eval_all_columns_at_point(rmm, &point[(max_s - s_i)..]))
+        .flat_map(|(rmm, &s_i)| eval_all_columns_at_point(rmm, &point[..s_i]))
         .collect();
 
     // Per-matrix points and evals (used by direct batch_open).
@@ -90,7 +90,7 @@ fn bench_comparison(c: &mut Criterion) {
         .iter()
         .enumerate()
         .map(|(i, &s_i)| {
-            let matrix_point = point[(max_s - s_i)..].to_vec();
+            let matrix_point = point[..s_i].to_vec();
             let matrix_evals = evals[i * NUM_COLS..(i + 1) * NUM_COLS].to_vec();
             (matrix_point, matrix_evals)
         })
@@ -269,7 +269,7 @@ fn bench_comparison(c: &mut Criterion) {
         .iter()
         .enumerate()
         .map(|(i, &s_i)| {
-            let matrix_point = point[(max_s - s_i)..].to_vec();
+            let matrix_point = point[..s_i].to_vec();
             let matrix_evals = evals[i * NUM_COLS..(i + 1) * NUM_COLS].to_vec();
             (s_i, (matrix_point, matrix_evals))
         })
