@@ -7,12 +7,7 @@ use mpcs::{
     jagged_batch_verify, jagged_commit,
 };
 use multilinear_extensions::{util::ceil_log2, virtual_poly::build_eq_x_r_vec_sequential};
-use p3::{
-    babybear::BabyBear,
-    field::FieldAlgebra,
-    matrix::{Matrix, dense::RowMajorMatrix},
-    maybe_rayon::prelude::*,
-};
+use p3::{babybear::BabyBear, field::FieldAlgebra, matrix::Matrix, maybe_rayon::prelude::*};
 use rand::{Rng, thread_rng};
 use transcript::{BasicTranscript, Transcript};
 use witness::{InstancePaddingStrategy, RowMajorMatrix as WitnessRowMajorMatrix};
@@ -25,12 +20,12 @@ const NUM_SAMPLES: usize = 10;
 const NUM_MATRICES: usize = 35;
 const NUM_COLS: usize = 32;
 
-fn make_rmm(num_rows: usize, num_cols: usize) -> RowMajorMatrix<F> {
+fn make_rmm(num_rows: usize, num_cols: usize) -> WitnessRowMajorMatrix<F> {
     let values: Vec<F> = (0..num_rows * num_cols)
         .into_par_iter()
         .map(|i| F::from_canonical_u32(((i as u64 * 13 + 7) % (1 << 30)) as u32))
         .collect();
-    RowMajorMatrix::new(values, num_cols)
+    WitnessRowMajorMatrix::new_by_values(values, num_cols, InstancePaddingStrategy::Default)
 }
 
 fn sample_heights(rng: &mut impl Rng, num_matrices: usize) -> Vec<usize> {
@@ -45,7 +40,7 @@ fn sample_heights(rng: &mut impl Rng, num_matrices: usize) -> Vec<usize> {
         .collect()
 }
 
-fn eval_all_columns_at_point(rmm: &RowMajorMatrix<F>, point: &[E]) -> Vec<E> {
+fn eval_all_columns_at_point(rmm: &WitnessRowMajorMatrix<F>, point: &[E]) -> Vec<E> {
     let w = rmm.width();
     let eq = build_eq_x_r_vec_sequential(point);
     let mut col_evals = vec![E::ZERO; w];
@@ -190,19 +185,6 @@ fn bench_comparison(c: &mut Criterion) {
     });
 
     // ======================== Direct Inner PCS ========================
-    // Pcs::batch_commit expects witness::RowMajorMatrix, so convert.
-    let to_witness = |rmms: &[RowMajorMatrix<F>]| -> Vec<WitnessRowMajorMatrix<F>> {
-        rmms.iter()
-            .map(|rmm| {
-                WitnessRowMajorMatrix::new_by_values(
-                    rmm.values.clone(),
-                    rmm.width(),
-                    InstancePaddingStrategy::Default,
-                )
-            })
-            .collect()
-    };
-
     let direct_poly_size = 1usize << max_s;
     let direct_param = Pcs::setup(direct_poly_size, SecurityLevel::Conjecture100bits).unwrap();
     let (direct_pp, direct_vp) = Pcs::trim(direct_param, direct_poly_size).unwrap();
@@ -211,9 +193,8 @@ fn bench_comparison(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let mut time = Duration::new(0, 0);
             for _ in 0..iters {
-                let w_rmms = to_witness(&rmms);
                 let instant = std::time::Instant::now();
-                let _ = Pcs::batch_commit(&direct_pp, w_rmms).unwrap();
+                let _ = Pcs::batch_commit(&direct_pp, rmms.clone()).unwrap();
                 time += instant.elapsed();
             }
             time
@@ -221,7 +202,7 @@ fn bench_comparison(c: &mut Criterion) {
     });
 
     let t0 = std::time::Instant::now();
-    let direct_comm = Pcs::batch_commit(&direct_pp, to_witness(&rmms)).unwrap();
+    let direct_comm = Pcs::batch_commit(&direct_pp, rmms.clone()).unwrap();
     println!("direct_commit: {:?}", t0.elapsed());
     let direct_pure_comm = Pcs::get_pure_commitment(&direct_comm);
 

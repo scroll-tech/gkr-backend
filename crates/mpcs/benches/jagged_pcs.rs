@@ -7,14 +7,10 @@ use mpcs::{
     jagged_commit,
 };
 use multilinear_extensions::{util::ceil_log2, virtual_poly::build_eq_x_r_vec_sequential};
-use p3::{
-    babybear::BabyBear,
-    field::FieldAlgebra,
-    matrix::{Matrix, dense::RowMajorMatrix},
-    maybe_rayon::prelude::*,
-};
+use p3::{babybear::BabyBear, field::FieldAlgebra, matrix::Matrix, maybe_rayon::prelude::*};
 use rand::{Rng, thread_rng};
 use transcript::BasicTranscript;
+use witness::{InstancePaddingStrategy, RowMajorMatrix as WitnessRowMajorMatrix};
 
 type E = BabyBearExt4;
 type F = BabyBear;
@@ -24,12 +20,12 @@ const NUM_SAMPLES: usize = 10;
 const NUM_MATRICES: usize = 30;
 const NUM_COLS: usize = 32;
 
-fn make_rmm(num_rows: usize, num_cols: usize) -> RowMajorMatrix<F> {
+fn make_rmm(num_rows: usize, num_cols: usize) -> WitnessRowMajorMatrix<F> {
     let values: Vec<F> = (0..num_rows * num_cols)
         .into_par_iter()
         .map(|i| F::from_canonical_u32(((i as u64 * 13 + 7) % (1 << 30)) as u32))
         .collect();
-    RowMajorMatrix::new(values, num_cols)
+    WitnessRowMajorMatrix::new_by_values(values, num_cols, InstancePaddingStrategy::Default)
 }
 
 fn sample_heights(rng: &mut impl Rng, num_matrices: usize) -> Vec<usize> {
@@ -45,7 +41,7 @@ fn sample_heights(rng: &mut impl Rng, num_matrices: usize) -> Vec<usize> {
         .collect()
 }
 
-fn eval_all_columns_at_point(rmm: &RowMajorMatrix<F>, point: &[E]) -> Vec<E> {
+fn eval_all_columns_at_point(rmm: &WitnessRowMajorMatrix<F>, point: &[E]) -> Vec<E> {
     let w = rmm.width();
     let eq = build_eq_x_r_vec_sequential(point);
     let mut col_evals = vec![E::ZERO; w];
