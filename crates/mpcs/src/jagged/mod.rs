@@ -331,49 +331,26 @@ fn default_reshape_log_height<E: ExtensionField, InnerPcs: PolynomialCommitmentS
     pp.get_max_message_size_log().min(total_log)
 }
 
-fn flatten_openings<E: ExtensionField>(
+fn flatten_padded_openings_as_native<E: ExtensionField>(
     poly_heights: &[usize],
     openings: Vec<(Point<E>, Vec<E>)>,
 ) -> Result<(Point<E>, Vec<E>), Error> {
-    let openings = openings
-        .into_iter()
-        .map(|(point, evals)| (point.len(), point, evals))
-        .collect_vec();
-    let (point, evals, _) = flatten_openings_with_num_vars(poly_heights, openings)?;
-    Ok((point, evals))
-}
-
-fn flatten_openings_with_num_vars<E: ExtensionField>(
-    poly_heights: &[usize],
-    openings: Vec<(usize, Point<E>, Vec<E>)>,
-) -> Result<(Point<E>, Vec<E>, Vec<usize>), Error> {
-    let max_point_len = openings
-        .iter()
-        .map(|(_, point, _)| point.len())
-        .max()
-        .unwrap_or(0);
-    let mut common_point = vec![None; max_point_len];
+    let max_native_point_len = poly_heights.iter().map(|&h| ceil_log2(h)).max().unwrap_or(0);
+    let mut common_point = vec![None; max_native_point_len];
     let mut evals = Vec::with_capacity(poly_heights.len());
-    let mut eval_num_vars = Vec::with_capacity(poly_heights.len());
     let mut poly_idx = 0;
 
-    for (num_vars, point, point_evals) in openings {
-        if num_vars > point.len() {
-            return Err(Error::InvalidPcsParam(format!(
-                "jagged: opening num_vars {} exceeds point length {}",
-                num_vars,
-                point.len()
-            )));
-        }
+    for (point, point_evals) in openings {
         for value in point_evals {
             let height = poly_heights.get(poly_idx).ok_or_else(|| {
                 Error::InvalidPcsParam("jagged: too many opening evaluations".to_string())
             })?;
-            let min_num_vars = ceil_log2(*height);
-            if num_vars < min_num_vars {
+            let native_num_vars = ceil_log2(*height);
+            if point.len() < native_num_vars {
                 return Err(Error::InvalidPcsParam(format!(
-                    "jagged: opening num_vars {} is smaller than poly num_vars {}",
-                    num_vars, min_num_vars
+                    "jagged: opening point length {} is smaller than poly num_vars {}",
+                    point.len(),
+                    native_num_vars
                 )));
             }
             for (dst, src) in common_point.iter_mut().zip(point.iter()) {
@@ -387,8 +364,16 @@ fn flatten_openings_with_num_vars<E: ExtensionField>(
                     None => *dst = Some(*src),
                 }
             }
-            evals.push(value);
-            eval_num_vars.push(num_vars);
+
+            let tail_zero_factor = point[native_num_vars..]
+                .iter()
+                .fold(E::ONE, |acc, r| acc * (E::ONE - *r));
+            if tail_zero_factor == E::ZERO {
+                return Err(Error::InvalidPcsParam(
+                    "jagged: padded opening tail factor is zero".to_string(),
+                ));
+            }
+            evals.push(value * tail_zero_factor.inverse());
             poly_idx += 1;
         }
     }
@@ -409,7 +394,7 @@ fn flatten_openings_with_num_vars<E: ExtensionField>(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok((point, evals, eval_num_vars))
+    Ok((point, evals))
 }
 
 // ---------------------------------------------------------------------------
@@ -607,47 +592,12 @@ pub fn jagged_batch_verify<E: ExtensionField, InnerPcs: PolynomialCommitmentSche
     proof: &JaggedBatchOpenProof<E, InnerPcs>,
     transcript: &mut impl Transcript<E>,
 ) -> Result<(), Error> {
-    let eval_num_vars = comm
-        .cumulative_heights
-        .windows(2)
-        .map(|window| ceil_log2(window[1] - window[0]))
-        .collect_vec();
-    jagged_batch_verify_with_eval_num_vars::<E, InnerPcs>(
-        vp,
-        comm,
-        point,
-        evals,
-        &eval_num_vars,
-        proof,
-        transcript,
-    )
-}
-
-fn jagged_batch_verify_with_eval_num_vars<
-    E: ExtensionField,
-    InnerPcs: PolynomialCommitmentScheme<E>,
->(
-    vp: &InnerPcs::VerifierParam,
-    comm: &JaggedCommitment<E, InnerPcs>,
-    point: &[E],
-    evals: &[E],
-    eval_num_vars: &[usize],
-    proof: &JaggedBatchOpenProof<E, InnerPcs>,
-    transcript: &mut impl Transcript<E>,
-) -> Result<(), Error> {
     let num_polys = comm.cumulative_heights.len() - 1;
     if evals.len() != num_polys {
         return Err(Error::InvalidPcsOpen(format!(
             "jagged_batch_verify: expected {} evals, got {}",
             num_polys,
             evals.len()
-        )));
-    }
-    if eval_num_vars.len() != num_polys {
-        return Err(Error::InvalidPcsOpen(format!(
-            "jagged_batch_verify: expected {} eval num_vars, got {}",
-            num_polys,
-            eval_num_vars.len()
         )));
     }
 
@@ -675,7 +625,8 @@ fn jagged_batch_verify_with_eval_num_vars<
     }
     let claimed_sum: E = (0..num_polys)
         .map(|i| {
-            let s_i = eval_num_vars[i];
+            let h_i = comm.cumulative_heights[i + 1] - comm.cumulative_heights[i];
+            let s_i = ceil_log2(h_i);
             eq_col[i] * tail_zero_prod[s_i] * evals[i]
         })
         .sum();
@@ -846,7 +797,7 @@ where
     ) -> Result<Self::Proof, Error> {
         let mut proofs = Vec::with_capacity(rounds.len());
         for (comm, openings) in rounds {
-            let (point, evals) = flatten_openings(&comm.poly_heights, openings)?;
+            let (point, evals) = flatten_padded_openings_as_native(&comm.poly_heights, openings)?;
             proofs.push(jagged_batch_open::<E, InnerPcs>(
                 pp, comm, &point, &evals, transcript,
             )?);
@@ -900,19 +851,10 @@ where
                 .collect_vec();
             let openings = openings
                 .into_iter()
-                .map(|(num_vars, (point, evals))| (num_vars, point, evals))
+                .map(|(_, (point, evals))| (point, evals))
                 .collect_vec();
-            let (point, evals, eval_num_vars) =
-                flatten_openings_with_num_vars(&poly_heights, openings)?;
-            jagged_batch_verify_with_eval_num_vars::<E, InnerPcs>(
-                vp,
-                &comm,
-                &point,
-                &evals,
-                &eval_num_vars,
-                round_proof,
-                transcript,
-            )?;
+            let (point, evals) = flatten_padded_openings_as_native(&poly_heights, openings)?;
+            jagged_batch_verify::<E, InnerPcs>(vp, &comm, &point, &evals, round_proof, transcript)?;
         }
         Ok(())
     }
