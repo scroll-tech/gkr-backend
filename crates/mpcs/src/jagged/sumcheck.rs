@@ -21,7 +21,7 @@ const LOG2_MAX_EPOCH: u32 = 3;
 
 /// All inputs needed for the jagged sumcheck.
 pub struct JaggedSumcheckInput<'a, E: ExtensionField> {
-    /// Giga polynomial evaluations (concatenated, bit-reversed).
+    /// Giga polynomial evaluations (directly concatenated).
     pub q_evals: &'a [E::BaseField],
     /// n = log2(padded_total_size).
     pub num_giga_vars: usize,

@@ -83,7 +83,7 @@ fn bench_jagged_pcs(c: &mut Criterion) {
     let evals: Vec<E> = rmms
         .iter()
         .zip(log_heights.iter())
-        .flat_map(|(rmm, &s_i)| eval_all_columns_at_point(rmm, &point[(max_s - s_i)..]))
+        .flat_map(|(rmm, &s_i)| eval_all_columns_at_point(rmm, &point[..s_i]))
         .collect();
 
     // BabyBear two-adicity is 27; RS rate_log=1 needs level+1 ≤ 27, so max poly_size is 2^25.
