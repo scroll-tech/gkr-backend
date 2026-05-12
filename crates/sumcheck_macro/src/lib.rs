@@ -19,6 +19,75 @@ struct SumcheckCodegenMacroInput {
     get_poly_meta: ExprClosure,
 }
 
+struct FrontloadUniformCodegenMacroInput {
+    degree: LitInt,
+    product_access: ExprClosure,
+    local_num_vars: Expr,
+    round: Expr,
+    lane_count: Expr,
+    suffix_mask: Expr,
+}
+
+struct FrontloadMixedCodegenMacroInput {
+    degree: LitInt,
+    state: Expr,
+    term: Expr,
+    round: Expr,
+}
+
+impl Parse for FrontloadMixedCodegenMacroInput {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let degree = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let state = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let term = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let round = input.parse()?;
+
+        Ok(Self {
+            degree,
+            state,
+            term,
+            round,
+        })
+    }
+}
+
+impl Parse for FrontloadUniformCodegenMacroInput {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let degree = input.parse()?;
+        input.parse::<Token![,]>()?;
+
+        let expr: Expr = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let product_access = match expr {
+            Expr::Closure(product_access) => product_access,
+            _ => Err(syn::Error::new_spanned(
+                expr,
+                "Expected closure that gives access to the mle evaluations",
+            ))?,
+        };
+
+        let local_num_vars = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let round = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let lane_count = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let suffix_mask = input.parse()?;
+
+        Ok(Self {
+            degree,
+            product_access,
+            local_num_vars,
+            round,
+            lane_count,
+            suffix_mask,
+        })
+    }
+}
+
 impl Parse for SumcheckCodegenMacroInput {
     fn parse(input: ParseStream) -> Result<Self> {
         let degree = input.parse()?;
@@ -423,8 +492,475 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
     out.into()
 }
 
+#[proc_macro]
+/// Generate frontload uniform-layout sumcheck kernels.
+pub fn frontload_uniform_sumcheck_code_gen(
+    input: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as FrontloadUniformCodegenMacroInput);
+
+    let degree = input.degree.base10_parse::<u32>().unwrap();
+    let product_access = input.product_access;
+    let _local_num_vars = input.local_num_vars;
+    let _round = input.round;
+    let lane_count = input.lane_count;
+    let suffix_mask = input.suffix_mask;
+
+    let mut out = quote! {
+        let product_access = #product_access;
+    };
+
+    let mut f_var_names = Vec::new();
+    for i in 1..=degree {
+        let f_var_name = ident(format!("f{i}"));
+        let idx = (i - 1) as usize;
+        out = quote! {
+            #out
+            let #f_var_name = product_access(#idx);
+        };
+        f_var_names.push(f_var_name);
+    }
+
+    let match_input_ref = f_var_names
+        .iter()
+        .fold(TokenStream::new(), |acc, f| acc_list(acc, quote! {&#f}));
+
+    let mut sorter_match_arms = TokenStream::new();
+    for case in 0..(2u32.pow(degree)) {
+        let bits_og = (0..degree)
+            .enumerate()
+            .map(|(idx, shift)| (idx, (case >> shift) & 1))
+            .collect::<Vec<_>>();
+
+        let mut bits_sorted = bits_og.clone();
+        bits_sorted.sort_by_key(|v| v.1);
+
+        let is_sorted = bits_sorted.iter().tuple_windows().any(|(a, b)| a.0 > b.0);
+        if is_sorted {
+            let arm = bits_og.iter().fold(TokenStream::new(), |acc, (_, bit)| {
+                let field_type = if *bit == 0u32 {
+                    quote! {FieldType::Ext(_)}
+                } else {
+                    quote! {FieldType::Base(_)}
+                };
+                acc_list(acc, quote! {#field_type})
+            });
+
+            let arm_body = bits_sorted
+                .iter()
+                .fold(TokenStream::new(), |acc, (idx, _)| {
+                    let f = &f_var_names[*idx];
+                    acc_list(acc, quote! {#f})
+                });
+
+            sorter_match_arms = quote! {
+                #sorter_match_arms
+                (#arm) => (#arm_body),
+            };
+        }
+    }
+
+    let f_tuple = f_var_names
+        .iter()
+        .fold(TokenStream::new(), |acc, f| acc_list(acc, quote! {#f}));
+
+    out = quote! {
+        #out
+
+        let (#f_tuple) = match (#match_input_ref) {
+            #sorter_match_arms
+            _ => (#f_tuple),
+        };
+    };
+
+    let match_input = f_var_names
+        .iter()
+        .fold(TokenStream::new(), |acc, f| acc_list(acc, quote! {#f}));
+
+    let mut match_arms = TokenStream::new();
+    for num_bases in 0..=degree {
+        let num_exts = degree - num_bases;
+        let arg_items = std::iter::repeat_n(0, num_exts as usize)
+            .chain(std::iter::repeat_n(1, num_bases as usize))
+            .enumerate()
+            .map(|(idx, field_type)| (idx, field_type, ident(format!("v{}", idx + 1))))
+            .collect::<Vec<_>>();
+
+        let arm_args = arg_items
+            .iter()
+            .fold(TokenStream::new(), |acc, (_, field_type, ident)| {
+                let arg = match field_type {
+                    0 => quote! {FieldType::Ext(#ident)},
+                    1 => quote! {FieldType::Base(#ident)},
+                    _ => unreachable!(),
+                };
+                acc_list(acc, arg)
+            });
+
+        let array_items = (0..=degree)
+            .map(|eval_idx| ident(format!("eval_{eval_idx}")))
+            .fold(TokenStream::new(), |acc, eval| {
+                acc_list(acc, quote! {#eval})
+            });
+
+        let zero = if num_bases == degree {
+            quote! {E::BaseField::ZERO}
+        } else {
+            quote! {E::ZERO}
+        };
+
+        let mut eval_declarations = TokenStream::new();
+        for eval_idx in 0..=degree {
+            let eval = ident(format!("eval_{eval_idx}"));
+            eval_declarations = quote! {
+                #eval_declarations
+                let mut #eval = #zero;
+            };
+        }
+
+        let mut slice_declarations = TokenStream::new();
+        for (_, _, ident) in &arg_items {
+            slice_declarations = quote! {
+                #slice_declarations
+                let #ident = #ident.as_slice();
+            };
+        }
+
+        let mut endpoint_declarations = TokenStream::new();
+        for (idx, _, value_ident) in &arg_items {
+            let prefix = factor_prefix(*idx);
+            let value0 = ident(format!("{prefix}0"));
+            let value1 = ident(format!("{prefix}1"));
+            let delta = ident(format!("{prefix}_delta"));
+            endpoint_declarations = quote! {
+                #endpoint_declarations
+                let #value0 = #value_ident[base];
+                let #value1 = #value_ident[base + 1];
+                let #delta = #value1 - #value0;
+            };
+            for eval_idx in 2..=degree {
+                let value = ident(format!("{prefix}{eval_idx}"));
+                let prev = ident(format!("{prefix}{}", eval_idx - 1));
+                endpoint_declarations = quote! {
+                    #endpoint_declarations
+                    let #value = #prev + #delta;
+                };
+            }
+        }
+
+        let mut accumulations = TokenStream::new();
+        for eval_idx in 0..=degree {
+            let eval = ident(format!("eval_{eval_idx}"));
+            let product = grouped_mixed_product(num_exts, degree, eval_idx);
+            accumulations = quote! {
+                #accumulations
+                #eval += #product;
+            };
+        }
+
+        let degree_usize = degree as usize;
+        let result = if num_bases == degree {
+            quote! {
+                self.add_base_evaluations(acc, #degree_usize, &term.scalar, [#array_items]);
+            }
+        } else {
+            quote! {
+                self.add_evaluations(
+                    acc,
+                    #degree_usize,
+                    scalar_to_ext(&term.scalar),
+                    [#array_items],
+                );
+            }
+        };
+
+        let arm_body = quote! {
+            #slice_declarations
+            #eval_declarations
+            for lane in 0..#lane_count {
+                let base = (lane & #suffix_mask) << 1;
+                #endpoint_declarations
+                #accumulations
+            }
+            #result
+        };
+
+        match_arms = quote! {
+            #match_arms
+            (#arm_args) => {
+                #arm_body
+            },
+        };
+    }
+
+    quote! {
+        {
+            #out
+            match (#match_input) {
+                #match_arms
+                _ => unreachable!(),
+            }
+        }
+    }
+    .into()
+}
+
+#[proc_macro]
+/// Generate unrolled frontload mixed-layout sumcheck kernels.
+pub fn frontload_mixed_sumcheck_code_gen(
+    input: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as FrontloadMixedCodegenMacroInput);
+
+    let degree = input.degree.base10_parse::<u32>().unwrap();
+    assert!((1..=5).contains(&degree));
+    let state = input.state;
+    let term = input.term;
+    let round = input.round;
+
+    let degree_usize = degree as usize;
+    let degree_plus_one = degree_usize + 1;
+
+    let idx_names = (0..degree)
+        .map(|idx| ident(format!("idx{idx}")))
+        .collect::<Vec<_>>();
+    let factor_names = (0..degree)
+        .map(|idx| ident(format!("factor{idx}")))
+        .collect::<Vec<_>>();
+    let eval_names = (0..=degree)
+        .map(|idx| ident(format!("eval_{idx}")))
+        .collect::<Vec<_>>();
+    let value_prefixes = (0..degree)
+        .map(|idx| factor_prefix(idx as usize))
+        .collect::<Vec<_>>();
+
+    let idx_declarations =
+        idx_names
+            .iter()
+            .enumerate()
+            .fold(TokenStream::new(), |acc, (idx, idx_name)| {
+                quote! {
+                    #acc
+                    let #idx_name = term.product[#idx];
+                }
+            });
+
+    let idx_array = idx_names
+        .iter()
+        .fold(TokenStream::new(), |acc, idx| acc_list(acc, quote! {#idx}));
+
+    let factor_declarations =
+        factor_names
+            .iter()
+            .zip(&idx_names)
+            .fold(TokenStream::new(), |acc, (factor, idx)| {
+                quote! {
+                    #acc
+                    let #factor = state.fixed_frontload_factor(#idx, round);
+                }
+            });
+
+    let eval_declarations = eval_names.iter().fold(TokenStream::new(), |acc, eval| {
+        quote! {
+            #acc
+            let mut #eval = E::ZERO;
+        }
+    });
+
+    let ext_match_input = idx_names.iter().fold(TokenStream::new(), |acc, idx| {
+        acc_list(acc, quote! {state.mles[#idx].evaluations()})
+    });
+
+    let ext_match_pattern = (0..degree).fold(TokenStream::new(), |acc, idx| {
+        let evals = ident(format!("evals{idx}"));
+        acc_list(acc, quote! {FieldType::Ext(#evals)})
+    });
+
+    let original_num_vars =
+        idx_names
+            .iter()
+            .enumerate()
+            .fold(TokenStream::new(), |acc, (idx, idx_name)| {
+                let original = ident(format!("original_num_vars{idx}"));
+                quote! {
+                    #acc
+                    let #original = state.poly.flattened_ml_extensions[#idx_name].num_vars();
+                }
+            });
+
+    let ext_endpoint_declarations = (0..degree).fold(TokenStream::new(), |acc, idx| {
+        let evals = ident(format!("evals{idx}"));
+        let original = ident(format!("original_num_vars{idx}"));
+        let factor = &factor_names[idx as usize];
+        let prefix = &value_prefixes[idx as usize];
+        let value0 = ident(format!("{prefix}0"));
+        let value1 = ident(format!("{prefix}1"));
+        quote! {
+            #acc
+            let (#value0, #value1) =
+                ext_round_endpoints(#evals.as_slice(), #original, round, lane);
+            let #value0 = #value0 * #factor;
+            let #value1 = #value1 * #factor;
+        }
+    });
+
+    let mixed_endpoint_declarations = (0..degree).fold(TokenStream::new(), |acc, idx| {
+        let factor = &factor_names[idx as usize];
+        let idx_name = &idx_names[idx as usize];
+        let prefix = &value_prefixes[idx as usize];
+        let value0 = ident(format!("{prefix}0"));
+        let value1 = ident(format!("{prefix}1"));
+        quote! {
+            #acc
+            let (#value0, #value1) =
+                state.mle_round_endpoints_scaled(#idx_name, round, lane, #factor);
+        }
+    });
+
+    let extrapolated_value_declarations = (0..degree).fold(TokenStream::new(), |acc, idx| {
+        let prefix = &value_prefixes[idx as usize];
+        let value0 = ident(format!("{prefix}0"));
+        let value1 = ident(format!("{prefix}1"));
+        let delta = ident(format!("{prefix}_delta"));
+        let mut out = quote! {
+            let #delta = #value1 - #value0;
+        };
+        for eval_idx in 2..=degree {
+            let value = ident(format!("{prefix}{eval_idx}"));
+            let prev = ident(format!("{prefix}{}", eval_idx - 1));
+            out = quote! {
+                #out
+                let #value = #prev + #delta;
+            };
+        }
+        quote! {
+            #acc
+            #out
+        }
+    });
+
+    let accumulations = (0..=degree).fold(TokenStream::new(), |acc, eval_idx| {
+        let eval = ident(format!("eval_{eval_idx}"));
+        let product = mul_exprs(
+            value_prefixes
+                .iter()
+                .map(|prefix| {
+                    let value = ident(format!("{prefix}{eval_idx}"));
+                    quote! {#value}
+                })
+                .collect(),
+        );
+        quote! {
+            #acc
+            #eval += #product;
+        }
+    });
+
+    let evaluation_assignments =
+        eval_names
+            .iter()
+            .enumerate()
+            .fold(TokenStream::new(), |acc, (idx, eval)| {
+                quote! {
+                    #acc
+                    evaluations[#idx] = #eval * scalar;
+                }
+            });
+
+    let finalize = quote! {
+        let mut evaluations = vec![E::ZERO; state.poly.aux_info.max_degree + 1];
+        #evaluation_assignments
+        if state.poly.aux_info.max_degree > #degree_usize {
+            extrapolate_from_table(&mut evaluations, #degree_plus_one);
+        }
+        evaluations
+    };
+
+    let eval_loop = |endpoint_declarations: TokenStream| {
+        quote! {
+            #eval_declarations
+            for_each_active_lane(lane_count, required_ones_mask, |lane| {
+                #endpoint_declarations
+                #extrapolated_value_declarations
+                #accumulations
+            });
+            #finalize
+        }
+    };
+
+    let ext_branch = eval_loop(quote! {
+        #ext_endpoint_declarations
+    });
+    let mixed_branch = eval_loop(quote! {
+        #mixed_endpoint_declarations
+    });
+
+    quote! {
+        {
+            let state = #state;
+            let term = #term;
+            let round = #round;
+            debug_assert_eq!(term.product.len(), #degree_usize);
+
+            #idx_declarations
+            let live_vars = [#idx_array]
+                .iter()
+                .map(|&idx| {
+                    state.poly.flattened_ml_extensions[idx]
+                        .num_vars()
+                        .saturating_sub(round)
+                })
+                .max()
+                .unwrap_or(0);
+            let lane_count = if live_vars == 0 {
+                1
+            } else {
+                1usize << (live_vars - 1)
+            };
+            let required_ones_mask =
+                state.required_future_frontload_mask(term, round, live_vars);
+            #factor_declarations
+            let scalar = scalar_to_ext(&term.scalar);
+
+            if let (#ext_match_pattern) = (#ext_match_input) {
+                #original_num_vars
+                #ext_branch
+            } else {
+                #mixed_branch
+            }
+        }
+    }
+    .into()
+}
+
 fn ident(s: String) -> Ident {
     Ident::new(&s, Span::call_site())
+}
+
+fn factor_prefix(idx: usize) -> String {
+    const PREFIXES: &[&str] = &["a", "b", "c", "d", "e", "f"];
+    PREFIXES
+        .get(idx)
+        .map(|prefix| (*prefix).to_string())
+        .unwrap_or_else(|| format!("v{idx}_"))
+}
+
+fn grouped_mixed_product(num_exts: u32, degree: u32, eval_idx: u32) -> TokenStream {
+    let value = |idx: u32| {
+        let prefix = factor_prefix(idx as usize);
+        let value = ident(format!("{prefix}{eval_idx}"));
+        quote! {#value}
+    };
+
+    match num_exts {
+        0 => mul_exprs((0..degree).map(value).collect()),
+        n if n == degree => mul_exprs((0..degree).map(value).collect()),
+        n => {
+            let ext_product = mul_exprs((0..n).map(value).collect());
+            let base_product = mul_exprs((n..degree).map(value).collect());
+            quote! {(#ext_product) * (#base_product)}
+        }
+    }
 }
 
 fn acc_add(acc: TokenStream, c: Ident) -> TokenStream {

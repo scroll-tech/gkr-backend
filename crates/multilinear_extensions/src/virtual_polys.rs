@@ -348,6 +348,37 @@ impl<'a, E: ExtensionField> VirtualPolynomials<'a, E> {
         num_products: usize,
         rng: &mut R,
     ) -> (MonomialTermsMLE<'a, E>, E) {
+        Self::random_monimials_with_sum_scaling(
+            nv,
+            num_multiplicands_range,
+            num_products,
+            rng,
+            false,
+        )
+    }
+
+    pub fn random_suffixload_monimials<R: Rng>(
+        nv: &[usize],
+        num_multiplicands_range: (usize, usize),
+        num_products: usize,
+        rng: &mut R,
+    ) -> (MonomialTermsMLE<'a, E>, E) {
+        Self::random_monimials_with_sum_scaling(
+            nv,
+            num_multiplicands_range,
+            num_products,
+            rng,
+            true,
+        )
+    }
+
+    fn random_monimials_with_sum_scaling<R: Rng>(
+        nv: &[usize],
+        num_multiplicands_range: (usize, usize),
+        num_products: usize,
+        rng: &mut R,
+        scale_suffix_missing_vars: bool,
+    ) -> (MonomialTermsMLE<'a, E>, E) {
         let start = entered_span!("sample random virtual polynomial");
 
         let mut sum = E::ZERO;
@@ -361,8 +392,12 @@ impl<'a, E: ExtensionField> VirtualPolynomials<'a, E> {
                     MultilinearExtension::random_mle_list(*nv, num_multiplicands, rng);
                 let scalar = E::random(&mut *rng);
                 monimial_term.push(Term { scalar, product });
-                // need to scale up for the smaller nv
-                sum += E::from_canonical_u64(1 << (max_num_variables - nv)) * product_sum * scalar;
+                let scale = if scale_suffix_missing_vars {
+                    E::from_canonical_u64(1 << (max_num_variables - nv))
+                } else {
+                    E::ONE
+                };
+                sum += scale * product_sum * scalar;
             }
         }
         exit_span!(start);
