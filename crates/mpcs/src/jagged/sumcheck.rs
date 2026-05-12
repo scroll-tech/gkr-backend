@@ -35,8 +35,24 @@ pub struct JaggedSumcheckInput<'a, E: ExtensionField> {
 }
 
 /// Non-owning view of q' evaluations.
+///
+/// Jagged commit first concatenates all original column polynomials into a
+/// single giga polynomial q'. For opening, the sumcheck only needs random
+/// indexed reads from q'; it does not require q' to be materialized as one flat
+/// buffer.
+///
+/// `Flat` is the compact layout used by standalone sumcheck tests and by
+/// callers that already own `p_0 || p_1 || ...`.
+///
+/// `Columns` is the layout produced by the inner PCS commitment: q' is reshaped
+/// into `w` column MLEs of height `2^log_h`. The logical flat index maps to
+/// `columns[index >> log_h][index & ((1 << log_h) - 1)]`. This lets
+/// `jagged_batch_open` reuse q' from `comm.inner` directly and avoids rebuilding
+/// a second full-size flat q' buffer during opening.
 pub enum QPrimeEvaluations<'a, F> {
+    /// Direct `p_0 || p_1 || ...` flat concatenation.
     Flat(&'a [F]),
+    /// Inner PCS column layout for q'.
     Columns { columns: Vec<&'a [F]>, log_h: usize },
 }
 
