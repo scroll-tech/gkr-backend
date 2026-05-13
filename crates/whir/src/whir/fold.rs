@@ -5,7 +5,6 @@ use crate::{
 
 use p3::{
     field::{Field, TwoAdicField},
-    matrix::Matrix,
     maybe_rayon::prelude::*,
 };
 

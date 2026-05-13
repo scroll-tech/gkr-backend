@@ -140,6 +140,9 @@ pub struct Jagged<InnerPcs>(PhantomData<InnerPcs>);
 
 pub const JAGGED_RESHAPE_GROUP_WIDTH: usize = 8;
 
+type InnerOpenings<E> = Vec<(Point<E>, Vec<E>)>;
+type InnerVerifyOpenings<E> = Vec<(usize, (Point<E>, Vec<E>))>;
+
 fn reshape_group_width() -> usize {
     JAGGED_RESHAPE_GROUP_WIDTH
 }
@@ -154,7 +157,7 @@ fn chunk_col_evals<E: ExtensionField>(col_evals: &[E]) -> Vec<Vec<E>> {
 fn inner_openings_for_col_evals<E: ExtensionField>(
     rho_row: &[E],
     col_evals: &[E],
-) -> Vec<(Point<E>, Vec<E>)> {
+) -> InnerOpenings<E> {
     chunk_col_evals(col_evals)
         .into_iter()
         .map(|evals| (rho_row.to_vec(), evals))
@@ -165,7 +168,7 @@ fn inner_verify_openings_for_col_evals<E: ExtensionField>(
     log_h: usize,
     rho_row: &[E],
     col_evals: &[E],
-) -> Vec<(usize, (Point<E>, Vec<E>))> {
+) -> InnerVerifyOpenings<E> {
     chunk_col_evals(col_evals)
         .into_iter()
         .map(|evals| (log_h, (rho_row.to_vec(), evals)))
