@@ -1,6 +1,7 @@
 use crate::PolynomialCommitmentScheme;
 use ::sumcheck::structs::IOPProof;
 use ff_ext::ExtensionField;
+use multilinear_extensions::mle::ArcMultilinearExtension;
 use serde::{Deserialize, Serialize};
 
 /// Commitment to a jagged polynomial `q'`, together with all witness data needed
@@ -22,6 +23,8 @@ pub struct JaggedCommitmentWithWitness<E: ExtensionField, InnerPcs: PolynomialCo
     /// Log2 of the reshape column height. Each column MLE has this many variables.
     /// When equal to `num_giga_vars`, no reshape is performed (single column).
     pub reshape_log_height: usize,
+    /// Original per-column MLEs, in the same order as the packed jagged columns.
+    pub polys: Vec<ArcMultilinearExtension<'static, E>>,
 }
 
 /// The pure commitment (without witness data) for a jagged polynomial `q'`.
@@ -74,6 +77,12 @@ pub struct JaggedBatchOpenProof<E: ExtensionField, InnerPcs: PolynomialCommitmen
     pub f_at_rho: E,
     pub assist_proof: IOPProof<E>,
     pub inner_proof: InnerPcs::Proof,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "", deserialize = ""))]
+pub struct JaggedProof<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>> {
+    pub rounds: Vec<JaggedBatchOpenProof<E, InnerPcs>>,
 }
 
 /// Convert a `usize` to its little-endian binary representation as field elements.

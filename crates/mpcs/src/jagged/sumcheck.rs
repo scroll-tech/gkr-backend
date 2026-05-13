@@ -21,8 +21,9 @@ const LOG2_MAX_EPOCH: u32 = 3;
 
 /// All inputs needed for the jagged sumcheck.
 pub struct JaggedSumcheckInput<'a, E: ExtensionField> {
-    /// Giga polynomial evaluations (directly concatenated).
-    pub q_evals: &'a [E::BaseField],
+    /// Giga polynomial evaluations q'. This may be a flat concatenation or a
+    /// structured view over inner PCS column MLEs.
+    pub q_evals: QPrimeEvaluations<'a, E::BaseField>,
     /// n = log2(padded_total_size).
     pub num_giga_vars: usize,
     /// Cumulative height sequence t[j], length num_polys + 1.
@@ -31,6 +32,47 @@ pub struct JaggedSumcheckInput<'a, E: ExtensionField> {
     pub eq_row: Vec<E>,
     /// Precomputed eq table for the column challenge point: `build_eq_x_r_vec(z_col)`.
     pub eq_col: Vec<E>,
+}
+
+/// Non-owning view of q' evaluations.
+///
+/// Jagged commit first concatenates all original column polynomials into a
+/// single giga polynomial q'. For opening, the sumcheck only needs random
+/// indexed reads from q'; it does not require q' to be materialized as one flat
+/// buffer.
+///
+/// `Flat` is the compact layout used by standalone sumcheck tests and by
+/// callers that already own `p_0 || p_1 || ...`.
+///
+/// `Columns` is the layout produced by the inner PCS commitment: q' is reshaped
+/// into `w` column MLEs of height `2^log_h`. The logical flat index maps to
+/// `columns[index >> log_h][index & ((1 << log_h) - 1)]`. This lets
+/// `jagged_batch_open` reuse q' from `comm.inner` directly and avoids rebuilding
+/// a second full-size flat q' buffer during opening.
+pub enum QPrimeEvaluations<'a, F> {
+    /// Direct `p_0 || p_1 || ...` flat concatenation.
+    Flat(&'a [F]),
+    /// Inner PCS column layout for q'.
+    Columns { columns: Vec<&'a [F]>, log_h: usize },
+}
+
+impl<F: Copy + Default> QPrimeEvaluations<'_, F> {
+    #[inline]
+    fn get(&self, index: usize) -> F {
+        match self {
+            QPrimeEvaluations::Flat(evals) => evals.get(index).copied().unwrap_or_default(),
+            QPrimeEvaluations::Columns { columns, log_h } => {
+                let row_mask = (1usize << log_h) - 1;
+                let col = index >> log_h;
+                let row = index & row_mask;
+                columns
+                    .get(col)
+                    .and_then(|column| column.get(row))
+                    .copied()
+                    .unwrap_or_default()
+            }
+        }
+    }
 }
 
 /// Iterator that yields `(col, row)` pairs for consecutive giga indices.
@@ -89,10 +131,10 @@ impl<'a, E: ExtensionField> JaggedSumcheckInput<'a, E> {
     /// Brute-force computation of sum_b q'(b) * f(b).
     /// O(2^n) time — only for debugging and tests.
     pub fn compute_claimed_sum(&self) -> E {
-        self.q_evals[..self.total_evaluations()]
-            .iter()
-            .zip(self.col_row_iter(0))
-            .fold(E::ZERO, |sum, (&q, (col, row))| {
+        self.col_row_iter(0)
+            .enumerate()
+            .fold(E::ZERO, |sum, (index, (col, row))| {
+                let q = self.q_evals.get(index);
                 sum + (self.eq_row[row] * self.eq_col[col]) * q
             })
     }
@@ -106,7 +148,9 @@ impl<'a, E: ExtensionField> JaggedSumcheckInput<'a, E> {
         let total_evals = self.total_evaluations();
 
         // Build q' MLE (padded with zeros) and evaluate at point.
-        let mut q_padded: Vec<E::BaseField> = self.q_evals.to_vec();
+        let mut q_padded: Vec<E::BaseField> = (0..total_evals)
+            .map(|index| self.q_evals.get(index))
+            .collect();
         q_padded.resize(1 << n, Default::default());
         let q_mle = MultilinearExtension::from_evaluations_vec(n, q_padded);
         let q_at_point = q_mle.evaluate(point);
@@ -280,19 +324,18 @@ fn build_m_table<E: ExtensionField>(
                     .enumerate()
                     .for_each(|(beta, (q_b, f_b))| {
                         let base = chunk_start + beta * a_count;
-                        let (q_acc, f_acc) = eq_r
-                            .iter()
-                            .zip(input.q_evals.get(base..).unwrap_or(&[]))
-                            .zip(input.col_row_iter(base))
-                            .fold(
-                                (E::ZERO, E::ZERO),
-                                |(q_acc, f_acc), ((&eq_r_a, &q), (col, row))| {
-                                    (
-                                        q_acc + eq_r_a * q,
-                                        f_acc + eq_r_a * (input.eq_row[row] * input.eq_col[col]),
-                                    )
-                                },
-                            );
+                        let (q_acc, f_acc) = input
+                            .col_row_iter(base)
+                            .take(a_count)
+                            .enumerate()
+                            .fold((E::ZERO, E::ZERO), |(q_acc, f_acc), (a, (col, row))| {
+                                let eq_r_a = eq_r[a];
+                                let q = input.q_evals.get(base + a);
+                                (
+                                    q_acc + eq_r_a * q,
+                                    f_acc + eq_r_a * (input.eq_row[row] * input.eq_col[col]),
+                                )
+                            });
                         *q_b = q_acc;
                         *f_b = f_acc;
                     });
@@ -415,18 +458,17 @@ fn bind_and_materialize<E: ExtensionField>(
         .into_par_iter()
         .map(|idx| {
             let base = idx * a_count;
-            eq_r.iter()
-                .zip(input.q_evals.get(base..).unwrap_or(&[]))
-                .zip(input.col_row_iter(base))
-                .fold(
-                    (E::ZERO, E::ZERO),
-                    |(q_acc, f_acc), ((&eq_r_a, &q), (col, row))| {
-                        (
-                            q_acc + eq_r_a * q,
-                            f_acc + eq_r_a * (input.eq_row[row] * input.eq_col[col]),
-                        )
-                    },
-                )
+            input.col_row_iter(base).take(a_count).enumerate().fold(
+                (E::ZERO, E::ZERO),
+                |(q_acc, f_acc), (a, (col, row))| {
+                    let eq_r_a = eq_r[a];
+                    let q = input.q_evals.get(base + a);
+                    (
+                        q_acc + eq_r_a * q,
+                        f_acc + eq_r_a * (input.eq_row[row] * input.eq_col[col]),
+                    )
+                },
+            )
         })
         .collect();
 
@@ -469,7 +511,7 @@ mod tests {
         let z_col: Vec<E> = (0..2).map(|_| E::random(&mut rng)).collect();
 
         let input = JaggedSumcheckInput {
-            q_evals: &q_evals,
+            q_evals: QPrimeEvaluations::Flat(&q_evals),
             num_giga_vars,
             cumulative_heights: &cumulative_heights,
             eq_row: build_eq_x_r_vec(&z_row),
@@ -529,7 +571,7 @@ mod tests {
         let z_col: Vec<E> = (0..3).map(|_| E::random(&mut rng)).collect(); // ceil(log2(8))=3
 
         let input = JaggedSumcheckInput {
-            q_evals: &q_evals,
+            q_evals: QPrimeEvaluations::Flat(&q_evals),
             num_giga_vars,
             cumulative_heights: &cumulative_heights,
             eq_row: build_eq_x_r_vec(&z_row),
@@ -581,7 +623,7 @@ mod tests {
         let z_col: Vec<E> = (0..10).map(|_| E::random(&mut rng)).collect(); // ceil(log2(1024))=10
 
         let input = JaggedSumcheckInput {
-            q_evals: &q_evals,
+            q_evals: QPrimeEvaluations::Flat(&q_evals),
             num_giga_vars,
             cumulative_heights: &cumulative_heights,
             eq_row: build_eq_x_r_vec(&z_row),
