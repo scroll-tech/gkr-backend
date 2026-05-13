@@ -41,6 +41,7 @@ pub struct RowMajorMatrix<T: Sized + Sync + Clone + Send + Copy> {
     log2_num_rotation: usize,
     is_padded: bool,
     padding_strategy: InstancePaddingStrategy,
+    host_elided_padded_height: Option<usize>,
     // Optional opaque handle to device-resident storage that mirrors `inner.values`.
     // This lets GPU-side code keep an associated buffer/layout without forcing witness
     // to depend on a concrete device runtime. There is no automatic host<->device sync:
@@ -81,6 +82,7 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + FieldAlgebra> RowMajorMat
             is_padded: true,
             log2_num_rotation: 0,
             padding_strategy: InstancePaddingStrategy::Default,
+            host_elided_padded_height: None,
             device_backing: None,
         }
     }
@@ -91,6 +93,7 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + FieldAlgebra> RowMajorMat
             log2_num_rotation: 0,
             is_padded: true,
             padding_strategy: InstancePaddingStrategy::Default,
+            host_elided_padded_height: None,
             device_backing: None,
         }
     }
@@ -121,7 +124,16 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + FieldAlgebra> RowMajorMat
     }
 
     pub fn num_vars(&self) -> usize {
-        self.inner.height().ilog2() as usize
+        self.height().ilog2() as usize
+    }
+
+    pub fn height(&self) -> usize {
+        self.host_elided_padded_height
+            .unwrap_or_else(|| self.inner.height())
+    }
+
+    pub fn width(&self) -> usize {
+        self.inner.width
     }
 
     pub fn new(
@@ -157,8 +169,36 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + FieldAlgebra> RowMajorMat
             log2_num_rotation,
             is_padded: matches!(padding_strategy, InstancePaddingStrategy::Default),
             padding_strategy,
+            host_elided_padded_height: None,
             device_backing: None,
         }
+    }
+
+    /// Create matrix metadata backed only by device storage.
+    ///
+    /// This is intended for GPU proving paths that already own a device-resident
+    /// matrix and need to reuse `RowMajorMatrix` shape/device metadata without
+    /// allocating a duplicate host-side zero matrix. Callers must not use host
+    /// value accessors unless they later materialize host values separately.
+    pub fn new_by_device_backing<D: Any + Send + Sync + 'static>(
+        num_rows: usize,
+        num_cols: usize,
+        padding_strategy: InstancePaddingStrategy,
+        storage: D,
+        layout: DeviceMatrixLayout,
+    ) -> Self {
+        let num_row_padded = next_pow2_instance_padding(num_rows);
+        let mut matrix = RowMajorMatrix {
+            inner: p3::matrix::dense::RowMajorMatrix::new(vec![], num_cols),
+            num_rows,
+            log2_num_rotation: 0,
+            is_padded: matches!(padding_strategy, InstancePaddingStrategy::Default),
+            padding_strategy,
+            host_elided_padded_height: Some(num_row_padded),
+            device_backing: None,
+        };
+        matrix.set_device_backing(storage, layout);
+        matrix
     }
 
     pub fn new_by_inner_matrix(
@@ -176,6 +216,7 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + FieldAlgebra> RowMajorMat
             log2_num_rotation: 0,
             is_padded: matches!(padding_strategy, InstancePaddingStrategy::Default),
             padding_strategy,
+            host_elided_padded_height: None,
             device_backing: None,
         }
     }
@@ -294,10 +335,18 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + FieldAlgebra> RowMajorMat
     }
 
     pub fn values(&self) -> &[T] {
+        assert!(
+            self.host_elided_padded_height.is_none(),
+            "host values were elided for this device-backed RowMajorMatrix"
+        );
         &self.inner.values
     }
 
     pub fn pad_to_height(&mut self, new_height: usize, fill: T) {
+        assert!(
+            self.host_elided_padded_height.is_none(),
+            "cannot pad RowMajorMatrix with elided host values"
+        );
         let (cur_height, n_cols) = (self.height(), self.n_col());
         assert!(new_height >= cur_height);
         self.invalidate_device_backing();
@@ -317,6 +366,7 @@ impl<T: Sized + Sync + Clone + Send + Copy> Clone for RowMajorMatrix<T> {
             log2_num_rotation: self.log2_num_rotation,
             is_padded: self.is_padded,
             padding_strategy: self.padding_strategy.clone(),
+            host_elided_padded_height: self.host_elided_padded_height,
             device_backing: None,
         }
     }
