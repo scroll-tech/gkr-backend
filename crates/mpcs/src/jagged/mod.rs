@@ -302,39 +302,48 @@ pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
     let h = 1usize << log_h;
     let w = total_size.div_ceil(h);
 
-    let mut giga_rmms = Vec::with_capacity(w.div_ceil(reshape_group_width()));
-    for group_start_col in (0..w).step_by(reshape_group_width()) {
-        let group_cols = (w - group_start_col).min(reshape_group_width());
-        let mut row_major: Vec<E::BaseField> = Vec::with_capacity(h * group_cols);
-        #[allow(clippy::uninit_vec)]
-        unsafe {
-            row_major.set_len(h * group_cols)
-        };
-
-        (0..group_cols).into_par_iter().for_each(|local_col| {
-            let global_col = group_start_col + local_col;
-            let src_start = global_col * h;
-            let col_len = total_size.saturating_sub(src_start).min(h);
-            let dst = unsafe {
-                &mut *std::ptr::slice_from_raw_parts_mut(
-                    row_major.as_ptr() as *mut E::BaseField,
-                    h * group_cols,
-                )
-            };
-            for b in 0..col_len {
-                dst[b * group_cols + local_col] = concatenated[src_start + b];
-            }
-            for b in col_len..h {
-                dst[b * group_cols + local_col] = E::BaseField::ZERO;
-            }
-        });
-
-        giga_rmms.push(WitnessRowMajorMatrix::<E::BaseField>::new_by_values(
-            row_major,
-            group_cols,
+    let giga_rmms = if w == 1 {
+        vec![WitnessRowMajorMatrix::<E::BaseField>::new_by_values(
+            concatenated,
+            1,
             InstancePaddingStrategy::Default,
-        ));
-    }
+        )]
+    } else {
+        let mut giga_rmms = Vec::with_capacity(w.div_ceil(reshape_group_width()));
+        for group_start_col in (0..w).step_by(reshape_group_width()) {
+            let group_cols = (w - group_start_col).min(reshape_group_width());
+            let mut row_major: Vec<E::BaseField> = Vec::with_capacity(h * group_cols);
+            #[allow(clippy::uninit_vec)]
+            unsafe {
+                row_major.set_len(h * group_cols)
+            };
+
+            (0..group_cols).into_par_iter().for_each(|local_col| {
+                let global_col = group_start_col + local_col;
+                let src_start = global_col * h;
+                let col_len = total_size.saturating_sub(src_start).min(h);
+                let dst = unsafe {
+                    &mut *std::ptr::slice_from_raw_parts_mut(
+                        row_major.as_ptr() as *mut E::BaseField,
+                        h * group_cols,
+                    )
+                };
+                for b in 0..col_len {
+                    dst[b * group_cols + local_col] = concatenated[src_start + b];
+                }
+                for b in col_len..h {
+                    dst[b * group_cols + local_col] = E::BaseField::ZERO;
+                }
+            });
+
+            giga_rmms.push(WitnessRowMajorMatrix::<E::BaseField>::new_by_values(
+                row_major,
+                group_cols,
+                InstancePaddingStrategy::Default,
+            ));
+        }
+        giga_rmms
+    };
 
     let inner = InnerPcs::batch_commit(pp, giga_rmms)?;
 
