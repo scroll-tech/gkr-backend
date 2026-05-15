@@ -520,7 +520,7 @@ pub fn jagged_batch_open<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme
     // Write evals to transcript, then sample z_col.
     transcript.append_field_element_exts(evals);
     let num_col_vars = ceil_log2(num_polys).max(1);
-    let z_col: Vec<E> = transcript.sample_and_append_vec(b"jagged_z_col", num_col_vars);
+    let z_col: Vec<E> = transcript.sample_and_append_vec(b"z_col", num_col_vars);
 
     let eq_col = build_eq_x_r_vec(&z_col);
 
@@ -646,7 +646,7 @@ pub fn jagged_batch_verify<E: ExtensionField, InnerPcs: PolynomialCommitmentSche
     // Replay transcript: write evals, sample z_col.
     transcript.append_field_element_exts(evals);
     let num_col_vars = ceil_log2(num_polys).max(1);
-    let z_col: Vec<E> = transcript.sample_and_append_vec(b"jagged_z_col", num_col_vars);
+    let z_col: Vec<E> = transcript.sample_and_append_vec(b"z_col", num_col_vars);
 
     // Batched opening claim: v = Σ_i eq_col[i] · C_i · evals[i]
     // where C_i = eq(z_row[s_i..], 0) = Π_{j=s_i}^{max_s-1} (1 - z_row[j]) is the
