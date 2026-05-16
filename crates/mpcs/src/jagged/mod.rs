@@ -369,7 +369,7 @@ fn default_reshape_log_height<E: ExtensionField, InnerPcs: PolynomialCommitmentS
         .min(ceil_log2(max_poly_height.max(1)))
 }
 
-fn flatten_padded_openings_as_native<E: ExtensionField>(
+pub fn flatten_padded_openings_as_native<E: ExtensionField>(
     poly_heights: &[usize],
     openings: Vec<(Point<E>, Vec<E>)>,
 ) -> Result<(Point<E>, Vec<E>), Error> {
