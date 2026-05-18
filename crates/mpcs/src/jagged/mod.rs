@@ -128,7 +128,7 @@ use multilinear_extensions::{
     util::ceil_log2,
     virtual_poly::{VPAuxInfo, build_eq_x_r_vec},
 };
-use p3::{field::FieldAlgebra, matrix::Matrix, maybe_rayon::prelude::*};
+use p3::{field::FieldAlgebra, maybe_rayon::prelude::*};
 use serde::{Serialize, Serializer, de::DeserializeOwned};
 use std::sync::Arc;
 use transcript::Transcript;
@@ -137,6 +137,43 @@ use witness::{InstancePaddingStrategy, RowMajorMatrix as WitnessRowMajorMatrix};
 
 #[derive(Debug)]
 pub struct Jagged<InnerPcs>(PhantomData<InnerPcs>);
+
+pub const JAGGED_RESHAPE_GROUP_WIDTH: usize = 8;
+
+type InnerOpenings<E> = Vec<(Point<E>, Vec<E>)>;
+type InnerVerifyOpenings<E> = Vec<(usize, (Point<E>, Vec<E>))>;
+
+fn reshape_group_width() -> usize {
+    JAGGED_RESHAPE_GROUP_WIDTH
+}
+
+fn chunk_col_evals<E: ExtensionField>(col_evals: &[E]) -> Vec<Vec<E>> {
+    col_evals
+        .chunks(reshape_group_width())
+        .map(|chunk| chunk.to_vec())
+        .collect()
+}
+
+fn inner_openings_for_col_evals<E: ExtensionField>(
+    rho_row: &[E],
+    col_evals: &[E],
+) -> InnerOpenings<E> {
+    chunk_col_evals(col_evals)
+        .into_iter()
+        .map(|evals| (rho_row.to_vec(), evals))
+        .collect()
+}
+
+fn inner_verify_openings_for_col_evals<E: ExtensionField>(
+    log_h: usize,
+    rho_row: &[E],
+    col_evals: &[E],
+) -> InnerVerifyOpenings<E> {
+    chunk_col_evals(col_evals)
+        .into_iter()
+        .map(|evals| (log_h, (rho_row.to_vec(), evals)))
+        .collect()
+}
 
 impl<InnerPcs> Clone for Jagged<InnerPcs> {
     fn clone(&self) -> Self {
@@ -265,46 +302,50 @@ pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
     let h = 1usize << log_h;
     let w = total_size.div_ceil(h);
 
-    let giga_data = if w == 1 {
-        concatenated
+    let giga_rmms = if w == 1 {
+        vec![WitnessRowMajorMatrix::<E::BaseField>::new_by_values(
+            concatenated,
+            1,
+            InstancePaddingStrategy::Default,
+        )]
     } else {
-        // Transpose the flat q' evaluations to row-major for the inner PCS.
-        // In the flat array, column i occupies concatenated[i*h .. (i+1)*h];
-        // the last column may be short and is zero-padded.
-        let padded_total = w * h;
-        let mut row_major: Vec<E::BaseField> = Vec::with_capacity(padded_total);
-        #[allow(clippy::uninit_vec)]
-        unsafe {
-            row_major.set_len(padded_total)
-        };
-
-        (0..w).into_par_iter().for_each(|i| {
-            let src_start = i * h;
-            let col_len = if i < w - 1 { h } else { total_size - src_start };
-            let dst = unsafe {
-                &mut *std::ptr::slice_from_raw_parts_mut(
-                    row_major.as_ptr() as *mut E::BaseField,
-                    padded_total,
-                )
+        let mut giga_rmms = Vec::with_capacity(w.div_ceil(reshape_group_width()));
+        for group_start_col in (0..w).step_by(reshape_group_width()) {
+            let group_cols = (w - group_start_col).min(reshape_group_width());
+            let mut row_major: Vec<E::BaseField> = Vec::with_capacity(h * group_cols);
+            #[allow(clippy::uninit_vec)]
+            unsafe {
+                row_major.set_len(h * group_cols)
             };
-            for b in 0..col_len {
-                dst[b * w + i] = concatenated[src_start + b];
-            }
-            for b in col_len..h {
-                dst[b * w + i] = E::BaseField::ZERO;
-            }
-        });
 
-        row_major
+            (0..group_cols).into_par_iter().for_each(|local_col| {
+                let global_col = group_start_col + local_col;
+                let src_start = global_col * h;
+                let col_len = total_size.saturating_sub(src_start).min(h);
+                let dst = unsafe {
+                    &mut *std::ptr::slice_from_raw_parts_mut(
+                        row_major.as_ptr() as *mut E::BaseField,
+                        h * group_cols,
+                    )
+                };
+                for b in 0..col_len {
+                    dst[b * group_cols + local_col] = concatenated[src_start + b];
+                }
+                for b in col_len..h {
+                    dst[b * group_cols + local_col] = E::BaseField::ZERO;
+                }
+            });
+
+            giga_rmms.push(WitnessRowMajorMatrix::<E::BaseField>::new_by_values(
+                row_major,
+                group_cols,
+                InstancePaddingStrategy::Default,
+            ));
+        }
+        giga_rmms
     };
 
-    let giga_rmm = WitnessRowMajorMatrix::<E::BaseField>::new_by_values(
-        giga_data,
-        w,
-        InstancePaddingStrategy::Default,
-    );
-
-    let inner = InnerPcs::batch_commit(pp, vec![giga_rmm])?;
+    let inner = InnerPcs::batch_commit(pp, giga_rmms)?;
 
     Ok(JaggedCommitmentWithWitness {
         inner,
@@ -319,15 +360,16 @@ fn default_reshape_log_height<E: ExtensionField, InnerPcs: PolynomialCommitmentS
     pp: &InnerPcs::ProverParam,
     rmms: &[WitnessRowMajorMatrix<E::BaseField>],
 ) -> usize {
-    let total_evals = rmms
+    let max_poly_height = rmms
         .iter()
-        .map(|rmm| rmm.occupied_physical_rows() * rmm.width())
-        .sum::<usize>();
-    let total_log = ceil_log2(total_evals.max(1));
-    pp.get_max_message_size_log().min(total_log)
+        .map(|rmm| rmm.occupied_physical_rows())
+        .max()
+        .unwrap_or(1);
+    pp.get_max_message_size_log()
+        .min(ceil_log2(max_poly_height.max(1)))
 }
 
-fn flatten_padded_openings_as_native<E: ExtensionField>(
+pub fn flatten_padded_openings_as_native<E: ExtensionField>(
     poly_heights: &[usize],
     openings: Vec<(Point<E>, Vec<E>)>,
 ) -> Result<(Point<E>, Vec<E>), Error> {
@@ -478,7 +520,7 @@ pub fn jagged_batch_open<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme
     // Write evals to transcript, then sample z_col.
     transcript.append_field_element_exts(evals);
     let num_col_vars = ceil_log2(num_polys).max(1);
-    let z_col: Vec<E> = transcript.sample_and_append_vec(b"jagged_z_col", num_col_vars);
+    let z_col: Vec<E> = transcript.sample_and_append_vec(b"z_col", num_col_vars);
 
     let eq_col = build_eq_x_r_vec(&z_col);
 
@@ -554,7 +596,10 @@ pub fn jagged_batch_open<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme
     // Open column MLEs at ρ_row via inner PCS.
     let inner_proof = InnerPcs::batch_open(
         pp,
-        vec![(&comm.inner, vec![(rho_row.to_vec(), col_evals.clone())])],
+        vec![(
+            &comm.inner,
+            inner_openings_for_col_evals(rho_row, &col_evals),
+        )],
         transcript,
     )?;
 
@@ -601,7 +646,7 @@ pub fn jagged_batch_verify<E: ExtensionField, InnerPcs: PolynomialCommitmentSche
     // Replay transcript: write evals, sample z_col.
     transcript.append_field_element_exts(evals);
     let num_col_vars = ceil_log2(num_polys).max(1);
-    let z_col: Vec<E> = transcript.sample_and_append_vec(b"jagged_z_col", num_col_vars);
+    let z_col: Vec<E> = transcript.sample_and_append_vec(b"z_col", num_col_vars);
 
     // Batched opening claim: v = Σ_i eq_col[i] · C_i · evals[i]
     // where C_i = eq(z_row[s_i..], 0) = Π_{j=s_i}^{max_s-1} (1 - z_row[j]) is the
@@ -694,7 +739,7 @@ pub fn jagged_batch_verify<E: ExtensionField, InnerPcs: PolynomialCommitmentSche
         vp,
         vec![(
             comm.inner.clone(),
-            vec![(log_h, (rho_row.to_vec(), proof.col_evals.clone()))],
+            inner_verify_openings_for_col_evals(log_h, rho_row, &proof.col_evals),
         )],
         &proof.inner_proof,
         transcript,
