@@ -310,9 +310,12 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + FieldAlgebra> RowMajorMat
     }
 
     pub fn padding_by_strategy(&mut self) {
-        self.invalidate_device_backing();
         let num_rotation = Self::num_rotation(self.log2_num_rotation);
         let start_index = self.num_instances() * num_rotation * self.n_col();
+
+        if matches!(self.padding_strategy, InstancePaddingStrategy::Custom(_)) {
+            self.invalidate_device_backing();
+        }
 
         match &self.padding_strategy {
             InstancePaddingStrategy::Default => (),
