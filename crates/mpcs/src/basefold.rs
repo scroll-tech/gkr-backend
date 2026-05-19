@@ -477,6 +477,46 @@ where
     ) -> Vec<ArcMultilinearExtension<'static, E>> {
         commitment.polys.iter().flatten().cloned().collect_vec()
     }
+
+    fn proof_size_breakdown(proof: &Self::Proof) -> Vec<(String, u64)> {
+        let mut breakdown = vec![
+            (
+                "total".to_string(),
+                bincode::serialized_size(proof).unwrap_or(0),
+            ),
+            (
+                "commits".to_string(),
+                bincode::serialized_size(&proof.commits).unwrap_or(0),
+            ),
+            (
+                "final_message".to_string(),
+                bincode::serialized_size(&proof.final_message).unwrap_or(0),
+            ),
+            (
+                "query_opening_proof".to_string(),
+                bincode::serialized_size(&proof.query_opening_proof).unwrap_or(0),
+            ),
+            (
+                "sumcheck_proof".to_string(),
+                bincode::serialized_size(&proof.sumcheck_proof).unwrap_or(0),
+            ),
+            (
+                "pow_witness".to_string(),
+                bincode::serialized_size(&proof.pow_witness).unwrap_or(0),
+            ),
+        ];
+        for (query_idx, query_proof) in proof.query_opening_proof.iter().enumerate() {
+            breakdown.push((
+                format!("query_opening_proof[{query_idx}].input_proofs"),
+                bincode::serialized_size(&query_proof.input_proofs).unwrap_or(0),
+            ));
+            breakdown.push((
+                format!("query_opening_proof[{query_idx}].commit_phase_openings"),
+                bincode::serialized_size(&query_proof.commit_phase_openings).unwrap_or(0),
+            ));
+        }
+        breakdown
+    }
 }
 
 #[cfg(test)]

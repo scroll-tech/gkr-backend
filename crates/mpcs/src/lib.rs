@@ -201,6 +201,13 @@ pub trait PolynomialCommitmentScheme<E: ExtensionField>: Clone {
     fn get_arc_mle_witness_from_commitment(
         commitment: &Self::CommitmentWithWitness,
     ) -> Vec<ArcMultilinearExtension<'static, E>>;
+
+    fn proof_size_breakdown(proof: &Self::Proof) -> Vec<(String, u64)> {
+        vec![(
+            "total".to_string(),
+            bincode::serialized_size(proof).unwrap_or(0),
+        )]
+    }
 }
 
 #[derive(

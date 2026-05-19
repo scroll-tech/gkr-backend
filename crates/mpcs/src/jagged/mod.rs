@@ -478,13 +478,12 @@ fn compute_f_at_point<E: ExtensionField>(
 /// 1. Batch the K column claims via a random column challenge `z_col`.
 /// 2. Run the jagged sumcheck to reduce to a single evaluation of q'.
 /// 3. Open q' at the sumcheck output point via the inner PCS.
-pub fn jagged_batch_open<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>(
-    pp: &InnerPcs::ProverParam,
+fn jagged_batch_open_round<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>(
     comm: &JaggedCommitmentWithWitness<E, InnerPcs>,
     point: &[E],
     evals: &[E],
     transcript: &mut impl Transcript<E>,
-) -> Result<JaggedBatchOpenProof<E, InnerPcs>, Error> {
+) -> Result<(JaggedBatchOpenProof<E, InnerPcs>, InnerOpenings<E>), Error> {
     let num_polys = comm.num_polys();
     if evals.len() != num_polys {
         return Err(Error::InvalidPcsParam(format!(
@@ -593,38 +592,44 @@ pub fn jagged_batch_open<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme
         transcript,
     );
 
-    // Open column MLEs at ρ_row via inner PCS.
-    let inner_proof = InnerPcs::batch_open(
-        pp,
-        vec![(
-            &comm.inner,
-            inner_openings_for_col_evals(rho_row, &col_evals),
-        )],
-        transcript,
-    )?;
+    let inner_openings = inner_openings_for_col_evals(rho_row, &col_evals);
 
-    Ok(JaggedBatchOpenProof {
-        sumcheck_proof,
-        col_evals,
-        f_at_rho,
-        assist_proof,
+    Ok((
+        JaggedBatchOpenProof {
+            sumcheck_proof,
+            col_evals,
+            f_at_rho,
+            assist_proof,
+            marker: PhantomData,
+        },
+        inner_openings,
+    ))
+}
+
+pub fn jagged_batch_open<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>(
+    pp: &InnerPcs::ProverParam,
+    comm: &JaggedCommitmentWithWitness<E, InnerPcs>,
+    point: &[E],
+    evals: &[E],
+    transcript: &mut impl Transcript<E>,
+) -> Result<JaggedProof<E, InnerPcs>, Error> {
+    let (round, inner_openings) =
+        jagged_batch_open_round::<E, InnerPcs>(comm, point, evals, transcript)?;
+    let inner_proof = InnerPcs::batch_open(pp, vec![(&comm.inner, inner_openings)], transcript)?;
+    Ok(JaggedProof {
+        rounds: vec![round],
         inner_proof,
     })
 }
 
-/// Verify that evaluation claims `evals[i] = p_i(point_i)` are consistent with a
-/// jagged commitment.
-///
-/// Polynomials may have different heights. `point` has length `max_s`. Polynomial
-/// `i` with `s_i` variables is evaluated at the prefix `point[..s_i]`.
-pub fn jagged_batch_verify<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>(
-    vp: &InnerPcs::VerifierParam,
+fn jagged_batch_verify_without_inner<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>(
+    _vp: &InnerPcs::VerifierParam,
     comm: &JaggedCommitment<E, InnerPcs>,
     point: &[E],
     evals: &[E],
     proof: &JaggedBatchOpenProof<E, InnerPcs>,
     transcript: &mut impl Transcript<E>,
-) -> Result<(), Error> {
+) -> Result<(InnerPcs::Commitment, InnerVerifyOpenings<E>), Error> {
     let num_polys = comm.cumulative_heights.len() - 1;
     if evals.len() != num_polys {
         return Err(Error::InvalidPcsOpen(format!(
@@ -734,16 +739,40 @@ pub fn jagged_batch_verify<E: ExtensionField, InnerPcs: PolynomialCommitmentSche
         ));
     }
 
-    // Verify the inner PCS opening at ρ_row with col_evals.
-    InnerPcs::batch_verify(
+    Ok((
+        comm.inner.clone(),
+        inner_verify_openings_for_col_evals(log_h, rho_row, &proof.col_evals),
+    ))
+}
+
+/// Verify that evaluation claims `evals[i] = p_i(point_i)` are consistent with a
+/// jagged commitment.
+///
+/// Polynomials may have different heights. `point` has length `max_s`. Polynomial
+/// `i` with `s_i` variables is evaluated at the prefix `point[..s_i]`.
+pub fn jagged_batch_verify<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>(
+    vp: &InnerPcs::VerifierParam,
+    comm: &JaggedCommitment<E, InnerPcs>,
+    point: &[E],
+    evals: &[E],
+    proof: &JaggedProof<E, InnerPcs>,
+    transcript: &mut impl Transcript<E>,
+) -> Result<(), Error> {
+    if proof.rounds.len() != 1 {
+        return Err(Error::InvalidPcsOpeningProof(format!(
+            "jagged: expected one proof round, got {}",
+            proof.rounds.len()
+        )));
+    }
+    let inner_round = jagged_batch_verify_without_inner::<E, InnerPcs>(
         vp,
-        vec![(
-            comm.inner.clone(),
-            inner_verify_openings_for_col_evals(log_h, rho_row, &proof.col_evals),
-        )],
-        &proof.inner_proof,
+        comm,
+        point,
+        evals,
+        &proof.rounds[0],
         transcript,
     )?;
+    InnerPcs::batch_verify(vp, vec![inner_round], &proof.inner_proof, transcript)?;
 
     Ok(())
 }
@@ -825,13 +854,19 @@ where
         transcript: &mut impl Transcript<E>,
     ) -> Result<Self::Proof, Error> {
         let mut proofs = Vec::with_capacity(rounds.len());
+        let mut inner_rounds = Vec::with_capacity(rounds.len());
         for (comm, openings) in rounds {
             let (point, evals) = flatten_padded_openings_as_native(&comm.poly_heights, openings)?;
-            proofs.push(jagged_batch_open::<E, InnerPcs>(
-                pp, comm, &point, &evals, transcript,
-            )?);
+            let (proof, inner_openings) =
+                jagged_batch_open_round::<E, InnerPcs>(comm, &point, &evals, transcript)?;
+            proofs.push(proof);
+            inner_rounds.push((&comm.inner, inner_openings));
         }
-        Ok(JaggedProof { rounds: proofs })
+        let inner_proof = InnerPcs::batch_open(pp, inner_rounds, transcript)?;
+        Ok(JaggedProof {
+            rounds: proofs,
+            inner_proof,
+        })
     }
 
     fn simple_batch_open(
@@ -869,6 +904,7 @@ where
                 proof.rounds.len()
             )));
         }
+        let mut inner_rounds = Vec::with_capacity(rounds.len());
         for ((comm, openings), round_proof) in rounds.into_iter().zip_eq(proof.rounds.iter()) {
             let poly_heights = comm
                 .cumulative_heights
@@ -880,8 +916,17 @@ where
                 .map(|(_, (point, evals))| (point, evals))
                 .collect_vec();
             let (point, evals) = flatten_padded_openings_as_native(&poly_heights, openings)?;
-            jagged_batch_verify::<E, InnerPcs>(vp, &comm, &point, &evals, round_proof, transcript)?;
+            let inner_round = jagged_batch_verify_without_inner::<E, InnerPcs>(
+                vp,
+                &comm,
+                &point,
+                &evals,
+                round_proof,
+                transcript,
+            )?;
+            inner_rounds.push(inner_round);
         }
+        InnerPcs::batch_verify(vp, inner_rounds, &proof.inner_proof, transcript)?;
         Ok(())
     }
 
@@ -900,6 +945,55 @@ where
         commitment: &Self::CommitmentWithWitness,
     ) -> Vec<ArcMultilinearExtension<'static, E>> {
         commitment.polys.clone()
+    }
+
+    fn proof_size_breakdown(proof: &Self::Proof) -> Vec<(String, u64)> {
+        let mut breakdown = vec![
+            (
+                "total".to_string(),
+                bincode::serialized_size(proof).unwrap_or(0),
+            ),
+            (
+                "rounds".to_string(),
+                bincode::serialized_size(&proof.rounds).unwrap_or(0),
+            ),
+            (
+                "inner_proof".to_string(),
+                bincode::serialized_size(&proof.inner_proof).unwrap_or(0),
+            ),
+        ];
+
+        for (round_idx, round) in proof.rounds.iter().enumerate() {
+            breakdown.extend([
+                (
+                    format!("round[{round_idx}].total"),
+                    bincode::serialized_size(round).unwrap_or(0),
+                ),
+                (
+                    format!("round[{round_idx}].sumcheck_proof"),
+                    bincode::serialized_size(&round.sumcheck_proof).unwrap_or(0),
+                ),
+                (
+                    format!("round[{round_idx}].col_evals"),
+                    bincode::serialized_size(&round.col_evals).unwrap_or(0),
+                ),
+                (
+                    format!("round[{round_idx}].f_at_rho"),
+                    bincode::serialized_size(&round.f_at_rho).unwrap_or(0),
+                ),
+                (
+                    format!("round[{round_idx}].assist_proof"),
+                    bincode::serialized_size(&round.assist_proof).unwrap_or(0),
+                ),
+            ]);
+        }
+
+        breakdown.extend(
+            InnerPcs::proof_size_breakdown(&proof.inner_proof)
+                .into_iter()
+                .map(|(name, size)| (format!("inner_proof.{name}"), size)),
+        );
+        breakdown
     }
 }
 
@@ -1274,7 +1368,7 @@ mod tests {
 
         let proof = jagged_batch_open::<E, Pcs>(&pp, &comm, &point, &evals, &mut transcript_p)
             .expect("batch open");
-        assert_eq!(proof.col_evals.len(), w);
+        assert_eq!(proof.rounds[0].col_evals.len(), w);
 
         let mut transcript_v = BasicTranscript::<E>::new(b"jagged_reshape_single");
         Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_v).unwrap();
@@ -1325,7 +1419,7 @@ mod tests {
 
         let proof = jagged_batch_open::<E, Pcs>(&pp, &comm, &point, &evals, &mut transcript_p)
             .expect("batch open should succeed");
-        assert_eq!(proof.col_evals.len(), w);
+        assert_eq!(proof.rounds[0].col_evals.len(), w);
 
         let mut transcript_v = BasicTranscript::<E>::new(b"jagged_reshape_multi");
         Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_v).unwrap();
@@ -1374,7 +1468,7 @@ mod tests {
 
         let proof = jagged_batch_open::<E, Pcs>(&pp, &comm, &point, &evals, &mut transcript_p)
             .expect("batch open");
-        assert_eq!(proof.col_evals.len(), w);
+        assert_eq!(proof.rounds[0].col_evals.len(), w);
 
         let mut transcript_v = BasicTranscript::<E>::new(b"jagged_reshape_non_power");
         Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_v).unwrap();
