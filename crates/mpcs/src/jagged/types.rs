@@ -3,6 +3,7 @@ use ::sumcheck::structs::IOPProof;
 use ff_ext::ExtensionField;
 use multilinear_extensions::mle::ArcMultilinearExtension;
 use serde::{Deserialize, Serialize};
+use std::marker::PhantomData;
 
 /// Commitment to a jagged polynomial `q'`, together with all witness data needed
 /// for opening proofs.
@@ -76,13 +77,15 @@ pub struct JaggedBatchOpenProof<E: ExtensionField, InnerPcs: PolynomialCommitmen
     pub col_evals: Vec<E>,
     pub f_at_rho: E,
     pub assist_proof: IOPProof<E>,
-    pub inner_proof: InnerPcs::Proof,
+    #[serde(skip)]
+    pub marker: PhantomData<InnerPcs>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(bound(serialize = "", deserialize = ""))]
 pub struct JaggedProof<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>> {
     pub rounds: Vec<JaggedBatchOpenProof<E, InnerPcs>>,
+    pub inner_proof: InnerPcs::Proof,
 }
 
 /// Convert a `usize` to its little-endian binary representation as field elements.
