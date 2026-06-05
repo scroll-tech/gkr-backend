@@ -21,9 +21,8 @@
 //! ## Cumulative Heights
 //!
 //! Each polynomial `p_i` has `s_i = ceil_log2(h_i)` variables, where `h_i` is the
-//! real number of evaluations from the input matrix column. `q'` stores exactly
-//! those `h_i` evaluations; any implicit zero padding to `2^{s_i}` is only an MLE
-//! evaluation convention and is not materialized inside the concatenation.
+//! committed padded height of the input matrix column. `q'` stores exactly those
+//! `h_i` evaluations so its layout matches the inner PCS column MLEs.
 //!
 //! The cumulative height sequence `t` tracks the starting position of each polynomial in `q'`:
 //! - `t[0] = 0`
@@ -38,8 +37,8 @@
 //!
 //! ## Commit Protocol
 //!
-//! 1. For each input matrix `M_k` (with `h_k` rows and `w_k` columns), extract each
-//!    column as a polynomial with `h_k` evaluations.
+//! 1. For each input matrix `M_k` (with committed height `h_k` and `w_k` columns),
+//!    extract each column as a polynomial with `h_k` evaluations.
 //! 2. Concatenate all column polynomials: `cat = p_0 || p_1 || ...`
 //! 3. Compute cumulative heights `t[i]`.
 //! 4. Pad `cat` to the next power of two (required for MLE representation).
@@ -54,8 +53,8 @@
 //!
 //! ### Correction factors for different-height polynomials
 //!
-//! In the giga polynomial `q'`, each `p_i` occupies only `h_i` slots (padded to
-//! `2^{s_i}` for MLE representation). When `s_i < m`, this is equivalent to
+//! In the giga polynomial `q'`, each `p_i` occupies `h_i` committed slots. When
+//! `s_i < m`, this is equivalent to
 //! zero-padding `p_i` to `m` variables:
 //!
 //! ```text
@@ -201,7 +200,7 @@ impl<InnerPcs> Serialize for Jagged<InnerPcs> {
 ///
 /// # Arguments
 /// * `pp` — Prover parameters for `InnerPcs`.
-/// * `rmms` — Non-empty sequence of row-major matrices. This function uses each matrix's height exactly as given.
+/// * `rmms` — Non-empty sequence of row-major matrices.
 ///
 /// # Errors
 /// Returns `Error::InvalidPcsParam` if `rmms` is empty or all matrices are empty.
@@ -222,10 +221,10 @@ pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
         .flat_map(|rmm| rmm.to_mles().into_iter().map(Arc::new))
         .collect_vec();
 
-    // --- Step 1: Compute cumulative heights from real matrix heights ---
+    // --- Step 1: Compute cumulative heights from committed matrix heights ---
     let mut poly_heights: Vec<usize> = Vec::new();
     for rmm in &rmms {
-        let num_rows = rmm.occupied_physical_rows();
+        let num_rows = rmm.height();
         let num_cols = rmm.width();
 
         if num_rows == 0 {
@@ -273,7 +272,7 @@ pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
     let mut poly_idx = 0;
     for rmm in rmms {
         let n_cols = rmm.width();
-        let n_rows = rmm.occupied_physical_rows();
+        let n_rows = rmm.height();
         let n_cells = n_cols * n_rows;
 
         // The start position in `concatenated` for this matrix's block of polynomials.
@@ -362,7 +361,7 @@ fn default_reshape_log_height<E: ExtensionField, InnerPcs: PolynomialCommitmentS
 ) -> usize {
     let max_poly_height = rmms
         .iter()
-        .map(|rmm| rmm.occupied_physical_rows())
+        .map(|rmm| rmm.height())
         .max()
         .unwrap_or(1);
     pp.get_max_message_size_log()
@@ -1060,8 +1059,8 @@ mod tests {
     }
 
     #[test]
-    fn test_jagged_commit_uses_real_heights() {
-        // 3x1 + 5x2 → heights [3, 5, 5], not [4, 8, 8].
+    fn test_jagged_commit_uses_committed_heights() {
+        // 3x1 + 5x2 are padded by RowMajorMatrix to committed heights [4, 8, 8].
         let reshape_log_height = 4;
         let (pp, _vp) = setup_pcs::<E, Pcs>(reshape_log_height);
         let m1 = make_rmm(3, 1);
@@ -1071,14 +1070,80 @@ mod tests {
             .expect("commit should succeed");
 
         assert_eq!(comm.num_polys(), 3);
-        assert_eq!(comm.poly_heights, vec![3, 5, 5]);
-        assert_eq!(comm.cumulative_heights, vec![0, 3, 8, 13]);
-        assert_eq!(comm.total_evaluations(), 13);
+        assert_eq!(comm.poly_heights, vec![4, 8, 8]);
+        assert_eq!(comm.cumulative_heights, vec![0, 4, 12, 20]);
+        assert_eq!(comm.total_evaluations(), 20);
+        assert_eq!(comm.polys[0].occupied_len(), 4);
+        assert_eq!(comm.polys[1].occupied_len(), 8);
+        assert_eq!(comm.polys[2].occupied_len(), 8);
     }
 
     #[test]
-    fn test_jagged_commit_uses_unpadded_physical_rotation_height() {
-        // 3 logical rows with 4-way rotation occupy 12 real physical rows, padded to 16.
+    fn test_jagged_commit_layout_matches_custom_padding() {
+        let mut rng = thread_rng();
+
+        let num_rows = 1023usize;
+        let num_cols = 2usize;
+        let reshape_log_height = 8;
+        let (pp, vp) = setup_pcs::<E, Pcs>(reshape_log_height);
+
+        let values: Vec<F> = (0..num_rows * num_cols)
+            .map(|i| F::from_canonical_u64(i as u64 + 1))
+            .collect();
+        let mut rmm = WitnessRowMajorMatrix::new_by_inner_matrix(
+            RowMajorMatrix::new(values, num_cols),
+            InstancePaddingStrategy::Custom(Arc::new(|_, _| 99)),
+        );
+        rmm.padding_by_strategy();
+
+        let committed_height = rmm.height();
+        assert_eq!(rmm.occupied_physical_rows(), num_rows);
+        assert_eq!(committed_height, 1024);
+
+        let col_polys: Vec<Vec<F>> = (0..num_cols)
+            .map(|c| {
+                (0..committed_height)
+                    .map(|r| rmm.values[r * num_cols + c])
+                    .collect()
+            })
+            .collect();
+
+        let mut transcript_p = BasicTranscript::<E>::new(b"jagged_custom_padding_layout");
+        let comm = jagged_commit::<E, Pcs>(&pp, vec![rmm], reshape_log_height).expect("commit");
+        Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_p).unwrap();
+
+        assert_eq!(comm.poly_heights, vec![committed_height; num_cols]);
+        assert_eq!(comm.cumulative_heights, vec![0, committed_height, committed_height * 2]);
+        assert_eq!(comm.polys[0].occupied_len(), committed_height);
+        assert_eq!(comm.polys[1].occupied_len(), committed_height);
+
+        let point: Vec<E> = (0..ceil_log2(committed_height))
+            .map(|_| E::random(&mut rng))
+            .collect();
+        let evals: Vec<E> = col_polys
+            .iter()
+            .map(|col| eval_column_poly_at_point(col, &point))
+            .collect();
+
+        let proof = jagged_batch_open::<E, Pcs>(&pp, &comm, &point, &evals, &mut transcript_p)
+            .expect("batch open");
+
+        let mut transcript_v = BasicTranscript::<E>::new(b"jagged_custom_padding_layout");
+        Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_v).unwrap();
+        jagged_batch_verify::<E, Pcs>(
+            &vp,
+            &comm.to_commitment(),
+            &point,
+            &evals,
+            &proof,
+            &mut transcript_v,
+        )
+        .expect("batch verify");
+    }
+
+    #[test]
+    fn test_jagged_commit_uses_committed_rotation_height() {
+        // 3 logical rows with 4-way rotation occupy 12 physical rows, padded to 16.
         let reshape_log_height = 4;
         let (pp, _vp) = setup_pcs::<E, Pcs>(reshape_log_height);
         let rmm = WitnessRowMajorMatrix::new_by_rotation(3, 2, 2, InstancePaddingStrategy::Default);
@@ -1087,9 +1152,9 @@ mod tests {
             .expect("commit should succeed");
 
         assert_eq!(comm.num_polys(), 2);
-        assert_eq!(comm.poly_heights, vec![12, 12]);
-        assert_eq!(comm.cumulative_heights, vec![0, 12, 24]);
-        assert_eq!(comm.total_evaluations(), 24);
+        assert_eq!(comm.poly_heights, vec![16, 16]);
+        assert_eq!(comm.cumulative_heights, vec![0, 16, 32]);
+        assert_eq!(comm.total_evaluations(), 32);
     }
 
     #[test]
@@ -1442,13 +1507,13 @@ mod tests {
         let heights = [1023usize, 777, 513];
         let log_heights: Vec<usize> = heights.iter().map(|&h| ceil_log2(h)).collect();
         let max_s = *log_heights.iter().max().unwrap();
-        let total_evals: usize = heights.iter().sum();
         let reshape_log_height = 8;
         let h = 1usize << reshape_log_height;
-        let w = total_evals.div_ceil(h);
 
         let (pp, vp) = setup_pcs::<E, Pcs>(reshape_log_height);
         let rmms: Vec<_> = heights.iter().map(|&h| make_rmm(h, 1)).collect();
+        let total_evals: usize = rmms.iter().map(|rmm| rmm.height()).sum();
+        let w = total_evals.div_ceil(h);
 
         let col_polys: Vec<Vec<F>> = rmms
             .iter()
