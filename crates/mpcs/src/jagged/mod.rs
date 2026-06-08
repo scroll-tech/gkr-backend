@@ -21,8 +21,9 @@
 //! ## Cumulative Heights
 //!
 //! Each polynomial `p_i` has `s_i = ceil_log2(h_i)` variables, where `h_i` is the
-//! committed padded height of the input matrix column. `q'` stores exactly those
-//! `h_i` evaluations so its layout matches the inner PCS column MLEs.
+//! occupied physical height of the input matrix column. `q'` stores exactly those
+//! `h_i` occupied evaluations; any matrix padding remains outside the jagged q
+//! layout.
 //!
 //! The cumulative height sequence `t` tracks the starting position of each polynomial in `q'`:
 //! - `t[0] = 0`
@@ -37,8 +38,8 @@
 //!
 //! ## Commit Protocol
 //!
-//! 1. For each input matrix `M_k` (with committed height `h_k` and `w_k` columns),
-//!    extract each column as a polynomial with `h_k` evaluations.
+//! 1. For each input matrix `M_k` (with occupied physical height `h_k` and `w_k`
+//!    columns), extract each occupied column as a polynomial with `h_k` evaluations.
 //! 2. Concatenate all column polynomials: `cat = p_0 || p_1 || ...`
 //! 3. Compute cumulative heights `t[i]`.
 //! 4. Pad `cat` to the next power of two (required for MLE representation).
@@ -53,7 +54,7 @@
 //!
 //! ### Correction factors for different-height polynomials
 //!
-//! In the giga polynomial `q'`, each `p_i` occupies `h_i` committed slots. When
+//! In the giga polynomial `q'`, each `p_i` occupies `h_i` occupied slots. When
 //! `s_i < m`, this is equivalent to
 //! zero-padding `p_i` to `m` variables:
 //!
@@ -221,10 +222,10 @@ pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
         .flat_map(|rmm| rmm.to_mles().into_iter().map(Arc::new))
         .collect_vec();
 
-    // --- Step 1: Compute cumulative heights from committed matrix heights ---
+    // --- Step 1: Compute cumulative heights from occupied matrix heights ---
     let mut poly_heights: Vec<usize> = Vec::new();
     for rmm in &rmms {
-        let num_rows = rmm.height();
+        let num_rows = rmm.occupied_physical_rows();
         let num_cols = rmm.width();
 
         if num_rows == 0 {
@@ -272,25 +273,20 @@ pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
     let mut poly_idx = 0;
     for rmm in rmms {
         let n_cols = rmm.width();
-        let n_rows = rmm.height();
+        let n_rows = rmm.occupied_physical_rows();
         let n_cells = n_cols * n_rows;
 
         // The start position in `concatenated` for this matrix's block of polynomials.
         let start = cumulative_heights[poly_idx];
 
-        // Step 3: Transpose — write each column j of `rmm` (= one polynomial)
-        // into its corresponding contiguous slice in `concatenated`.
+        // Step 3: Write each committed column prefix into its compact q slice.
+        // Use the column MLEs as the source so q matches the committed polynomial
+        // ordering even when the row-major backing has backend-specific layout details.
         (0..n_cols)
             .into_par_iter()
             .zip(concatenated[start..start + n_cells].par_chunks_mut(n_rows))
             .for_each(|(j, chunk)| {
-                rmm.values
-                    .iter()
-                    .take(n_cells)
-                    .skip(j)
-                    .step_by(n_cols)
-                    .zip_eq(chunk.iter_mut())
-                    .for_each(|(v, out)| *out = *v);
+                chunk.copy_from_slice(&polys[poly_idx + j].get_base_field_vec()[..n_rows]);
             });
 
         poly_idx += n_cols;
@@ -317,23 +313,43 @@ pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
                 row_major.set_len(h * group_cols)
             };
 
-            (0..group_cols).into_par_iter().for_each(|local_col| {
-                let global_col = group_start_col + local_col;
-                let src_start = global_col * h;
-                let col_len = total_size.saturating_sub(src_start).min(h);
-                let dst = unsafe {
-                    &mut *std::ptr::slice_from_raw_parts_mut(
-                        row_major.as_ptr() as *mut E::BaseField,
-                        h * group_cols,
-                    )
-                };
-                for b in 0..col_len {
-                    dst[b * group_cols + local_col] = concatenated[src_start + b];
+            let group_start = group_start_col * h;
+            let group_len = total_size.saturating_sub(group_start).min(h * group_cols);
+            let full_cols = group_len / h;
+            let tail_rows = group_len % h;
+
+            let write_full_cols = |row: usize, dst: &mut [E::BaseField]| {
+                for (local_col, value) in dst.iter_mut().take(full_cols).enumerate() {
+                    let global_col = group_start_col + local_col;
+                    *value = concatenated[global_col * h + row];
                 }
-                for b in col_len..h {
-                    dst[b * group_cols + local_col] = E::BaseField::ZERO;
-                }
-            });
+            };
+
+            if tail_rows == 0 {
+                row_major
+                    .par_chunks_mut(group_cols)
+                    .enumerate()
+                    .for_each(|(row, dst)| write_full_cols(row, dst));
+            } else {
+                let tail_col = full_cols;
+                let (occupied_tail_rows, padded_tail_rows) =
+                    row_major.split_at_mut(tail_rows * group_cols);
+                occupied_tail_rows
+                    .par_chunks_mut(group_cols)
+                    .enumerate()
+                    .for_each(|(row, dst)| {
+                        write_full_cols(row, dst);
+                        dst[tail_col] = concatenated[(group_start_col + tail_col) * h + row];
+                    });
+                padded_tail_rows
+                    .par_chunks_mut(group_cols)
+                    .enumerate()
+                    .for_each(|(row_offset, dst)| {
+                        let row = tail_rows + row_offset;
+                        write_full_cols(row, dst);
+                        dst[tail_col] = E::BaseField::ZERO;
+                    });
+            }
 
             giga_rmms.push(WitnessRowMajorMatrix::<E::BaseField>::new_by_values(
                 row_major,
@@ -361,7 +377,7 @@ fn default_reshape_log_height<E: ExtensionField, InnerPcs: PolynomialCommitmentS
 ) -> usize {
     let max_poly_height = rmms
         .iter()
-        .map(|rmm| rmm.height())
+        .map(|rmm| rmm.occupied_physical_rows())
         .max()
         .unwrap_or(1);
     pp.get_max_message_size_log()
@@ -1010,6 +1026,7 @@ mod tests {
     type F = Goldilocks;
     type E = GoldilocksExt2;
     type Pcs = Basefold<E, BasefoldRSParams>;
+    type JPcs = Jagged<Pcs>;
 
     fn make_rmm(num_rows: usize, num_cols: usize) -> WitnessRowMajorMatrix<F> {
         let values: Vec<F> = (0..num_rows * num_cols)
@@ -1059,8 +1076,9 @@ mod tests {
     }
 
     #[test]
-    fn test_jagged_commit_uses_committed_heights() {
-        // 3x1 + 5x2 are padded by RowMajorMatrix to committed heights [4, 8, 8].
+    fn test_jagged_commit_uses_occupied_heights() {
+        // 3x1 + 5x2 are padded by RowMajorMatrix to committed heights [4, 8, 8],
+        // but jagged q only stores occupied rows [3, 5, 5].
         let reshape_log_height = 4;
         let (pp, _vp) = setup_pcs::<E, Pcs>(reshape_log_height);
         let m1 = make_rmm(3, 1);
@@ -1070,16 +1088,16 @@ mod tests {
             .expect("commit should succeed");
 
         assert_eq!(comm.num_polys(), 3);
-        assert_eq!(comm.poly_heights, vec![4, 8, 8]);
-        assert_eq!(comm.cumulative_heights, vec![0, 4, 12, 20]);
-        assert_eq!(comm.total_evaluations(), 20);
+        assert_eq!(comm.poly_heights, vec![3, 5, 5]);
+        assert_eq!(comm.cumulative_heights, vec![0, 3, 8, 13]);
+        assert_eq!(comm.total_evaluations(), 13);
         assert_eq!(comm.polys[0].occupied_len(), 4);
         assert_eq!(comm.polys[1].occupied_len(), 8);
         assert_eq!(comm.polys[2].occupied_len(), 8);
     }
 
     #[test]
-    fn test_jagged_commit_layout_matches_custom_padding() {
+    fn test_jagged_commit_uses_zero_rmm_padding_with_compact_q() {
         let mut rng = thread_rng();
 
         let num_rows = 1023usize;
@@ -1087,37 +1105,48 @@ mod tests {
         let reshape_log_height = 8;
         let (pp, vp) = setup_pcs::<E, Pcs>(reshape_log_height);
 
-        let values: Vec<F> = (0..num_rows * num_cols)
-            .map(|i| F::from_canonical_u64(i as u64 + 1))
-            .collect();
-        let mut rmm = WitnessRowMajorMatrix::new_by_inner_matrix(
-            RowMajorMatrix::new(values, num_cols),
-            InstancePaddingStrategy::Custom(Arc::new(|_, _| 99)),
-        );
-        rmm.padding_by_strategy();
+        let rmm = make_rmm(num_rows, num_cols);
 
         let committed_height = rmm.height();
         assert_eq!(rmm.occupied_physical_rows(), num_rows);
         assert_eq!(committed_height, 1024);
+        assert!(
+            rmm.values[num_rows * num_cols..]
+                .iter()
+                .all(|value| *value == F::ZERO)
+        );
 
         let col_polys: Vec<Vec<F>> = (0..num_cols)
             .map(|c| {
-                (0..committed_height)
+                (0..num_rows)
                     .map(|r| rmm.values[r * num_cols + c])
                     .collect()
             })
             .collect();
 
-        let mut transcript_p = BasicTranscript::<E>::new(b"jagged_custom_padding_layout");
+        let mut transcript_p = BasicTranscript::<E>::new(b"jagged_compact_q_layout");
         let comm = jagged_commit::<E, Pcs>(&pp, vec![rmm], reshape_log_height).expect("commit");
         Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_p).unwrap();
 
-        assert_eq!(comm.poly_heights, vec![committed_height; num_cols]);
-        assert_eq!(comm.cumulative_heights, vec![0, committed_height, committed_height * 2]);
+        assert_eq!(comm.poly_heights, vec![num_rows; num_cols]);
+        assert_eq!(
+            comm.cumulative_heights,
+            vec![0, num_rows, num_rows * num_cols]
+        );
         assert_eq!(comm.polys[0].occupied_len(), committed_height);
         assert_eq!(comm.polys[1].occupied_len(), committed_height);
+        assert!(
+            comm.polys[0].get_base_field_vec()[num_rows..]
+                .iter()
+                .all(|value| *value == F::ZERO)
+        );
+        assert!(
+            comm.polys[1].get_base_field_vec()[num_rows..]
+                .iter()
+                .all(|value| *value == F::ZERO)
+        );
 
-        let point: Vec<E> = (0..ceil_log2(committed_height))
+        let point: Vec<E> = (0..ceil_log2(num_rows))
             .map(|_| E::random(&mut rng))
             .collect();
         let evals: Vec<E> = col_polys
@@ -1128,7 +1157,7 @@ mod tests {
         let proof = jagged_batch_open::<E, Pcs>(&pp, &comm, &point, &evals, &mut transcript_p)
             .expect("batch open");
 
-        let mut transcript_v = BasicTranscript::<E>::new(b"jagged_custom_padding_layout");
+        let mut transcript_v = BasicTranscript::<E>::new(b"jagged_compact_q_layout");
         Pcs::write_commitment(&comm.to_commitment().inner, &mut transcript_v).unwrap();
         jagged_batch_verify::<E, Pcs>(
             &vp,
@@ -1142,7 +1171,7 @@ mod tests {
     }
 
     #[test]
-    fn test_jagged_commit_uses_committed_rotation_height() {
+    fn test_jagged_commit_uses_occupied_rotation_height() {
         // 3 logical rows with 4-way rotation occupy 12 physical rows, padded to 16.
         let reshape_log_height = 4;
         let (pp, _vp) = setup_pcs::<E, Pcs>(reshape_log_height);
@@ -1152,9 +1181,11 @@ mod tests {
             .expect("commit should succeed");
 
         assert_eq!(comm.num_polys(), 2);
-        assert_eq!(comm.poly_heights, vec![16, 16]);
-        assert_eq!(comm.cumulative_heights, vec![0, 16, 32]);
-        assert_eq!(comm.total_evaluations(), 32);
+        assert_eq!(comm.poly_heights, vec![12, 12]);
+        assert_eq!(comm.cumulative_heights, vec![0, 12, 24]);
+        assert_eq!(comm.total_evaluations(), 24);
+        assert_eq!(comm.polys[0].occupied_len(), 16);
+        assert_eq!(comm.polys[1].occupied_len(), 16);
     }
 
     #[test]
@@ -1357,6 +1388,50 @@ mod tests {
     }
 
     #[test]
+    fn test_jagged_trait_batch_open_verify_padded_witness_compact_q() {
+        let mut rng = thread_rng();
+
+        let num_rows = 1023usize;
+        let num_cols = 2usize;
+        let reshape_log_height = 8;
+        let (pp, vp) = setup_pcs::<E, Pcs>(reshape_log_height);
+        let rmm = make_rmm(num_rows, num_cols);
+
+        let mut transcript_p = BasicTranscript::<E>::new(b"jagged_trait_compact_q");
+        let comm = jagged_commit::<E, Pcs>(&pp, vec![rmm], reshape_log_height).expect("commit");
+        JPcs::write_commitment(&comm.to_commitment(), &mut transcript_p).unwrap();
+
+        let polys = JPcs::get_arc_mle_witness_from_commitment(&comm);
+        assert_eq!(polys.len(), num_cols);
+        assert_eq!(polys[0].occupied_len(), num_rows.next_power_of_two());
+        assert_eq!(comm.poly_heights, vec![num_rows; num_cols]);
+
+        let point: Vec<E> = (0..polys[0].num_vars())
+            .map(|_| E::random(&mut rng))
+            .collect();
+        let evals = polys.iter().map(|poly| poly.evaluate(&point)).collect_vec();
+
+        let proof = JPcs::batch_open(
+            &pp,
+            vec![(&comm, vec![(point.clone(), evals.clone())])],
+            &mut transcript_p,
+        )
+        .expect("batch open");
+
+        let mut transcript_v = BasicTranscript::<E>::new(b"jagged_trait_compact_q");
+        let pure_comm = JPcs::get_pure_commitment(&comm);
+        JPcs::write_commitment(&pure_comm, &mut transcript_v).unwrap();
+
+        JPcs::batch_verify(
+            &vp,
+            vec![(pure_comm, vec![(point.len(), (point, evals))])],
+            &proof,
+            &mut transcript_v,
+        )
+        .expect("batch verify");
+    }
+
+    #[test]
     fn test_jagged_batch_open_verify_soundness() {
         let mut rng = thread_rng();
 
@@ -1512,7 +1587,7 @@ mod tests {
 
         let (pp, vp) = setup_pcs::<E, Pcs>(reshape_log_height);
         let rmms: Vec<_> = heights.iter().map(|&h| make_rmm(h, 1)).collect();
-        let total_evals: usize = rmms.iter().map(|rmm| rmm.height()).sum();
+        let total_evals: usize = rmms.iter().map(|rmm| rmm.occupied_physical_rows()).sum();
         let w = total_evals.div_ceil(h);
 
         let col_polys: Vec<Vec<F>> = rmms
@@ -1543,6 +1618,67 @@ mod tests {
             &comm.to_commitment(),
             &point,
             &evals,
+            &proof,
+            &mut transcript_v,
+        )
+        .expect("batch verify");
+    }
+
+    #[test]
+    fn test_jagged_trait_batch_open_verify_multiple_rounds_compact_q() {
+        let mut rng = thread_rng();
+
+        let reshape_log_height = 8;
+        let (pp, vp) = setup_pcs::<E, Pcs>(reshape_log_height);
+        let comm0 = jagged_commit::<E, Pcs>(&pp, vec![make_rmm(1023, 2)], reshape_log_height)
+            .expect("commit 0");
+        let comm1 = jagged_commit::<E, Pcs>(&pp, vec![make_rmm(777, 1)], reshape_log_height)
+            .expect("commit 1");
+
+        let mut transcript_p = BasicTranscript::<E>::new(b"jagged_trait_multi_round");
+        JPcs::write_commitment(&comm0.to_commitment(), &mut transcript_p).unwrap();
+        JPcs::write_commitment(&comm1.to_commitment(), &mut transcript_p).unwrap();
+
+        let polys0 = JPcs::get_arc_mle_witness_from_commitment(&comm0);
+        let point0: Vec<E> = (0..polys0[0].num_vars())
+            .map(|_| E::random(&mut rng))
+            .collect();
+        let evals0 = polys0
+            .iter()
+            .map(|poly| poly.evaluate(&point0))
+            .collect_vec();
+
+        let polys1 = JPcs::get_arc_mle_witness_from_commitment(&comm1);
+        let point1: Vec<E> = (0..polys1[0].num_vars())
+            .map(|_| E::random(&mut rng))
+            .collect();
+        let evals1 = polys1
+            .iter()
+            .map(|poly| poly.evaluate(&point1))
+            .collect_vec();
+
+        let proof = JPcs::batch_open(
+            &pp,
+            vec![
+                (&comm0, vec![(point0.clone(), evals0.clone())]),
+                (&comm1, vec![(point1.clone(), evals1.clone())]),
+            ],
+            &mut transcript_p,
+        )
+        .expect("batch open");
+
+        let pure_comm0 = JPcs::get_pure_commitment(&comm0);
+        let pure_comm1 = JPcs::get_pure_commitment(&comm1);
+        let mut transcript_v = BasicTranscript::<E>::new(b"jagged_trait_multi_round");
+        JPcs::write_commitment(&pure_comm0, &mut transcript_v).unwrap();
+        JPcs::write_commitment(&pure_comm1, &mut transcript_v).unwrap();
+
+        JPcs::batch_verify(
+            &vp,
+            vec![
+                (pure_comm0, vec![(point0.len(), (point0, evals0))]),
+                (pure_comm1, vec![(point1.len(), (point1, evals1))]),
+            ],
             &proof,
             &mut transcript_v,
         )
