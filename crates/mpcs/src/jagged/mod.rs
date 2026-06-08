@@ -279,19 +279,12 @@ pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
         // The start position in `concatenated` for this matrix's block of polynomials.
         let start = cumulative_heights[poly_idx];
 
-        // Step 3: Transpose — write each column j of `rmm` (= one polynomial)
-        // into its corresponding contiguous slice in `concatenated`.
+        // Step 3: write each committed column prefix into its compact q slice.
         (0..n_cols)
             .into_par_iter()
             .zip(concatenated[start..start + n_cells].par_chunks_mut(n_rows))
             .for_each(|(j, chunk)| {
-                rmm.values
-                    .iter()
-                    .take(n_cells)
-                    .skip(j)
-                    .step_by(n_cols)
-                    .zip_eq(chunk.iter_mut())
-                    .for_each(|(v, out)| *out = *v);
+                chunk.copy_from_slice(&polys[poly_idx + j].get_base_field_vec()[..n_rows]);
             });
 
         poly_idx += n_cols;
