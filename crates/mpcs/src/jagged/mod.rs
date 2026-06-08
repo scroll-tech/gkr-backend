@@ -311,43 +311,23 @@ pub fn jagged_commit<E: ExtensionField, InnerPcs: PolynomialCommitmentScheme<E>>
                 row_major.set_len(h * group_cols)
             };
 
-            let group_start = group_start_col * h;
-            let group_len = total_size.saturating_sub(group_start).min(h * group_cols);
-            let full_cols = group_len / h;
-            let tail_rows = group_len % h;
-
-            let write_full_cols = |row: usize, dst: &mut [E::BaseField]| {
-                for (local_col, value) in dst.iter_mut().take(full_cols).enumerate() {
-                    let global_col = group_start_col + local_col;
-                    *value = concatenated[global_col * h + row];
+            (0..group_cols).into_par_iter().for_each(|local_col| {
+                let global_col = group_start_col + local_col;
+                let src_start = global_col * h;
+                let col_len = total_size.saturating_sub(src_start).min(h);
+                let dst = unsafe {
+                    &mut *std::ptr::slice_from_raw_parts_mut(
+                        row_major.as_ptr() as *mut E::BaseField,
+                        h * group_cols,
+                    )
+                };
+                for b in 0..col_len {
+                    dst[b * group_cols + local_col] = concatenated[src_start + b];
                 }
-            };
-
-            if tail_rows == 0 {
-                row_major
-                    .par_chunks_mut(group_cols)
-                    .enumerate()
-                    .for_each(|(row, dst)| write_full_cols(row, dst));
-            } else {
-                let tail_col = full_cols;
-                let (occupied_tail_rows, padded_tail_rows) =
-                    row_major.split_at_mut(tail_rows * group_cols);
-                occupied_tail_rows
-                    .par_chunks_mut(group_cols)
-                    .enumerate()
-                    .for_each(|(row, dst)| {
-                        write_full_cols(row, dst);
-                        dst[tail_col] = concatenated[(group_start_col + tail_col) * h + row];
-                    });
-                padded_tail_rows
-                    .par_chunks_mut(group_cols)
-                    .enumerate()
-                    .for_each(|(row_offset, dst)| {
-                        let row = tail_rows + row_offset;
-                        write_full_cols(row, dst);
-                        dst[tail_col] = E::BaseField::ZERO;
-                    });
-            }
+                for b in col_len..h {
+                    dst[b * group_cols + local_col] = E::BaseField::ZERO;
+                }
+            });
 
             giga_rmms.push(WitnessRowMajorMatrix::<E::BaseField>::new_by_values(
                 row_major,
