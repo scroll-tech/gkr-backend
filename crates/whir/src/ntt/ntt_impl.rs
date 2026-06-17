@@ -9,7 +9,7 @@ use super::{
 };
 use ff_ext::ExtensionField;
 use p3::{
-    field::{Field, PrimeCharacteristicRing, TwoAdicField},
+    field::{Field, TwoAdicField},
     matrix::{
         Matrix,
         dense::{DenseMatrix, RowMajorMatrix},
@@ -31,7 +31,7 @@ static ENGINE_CACHE: LazyLock<Mutex<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>
 
 /// Enginge for computing NTTs over arbitrary fields.
 /// Assumes the field has large two-adicity.
-pub struct NttEngine<F: Field + PrimeCharacteristicRing> {
+pub struct NttEngine<F: Field> {
     order: usize,   // order of omega_orger
     omega_order: F, // primitive order'th root.
 

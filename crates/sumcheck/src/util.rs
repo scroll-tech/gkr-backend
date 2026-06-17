@@ -14,7 +14,7 @@ use multilinear_extensions::{
     virtual_poly::VirtualPolynomial,
     virtual_polys::PolyMeta,
 };
-use p3::field::{Field, PrimeCharacteristicRing};
+use p3::field::Field;
 use transcript::Transcript;
 
 use crate::{extrapolate::ExtrapolationCache, structs::IOPProverState};
@@ -53,7 +53,7 @@ pub fn extrapolate_from_table<E: ExtensionField>(uni_variate: &mut [E], start: u
     }
 }
 
-fn extrapolate_uni_poly_deg_1<F: Field + PrimeCharacteristicRing>(p0: F, p1: F, eval_at: F) -> F {
+fn extrapolate_uni_poly_deg_1<F: Field>(p0: F, p1: F, eval_at: F) -> F {
     let x0 = F::ZERO;
     let x1 = F::ONE;
 
@@ -75,12 +75,7 @@ fn extrapolate_uni_poly_deg_1<F: Field + PrimeCharacteristicRing>(p0: F, p1: F, 
     l * (t0 + t1)
 }
 
-fn extrapolate_uni_poly_deg_2<F: Field + PrimeCharacteristicRing>(
-    p0: F,
-    p1: F,
-    p2: F,
-    eval_at: F,
-) -> F {
+fn extrapolate_uni_poly_deg_2<F: Field>(p0: F, p1: F, p2: F, eval_at: F) -> F {
     let x0 = F::from_u64(0);
     let x1 = F::from_u64(1);
     let x2 = F::from_u64(2);
@@ -109,13 +104,7 @@ fn extrapolate_uni_poly_deg_2<F: Field + PrimeCharacteristicRing>(
     l * (t0 + t1 + t2)
 }
 
-fn extrapolate_uni_poly_deg_3<F: Field + PrimeCharacteristicRing>(
-    p0: F,
-    p1: F,
-    p2: F,
-    p3: F,
-    eval_at: F,
-) -> F {
+fn extrapolate_uni_poly_deg_3<F: Field>(p0: F, p1: F, p2: F, p3: F, eval_at: F) -> F {
     let x0 = F::from_u64(0);
     let x1 = F::from_u64(1);
     let x2 = F::from_u64(2);
@@ -456,6 +445,7 @@ impl<F: MulAssign + Copy> Mul<F> for AdditiveVec<F> {
 mod tests {
     use super::*;
     use ff_ext::GoldilocksExt2;
+    use p3::field::PrimeCharacteristicRing;
 
     #[test]
     fn test_extrapolate_from_table() {

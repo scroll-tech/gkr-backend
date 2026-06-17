@@ -65,7 +65,7 @@ struct DeviceMatrixBacking {
     layout: DeviceMatrixLayout,
 }
 
-impl<T: Sized + Sync + Clone + Send + Copy + Default + PrimeCharacteristicRing> RowMajorMatrix<T> {
+impl<T: Sync + Send + Copy + PrimeCharacteristicRing> RowMajorMatrix<T> {
     fn invalidate_device_backing(&mut self) {
         self.device_backing = None;
     }

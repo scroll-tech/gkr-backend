@@ -242,7 +242,7 @@ impl<T: Field> Mul<T> for &Polynomial<T> {
     }
 }
 
-impl<T: Eq + Field> PartialEq<Polynomial<T>> for Polynomial<T> {
+impl<T: Field> PartialEq<Polynomial<T>> for Polynomial<T> {
     fn eq(&self, other: &Polynomial<T>) -> bool {
         if self.coefficients.len() != other.coefficients.len() {
             let (shorter, longer) = if self.coefficients.len() < other.coefficients.len() {
