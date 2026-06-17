@@ -14,7 +14,7 @@ use rand::rngs::OsRng;
 use sumcheck::util::AdditiveArray;
 
 #[derive(Default)]
-struct Container<'a, E: ExtensionField + PrimeCharacteristicRing> {
+struct Container<'a, E: ExtensionField> {
     poly: VirtualPolynomial<'a, E>,
     is_main_worker: bool,
     phase2_numvar: Option<usize>,
@@ -25,7 +25,7 @@ fn main() {
     c.run();
 }
 
-impl<E: ExtensionField + PrimeCharacteristicRing> Container<'_, E> {
+impl<E: ExtensionField> Container<'_, E> {
     pub fn run(&self) {
         let poly = &self.poly.flattened_ml_extensions;
         let _result =

@@ -1,6 +1,5 @@
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use p3::field::PrimeCharacteristicRing;
 use std::{
     any::{Any, TypeId},
     collections::BTreeMap,
@@ -32,12 +31,12 @@ use std::{
 /// This structure stores all `v_j` coefficients for each `(degree, target_z)` pair.
 /// At runtime, extrapolation is done by a simple dot product of `v_j` with the known values `f(x_j)`,
 /// without needing any inverses.
-pub struct ExtrapolationTable<E: ExtensionField + PrimeCharacteristicRing> {
+pub struct ExtrapolationTable<E: ExtensionField> {
     /// weights[degree][z - degree - 1][j] = coefficient for f(x_j) when extrapolating to z
     pub weights: Vec<Vec<Vec<E>>>,
 }
 
-impl<E: ExtensionField + PrimeCharacteristicRing> ExtrapolationTable<E> {
+impl<E: ExtensionField> ExtrapolationTable<E> {
     pub fn new(min_degree: usize, max_degree: usize) -> Self {
         let mut weights = Vec::new();
 
@@ -84,11 +83,11 @@ impl<E: ExtensionField + PrimeCharacteristicRing> ExtrapolationTable<E> {
     }
 }
 
-pub struct ExtrapolationCache<E: ExtensionField + PrimeCharacteristicRing> {
+pub struct ExtrapolationCache<E: ExtensionField> {
     _marker: PhantomData<E>,
 }
 
-impl<E: ExtensionField + PrimeCharacteristicRing> ExtrapolationCache<E> {
+impl<E: ExtensionField> ExtrapolationCache<E> {
     fn global_cache() -> &'static Mutex<BTreeMap<TypeId, Box<dyn Any + Send + Sync>>> {
         static GLOBAL_CACHE: OnceLock<Mutex<BTreeMap<TypeId, Box<dyn Any + Send + Sync>>>> =
             OnceLock::new();

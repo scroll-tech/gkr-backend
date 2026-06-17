@@ -27,10 +27,7 @@ use crate::{extrapolate::ExtrapolationCache, structs::IOPProverState};
 /// efficient barycentric extrapolation without requiring any inverse operations at runtime.
 ///
 /// Note: this function is highly optimized without field inverse. see [`ExtrapolationTable`] for how to achieve it
-pub fn extrapolate_from_table<E: ExtensionField + PrimeCharacteristicRing>(
-    uni_variate: &mut [E],
-    start: usize,
-) {
+pub fn extrapolate_from_table<E: ExtensionField>(uni_variate: &mut [E], start: usize) {
     let cur_degree = start - 1;
     let table = ExtrapolationCache::<E>::get(cur_degree, uni_variate.len() - 1);
     let target_len = uni_variate.len();

@@ -58,9 +58,7 @@ pub fn transpose<T>(v: Vec<Vec<T>>) -> Vec<Vec<T>> {
         .collect()
 }
 
-fn prepare_input<'a, E: ExtensionField + PrimeCharacteristicRing>(
-    nv: usize,
-) -> (E, Vec<MultilinearExtension<'a, E>>) {
+fn prepare_input<'a, E: ExtensionField>(nv: usize) -> (E, Vec<MultilinearExtension<'a, E>>) {
     let mut rng = thread_rng();
     let fs = (0..NUM_DEGREE)
         .map(|_| MultilinearExtension::<E>::random(nv, &mut rng))
