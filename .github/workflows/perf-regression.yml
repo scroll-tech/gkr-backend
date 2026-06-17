@@ -1,0 +1,64 @@
+name: Performance Regression
+
+on:
+  pull_request:
+    types: [synchronize, opened, reopened, ready_for_review]
+    paths:
+      - ".github/scripts/check-criterion-regression.sh"
+      - ".github/workflows/perf-regression.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/ff_ext/**"
+      - "crates/multilinear_extensions/**"
+      - "crates/p3/**"
+      - "crates/sumcheck/**"
+      - "crates/transcript/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  sumcheck:
+    name: Sumcheck Criterion Guard
+    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-08-18
+
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: perf-${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: perf-${{ runner.os }}-cargo-
+
+      - name: Check sumcheck performance regression
+        env:
+          BASE_REPO_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.event.pull_request.base.repo.full_name }}.git
+          HEAD_REPO_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.event.pull_request.head.repo.full_name }}.git
+          CARGO_INCREMENTAL: "0"
+          GKR_CENO_BENCH_SAMPLES: "10"
+          GKR_CENO_BENCH_SCALE: tiny
+          GKR_PERF_NOISE_THRESHOLD: "0.15"
+          RAYON_NUM_THREADS: "2"
+          RUST_MIN_STACK: "33554432"
+        run: |
+          bash .github/scripts/check-criterion-regression.sh \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}"
