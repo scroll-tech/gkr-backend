@@ -9,6 +9,7 @@ use rayon::{
     prelude::ParallelSliceMut,
 };
 use std::{
+    any::Any,
     ops::{Deref, DerefMut, Index},
     slice::{Chunks, ChunksMut},
     sync::Arc,
@@ -33,7 +34,6 @@ pub enum InstancePaddingStrategy {
     Custom(Arc<dyn Fn(u64, u64) -> u64 + Send + Sync>),
 }
 
-#[derive(Clone)]
 pub struct RowMajorMatrix<T: Sized + Sync + Clone + Send + Copy> {
     inner: p3::matrix::dense::RowMajorMatrix<T>,
     // num_row is the real instance BEFORE padding
@@ -41,9 +41,35 @@ pub struct RowMajorMatrix<T: Sized + Sync + Clone + Send + Copy> {
     log2_num_rotation: usize,
     is_padded: bool,
     padding_strategy: InstancePaddingStrategy,
+    host_elided_padded_height: Option<usize>,
+    // Optional opaque handle to device-resident storage that mirrors `inner.values`.
+    // This lets GPU-side code keep an associated buffer/layout without forcing witness
+    // to depend on a concrete device runtime. There is no automatic host<->device sync:
+    // host-side mutation invalidates this cache.
+    device_backing: Option<DeviceMatrixBacking>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceMatrixLayout {
+    /// Device buffer is laid out identically to `inner.values`.
+    RowMajor,
+    /// Device buffer stores the same logical matrix in column-major order.
+    ColMajor,
+}
+
+#[derive(Clone)]
+struct DeviceMatrixBacking {
+    // Type-erased device handle owned outside of witness. An `Arc` keeps clone-free
+    // sharing cheap for readers while the matrix itself remains host-data owned.
+    storage: Arc<dyn Any + Send + Sync>,
+    layout: DeviceMatrixLayout,
 }
 
 impl<T: Sized + Sync + Clone + Send + Copy + Default + PrimeCharacteristicRing> RowMajorMatrix<T> {
+    fn invalidate_device_backing(&mut self) {
+        self.device_backing = None;
+    }
+
     pub fn rand<R: Rng>(rng: &mut R, rows: usize, cols: usize) -> Self {
         debug_assert!(rows > 0);
         let num_row_padded = next_pow2_instance_padding(rows);
@@ -56,6 +82,8 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + PrimeCharacteristicRing> 
             is_padded: true,
             log2_num_rotation: 0,
             padding_strategy: InstancePaddingStrategy::Default,
+            host_elided_padded_height: None,
+            device_backing: None,
         }
     }
     pub fn empty() -> Self {
@@ -65,6 +93,8 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + PrimeCharacteristicRing> 
             log2_num_rotation: 0,
             is_padded: true,
             padding_strategy: InstancePaddingStrategy::Default,
+            host_elided_padded_height: None,
+            device_backing: None,
         }
     }
 
@@ -94,7 +124,16 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + PrimeCharacteristicRing> 
     }
 
     pub fn num_vars(&self) -> usize {
-        self.inner.height().ilog2() as usize
+        self.height().ilog2() as usize
+    }
+
+    pub fn height(&self) -> usize {
+        self.host_elided_padded_height
+            .unwrap_or_else(|| self.inner.height())
+    }
+
+    pub fn width(&self) -> usize {
+        self.inner.width
     }
 
     pub fn new(
@@ -130,7 +169,36 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + PrimeCharacteristicRing> 
             log2_num_rotation,
             is_padded: matches!(padding_strategy, InstancePaddingStrategy::Default),
             padding_strategy,
+            host_elided_padded_height: None,
+            device_backing: None,
         }
+    }
+
+    /// Create matrix metadata backed only by device storage.
+    ///
+    /// This is intended for GPU proving paths that already own a device-resident
+    /// matrix and need to reuse `RowMajorMatrix` shape/device metadata without
+    /// allocating a duplicate host-side zero matrix. Callers must not use host
+    /// value accessors unless they later materialize host values separately.
+    pub fn new_by_device_backing<D: Any + Send + Sync + 'static>(
+        num_rows: usize,
+        num_cols: usize,
+        padding_strategy: InstancePaddingStrategy,
+        storage: D,
+        layout: DeviceMatrixLayout,
+    ) -> Self {
+        let num_row_padded = next_pow2_instance_padding(num_rows);
+        let mut matrix = RowMajorMatrix {
+            inner: p3::matrix::dense::RowMajorMatrix::new(vec![], num_cols),
+            num_rows,
+            log2_num_rotation: 0,
+            is_padded: matches!(padding_strategy, InstancePaddingStrategy::Default),
+            padding_strategy,
+            host_elided_padded_height: Some(num_row_padded),
+            device_backing: None,
+        };
+        matrix.set_device_backing(storage, layout);
+        matrix
     }
 
     pub fn new_by_inner_matrix(
@@ -148,6 +216,8 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + PrimeCharacteristicRing> 
             log2_num_rotation: 0,
             is_padded: matches!(padding_strategy, InstancePaddingStrategy::Default),
             padding_strategy,
+            host_elided_padded_height: None,
+            device_backing: None,
         }
     }
 
@@ -166,9 +236,53 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + PrimeCharacteristicRing> 
         next_pow2_instance_padding(self.num_instances()) - self.num_instances()
     }
 
+    /// Attach opaque device-resident storage for callers that materialize this witness
+    /// on accelerators. Witness keeps only metadata here so GPU integrations can cache a
+    /// buffer next to the host matrix without introducing device-specific dependencies.
+    ///
+    /// There is no automatic host<->device synchronization. The backing is only valid
+    /// while the host-side matrix contents and shape remain unchanged. Any mutable access
+    /// to the matrix clears this metadata conservatively.
+    pub fn set_device_backing<D: Any + Send + Sync + 'static>(
+        &mut self,
+        storage: D,
+        layout: DeviceMatrixLayout,
+    ) {
+        self.device_backing = Some(DeviceMatrixBacking {
+            storage: Arc::new(storage),
+            layout,
+        });
+    }
+
+    /// Explicitly drop any attached device metadata.
+    pub fn clear_device_backing(&mut self) {
+        self.invalidate_device_backing();
+    }
+
+    /// Whether this matrix currently has device metadata attached.
+    pub fn has_device_backing(&self) -> bool {
+        self.device_backing.is_some()
+    }
+
+    /// Report how the attached device buffer is laid out, if present.
+    pub fn device_backing_layout(&self) -> Option<DeviceMatrixLayout> {
+        self.device_backing.as_ref().map(|backing| backing.layout)
+    }
+
+    /// Downcast the opaque device handle to the concrete type stored by the caller.
+    pub fn device_backing_ref<D: Any + Send + Sync + 'static>(&self) -> Option<&D> {
+        self.device_backing
+            .as_ref()
+            .and_then(|backing| backing.storage.downcast_ref::<D>())
+    }
+
     // return raw num_instances without rotation
     pub fn num_instances(&self) -> usize {
         self.num_rows
+    }
+
+    pub fn occupied_physical_rows(&self) -> usize {
+        self.num_instances() * Self::num_rotation(self.log2_num_rotation)
     }
 
     fn num_rotation(log2_num_rotation: usize) -> usize {
@@ -177,17 +291,19 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + PrimeCharacteristicRing> 
 
     pub fn iter_rows(&self) -> Chunks<'_, T> {
         let num_rotation = Self::num_rotation(self.log2_num_rotation);
-        self.inner.values[..self.num_instances() * num_rotation * self.n_col()]
+        self.inner.values[..self.occupied_physical_rows() * self.n_col()]
             .chunks(num_rotation * self.inner.width)
     }
 
     pub fn iter_mut(&mut self) -> ChunksMut<'_, T> {
+        self.invalidate_device_backing();
         let num_rotation = Self::num_rotation(self.log2_num_rotation);
-        let max_range = self.num_instances() * num_rotation * self.n_col();
+        let max_range = self.occupied_physical_rows() * self.n_col();
         self.inner.values[..max_range].chunks_mut(num_rotation * self.inner.width)
     }
 
     pub fn par_batch_iter_mut(&mut self, num_rows: usize) -> rayon::slice::ChunksMut<'_, T> {
+        self.invalidate_device_backing();
         let num_rotation = Self::num_rotation(self.log2_num_rotation);
         let max_range = self.num_instances() * self.n_col() * num_rotation;
         self.inner.values[..max_range].par_chunks_mut(num_rows * num_rotation * self.inner.width)
@@ -196,6 +312,10 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + PrimeCharacteristicRing> 
     pub fn padding_by_strategy(&mut self) {
         let num_rotation = Self::num_rotation(self.log2_num_rotation);
         let start_index = self.num_instances() * num_rotation * self.n_col();
+
+        if matches!(self.padding_strategy, InstancePaddingStrategy::Custom(_)) {
+            self.invalidate_device_backing();
+        }
 
         match &self.padding_strategy {
             InstancePaddingStrategy::Default => (),
@@ -218,17 +338,40 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default + PrimeCharacteristicRing> 
     }
 
     pub fn values(&self) -> &[T] {
+        assert!(
+            self.host_elided_padded_height.is_none(),
+            "host values were elided for this device-backed RowMajorMatrix"
+        );
         &self.inner.values
     }
 
     pub fn pad_to_height(&mut self, new_height: usize, fill: T) {
+        assert!(
+            self.host_elided_padded_height.is_none(),
+            "cannot pad RowMajorMatrix with elided host values"
+        );
         let (cur_height, n_cols) = (self.height(), self.n_col());
         assert!(new_height >= cur_height);
-        self.values.par_extend(
+        self.invalidate_device_backing();
+        self.inner.values.par_extend(
             (0..(new_height - cur_height) * n_cols)
                 .into_par_iter()
                 .map(|_| fill),
         );
+    }
+}
+
+impl<T: Sized + Sync + Clone + Send + Copy> Clone for RowMajorMatrix<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            num_rows: self.num_rows,
+            log2_num_rotation: self.log2_num_rotation,
+            is_padded: self.is_padded,
+            padding_strategy: self.padding_strategy.clone(),
+            host_elided_padded_height: self.host_elided_padded_height,
+            device_backing: None,
+        }
     }
 }
 
@@ -299,6 +442,7 @@ impl<T: Sized + Sync + Clone + Send + Copy + Default> Deref for RowMajorMatrix<T
 
 impl<T: Sized + Sync + Clone + Send + Copy + Default> DerefMut for RowMajorMatrix<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        self.device_backing = None;
         &mut self.inner
     }
 }
@@ -325,4 +469,38 @@ macro_rules! set_fixed_val {
     ($ins:ident, $field:expr, $val:expr) => {
         $ins[$field.0] = $val;
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DeviceMatrixLayout, InstancePaddingStrategy, RowMajorMatrix};
+    use p3::goldilocks::Goldilocks;
+
+    #[test]
+    fn clone_clears_device_backing() {
+        let mut matrix = RowMajorMatrix::<Goldilocks>::new(2, 2, InstancePaddingStrategy::Default);
+        matrix.set_device_backing(vec![1_u8, 2, 3], DeviceMatrixLayout::RowMajor);
+
+        let cloned = matrix.clone();
+
+        assert!(matrix.has_device_backing());
+        assert!(!cloned.has_device_backing());
+    }
+
+    #[test]
+    fn mutable_access_invalidates_device_backing() {
+        let mut matrix = RowMajorMatrix::<Goldilocks>::new(2, 2, InstancePaddingStrategy::Default);
+        matrix.set_device_backing(vec![1_u8, 2, 3], DeviceMatrixLayout::RowMajor);
+
+        let _ = matrix.iter_mut();
+        assert!(!matrix.has_device_backing());
+
+        matrix.set_device_backing(vec![1_u8, 2, 3], DeviceMatrixLayout::RowMajor);
+        matrix.pad_to_height(4, Goldilocks::default());
+        assert!(!matrix.has_device_backing());
+
+        matrix.set_device_backing(vec![1_u8, 2, 3], DeviceMatrixLayout::RowMajor);
+        let _ = &mut *matrix;
+        assert!(!matrix.has_device_backing());
+    }
 }

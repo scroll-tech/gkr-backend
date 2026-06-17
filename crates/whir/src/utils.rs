@@ -104,7 +104,7 @@ pub fn stack_evaluations_mut_rmm<F: Field>(
     folding_factor: usize,
 ) {
     let folding_factor_exp = 1 << folding_factor;
-    assert!(rmm.height() % folding_factor_exp == 0);
+    assert!(rmm.height().is_multiple_of(folding_factor_exp));
     let size_of_new_domain = rmm.height() / folding_factor_exp;
 
     // interpret evals as (folding_factor_exp x size_of_new_domain)-matrix and transpose in-place

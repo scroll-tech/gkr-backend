@@ -27,18 +27,78 @@ pub struct IOPProverMessage<E: ExtensionField> {
     pub evaluations: Vec<E>,
 }
 
+/// Runtime mode for sumcheck prover internals.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SumcheckProverMode {
+    /// Frontload layout. Short MLEs are bound to early variables and missing variables
+    /// contribute frontload tail factors.
+    #[default]
+    Frontload,
+    /// Legacy suffix/backend-loaded, allocation-stable path.
+    LegacyStable,
+    /// Reduce peak memory by deferring first-round fixing and using direct round-2 evaluation.
+    /// This is also a suffix/backend-loaded path.
+    ReducedPeakMemory,
+}
+
+#[derive(Default)]
+pub(crate) struct LegacyProverContext;
+
+#[derive(Default)]
+pub(crate) struct ReducedPeakMemoryContext<E: ExtensionField> {
+    /// Defer fixing the MLEs until the second-round challenge arrives.
+    pub pending_r0: Option<E>,
+}
+
+pub(crate) enum ProverInnerContext<E: ExtensionField> {
+    // Standard path: fix one variable each round and use existing univariate builder.
+    Legacy(LegacyProverContext),
+    // Optimized path: defer r0 handling and fuse first two rounds to lower peak memory.
+    ReducedPeakMemory(ReducedPeakMemoryContext<E>),
+}
+
+impl<E: ExtensionField> Default for ProverInnerContext<E> {
+    fn default() -> Self {
+        Self::Legacy(LegacyProverContext)
+    }
+}
+
+impl<E: ExtensionField> ProverInnerContext<E> {
+    pub(crate) fn mode(&self) -> SumcheckProverMode {
+        match self {
+            Self::Legacy(_) => SumcheckProverMode::LegacyStable,
+            Self::ReducedPeakMemory(_) => SumcheckProverMode::ReducedPeakMemory,
+        }
+    }
+
+    pub(crate) fn from_mode(mode: SumcheckProverMode) -> Self {
+        match mode {
+            SumcheckProverMode::Frontload => {
+                panic!("frontload mode is only available through IOPProverState::prove")
+            }
+            SumcheckProverMode::LegacyStable => Self::Legacy(LegacyProverContext),
+            SumcheckProverMode::ReducedPeakMemory => {
+                Self::ReducedPeakMemory(ReducedPeakMemoryContext::default())
+            }
+        }
+    }
+}
+
 /// Prover State of a PolyIOP.
 #[derive(Default)]
 pub struct IOPProverState<'a, E: ExtensionField> {
     pub is_main_worker: bool,
     /// sampled randomness given by the verifier
     pub challenges: Vec<Challenge<E>>,
+    /// Per-mode internal state for divergent prover flows.
+    pub(crate) inner_ctx: ProverInnerContext<E>,
     /// the current round number
     pub(crate) round: usize,
     /// pointer to the virtual polynomial
     pub(crate) poly: VirtualPolynomial<'a, E>,
     pub(crate) max_num_variables: usize,
     pub(crate) poly_meta: Vec<PolyMeta>,
+    pub(crate) final_evaluations: Option<Vec<Vec<E>>>,
     /// phase 1 and phase 2 sumcheck we share similar implementation
     /// thus this option variable only use for phase 1 sumcheck to mark how many variables belongs to phase 2
     pub(crate) phase2_numvar: Option<usize>,

@@ -42,5 +42,10 @@ jobs:
       - name: Install cargo make
         run: |
           cargo make --version || cargo install cargo-make
-      - name: run test
+      - name: Test (serial)
+        run: cargo test --workspace --lib
+        env:
+          RUST_MIN_STACK: "33554432"
+
+      - name: Test (parallel + SIMD)
         run: cargo make tests

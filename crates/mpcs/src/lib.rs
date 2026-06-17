@@ -201,6 +201,13 @@ pub trait PolynomialCommitmentScheme<E: ExtensionField>: Clone {
     fn get_arc_mle_witness_from_commitment(
         commitment: &Self::CommitmentWithWitness,
     ) -> Vec<ArcMultilinearExtension<'static, E>>;
+
+    fn proof_size_breakdown(proof: &Self::Proof) -> Vec<(String, u64)> {
+        vec![(
+            "total".to_string(),
+            bincode::serialized_size(proof).unwrap_or(0),
+        )]
+    }
 }
 
 #[derive(
@@ -217,6 +224,10 @@ pub enum PowStrategy {
 
 pub trait PCSFriParam {
     fn get_pow_bits_by_level(&self, pow_strategy: PowStrategy) -> usize;
+
+    fn get_max_message_size_log(&self) -> usize {
+        usize::MAX
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -266,6 +277,13 @@ pub mod basefold;
 pub use basefold::{
     Basefold, BasefoldCommitment, BasefoldCommitmentWithWitness, BasefoldDefault, BasefoldParams,
     BasefoldRSParams, BasefoldSpec, EncodingScheme, RSCode, RSCodeDefaultSpec,
+};
+pub mod jagged;
+pub use jagged::{
+    JAGGED_RESHAPE_GROUP_WIDTH, Jagged, JaggedBatchOpenProof, JaggedCommitment,
+    JaggedCommitmentWithWitness, JaggedProof, JaggedSumcheckInput, assist_sumcheck_prove,
+    evaluate_g, evaluate_g_backward, evaluate_g_forward, jagged_batch_open, jagged_batch_verify,
+    jagged_commit, jagged_sumcheck_prove,
 };
 #[cfg(feature = "whir")]
 extern crate whir as whir_external;

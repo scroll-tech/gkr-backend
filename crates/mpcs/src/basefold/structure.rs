@@ -81,8 +81,33 @@ pub struct BasefoldVerifierParams<E: ExtensionField, Spec: BasefoldSpec<E>> {
     pub(super) security_level: SecurityLevel,
 }
 
-impl_pcs_fri_param!(BasefoldProverParams);
 impl_pcs_fri_param!(BasefoldVerifierParams);
+
+// Do not use `impl_pcs_fri_param!(BasefoldProverParams)` here.
+//
+// The macro only provides the FRI proof-of-work security parameter and would
+// leave `PCSFriParam::get_max_message_size_log` at its default `usize::MAX`.
+// Prover params must expose the real encoding message-size bound because
+// Jagged PCS uses it to choose the q' reshape height before committing through
+// Basefold. Returning the default would let Jagged construct a q' shape that
+// exceeds the inner Basefold encoding limit.
+impl<E: ExtensionField, Spec: BasefoldSpec<E>> PCSFriParam for BasefoldProverParams<E, Spec> {
+    fn get_pow_bits_by_level(&self, pow_strategy: crate::PowStrategy) -> usize {
+        match (
+            &self.security_level,
+            pow_strategy,
+            <Spec::EncodingScheme as EncodingScheme<E>>::get_rate_log(),
+            <Spec::EncodingScheme as EncodingScheme<E>>::get_number_queries(),
+        ) {
+            (SecurityLevel::Conjecture100bits, crate::PowStrategy::FriPow, 1, 100) => 16,
+            _ => unimplemented!(),
+        }
+    }
+
+    fn get_max_message_size_log(&self) -> usize {
+        self.encoding_params.get_max_message_size_log()
+    }
+}
 
 /// A polynomial commitment together with all the data (e.g., the codeword, and Merkle tree)
 /// used to generate this commitment and for assistant in opening

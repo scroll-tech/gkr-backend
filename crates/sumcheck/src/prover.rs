@@ -1,5 +1,6 @@
 use std::{mem, sync::Arc};
 
+use either::Either;
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use multilinear_extensions::{
@@ -16,8 +17,12 @@ use transcript::{Challenge, Transcript};
 
 use crate::{
     extrapolate::ExtrapolationCache,
+    frontload::{self, FrontloadProverState},
     macros::{entered_span, exit_span},
-    structs::{IOPProof, IOPProverMessage, IOPProverState},
+    structs::{
+        IOPProof, IOPProverMessage, IOPProverState, ProverInnerContext, ReducedPeakMemoryContext,
+        SumcheckProverMode,
+    },
     util::{
         AdditiveArray, AdditiveVec, extrapolate_from_table, merge_sumcheck_polys,
         merge_sumcheck_prover_state,
@@ -90,13 +95,15 @@ impl<'a, E: ExtensionField> Phase1WorkerState<'a, E> {
         poly: VirtualPolynomial<'a, E>,
         phase2_numvar: usize,
         poly_meta: Option<Vec<PolyMeta>>,
+        mode: SumcheckProverMode,
     ) -> Self {
         Self {
-            prover_state: IOPProverState::prover_init_with_extrapolation_aux(
+            prover_state: IOPProverState::prover_init_with_extrapolation_aux_with_mode(
                 is_main_worker,
                 poly,
                 Some(phase2_numvar),
                 poly_meta,
+                mode,
             ),
             challenge: None,
         }
@@ -110,6 +117,85 @@ impl<'a, E: ExtensionField> Phase1WorkerState<'a, E> {
 }
 
 impl<'a, E: ExtensionField> IOPProverState<'a, E> {
+    fn log_sumcheck_diag(virtual_poly: &VirtualPolynomials<'a, E>, mode: SumcheckProverMode) {
+        if std::env::var_os("CENO_SUMCHECK_DIAG").is_none() {
+            return;
+        }
+
+        let (polys, poly_meta) = virtual_poly.as_view().get_batched_polys();
+        let Some(first_poly) = polys.first() else {
+            tracing::info!("[sumcheck-diag] mode={mode:?} empty=true");
+            return;
+        };
+
+        let mut degree_hist = std::collections::BTreeMap::<usize, usize>::new();
+        let mut term_max_vars_hist = std::collections::BTreeMap::<usize, usize>::new();
+        let mut mixed_term_count = 0usize;
+        let mut phase2_only_mles = 0usize;
+        let mut normal_mles = 0usize;
+
+        for meta in &poly_meta {
+            match meta {
+                PolyMeta::Normal => normal_mles += 1,
+                PolyMeta::Phase2Only => phase2_only_mles += 1,
+            }
+        }
+
+        for monomial_terms in &first_poly.products {
+            for Term { product, .. } in &monomial_terms.terms {
+                *degree_hist.entry(product.len()).or_default() += 1;
+                let max_vars = product
+                    .iter()
+                    .map(|idx| first_poly.flattened_ml_extensions[*idx].num_vars())
+                    .max()
+                    .unwrap_or(0);
+                let min_vars = product
+                    .iter()
+                    .map(|idx| first_poly.flattened_ml_extensions[*idx].num_vars())
+                    .min()
+                    .unwrap_or(0);
+                if min_vars != max_vars {
+                    mixed_term_count += 1;
+                }
+                *term_max_vars_hist.entry(max_vars).or_default() += 1;
+            }
+        }
+
+        let total_terms = degree_hist.values().sum::<usize>();
+        tracing::info!(
+            "[sumcheck-diag] mode={mode:?} threads={} local_vars={} global_vars={} max_degree={} mles={} normal_mles={} phase2_only_mles={} products={} terms={} mixed_terms={} degree_hist={:?} term_max_vars_hist={:?}",
+            virtual_poly.num_threads,
+            first_poly.aux_info.max_num_variables,
+            first_poly.aux_info.max_num_variables + ceil_log2(virtual_poly.num_threads),
+            first_poly.aux_info.max_degree,
+            first_poly.flattened_ml_extensions.len(),
+            normal_mles,
+            phase2_only_mles,
+            first_poly.products.len(),
+            total_terms,
+            mixed_term_count,
+            degree_hist,
+            term_max_vars_hist,
+        );
+    }
+
+    fn from_frontload_state(
+        max_num_variables: usize,
+        state: FrontloadProverState<E>,
+    ) -> IOPProverState<'a, E> {
+        IOPProverState {
+            is_main_worker: true,
+            challenges: state.challenges,
+            inner_ctx: ProverInnerContext::from_mode(SumcheckProverMode::LegacyStable),
+            round: max_num_variables,
+            poly: VirtualPolynomial::default(),
+            max_num_variables,
+            poly_meta: vec![],
+            final_evaluations: Some(state.final_evaluations),
+            phase2_numvar: None,
+        }
+    }
+
     /// Given a virtual polynomial, generate an IOP proof.
     /// multi-threads model follow https://arxiv.org/pdf/2210.00264#page=8 "distributed sumcheck"
     /// This is experiment features. It's preferable that we move parallel level up more to
@@ -124,6 +210,44 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         virtual_poly: VirtualPolynomials<'a, E>,
         transcript: &mut impl Transcript<E>,
     ) -> (IOPProof<E>, IOPProverState<'a, E>) {
+        if std::env::var_os("CENO_SUMCHECK_FORCE_SUFFIX").is_some() {
+            return Self::prove_suffix(virtual_poly, transcript);
+        }
+        Self::prove_with_mode(virtual_poly, transcript, SumcheckProverMode::Frontload)
+    }
+
+    pub fn prove_suffix(
+        virtual_poly: VirtualPolynomials<'a, E>,
+        transcript: &mut impl Transcript<E>,
+    ) -> (IOPProof<E>, IOPProverState<'a, E>) {
+        #[cfg(feature = "reduce-peak-memory")]
+        let mode = SumcheckProverMode::ReducedPeakMemory;
+        #[cfg(not(feature = "reduce-peak-memory"))]
+        let mode = SumcheckProverMode::LegacyStable;
+
+        Self::prove_with_mode(virtual_poly, transcript, mode)
+    }
+
+    #[tracing::instrument(
+        skip_all,
+        name = "sumcheck::prove_with_mode",
+        level = "trace",
+        fields(profiling_5)
+    )]
+    pub fn prove_with_mode(
+        virtual_poly: VirtualPolynomials<'a, E>,
+        transcript: &mut impl Transcript<E>,
+        mode: SumcheckProverMode,
+    ) -> (IOPProof<E>, IOPProverState<'a, E>) {
+        Self::log_sumcheck_diag(&virtual_poly, mode);
+        if mode == SumcheckProverMode::Frontload {
+            let (proof, state) = frontload::prove_2phase(virtual_poly, transcript);
+            let prover_state = Self::from_frontload_state(proof.proofs.len(), state);
+            return (proof, prover_state);
+        }
+
+        // Runtime mode is threaded through both phase-1 workers and merged phase-2 state
+        // so a caller gets consistent flow selection for the full proof.
         let max_thread_id = virtual_poly.num_threads;
         let (polys, poly_meta) = virtual_poly.get_batched_polys();
 
@@ -170,6 +294,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                 max_degree,
                 polys,
                 transcript,
+                mode,
             );
             exit_span!(span);
             if log2_max_thread_id == 0 {
@@ -183,18 +308,25 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             }
             let span = entered_span!("merged_poly", profiling_6 = true);
             let poly = merge_sumcheck_prover_state(&prover_states);
-            let mut phase2_sumcheck_state =
-                Self::prover_init_with_extrapolation_aux(true, poly, None, None);
+            // phase 2 always use legacy mode
+            let mut phase2_sumcheck_state = Self::prover_init_with_extrapolation_aux_with_mode(
+                true,
+                poly,
+                None,
+                None,
+                SumcheckProverMode::LegacyStable,
+            );
             phase2_sumcheck_state.push_challenges(prover_states[0].challenges.clone());
             exit_span!(span);
             (phase2_sumcheck_state, prover_msgs)
         } else {
             (
-                Self::prover_init_with_extrapolation_aux(
+                Self::prover_init_with_extrapolation_aux_with_mode(
                     true,
                     merge_sumcheck_polys(polys.iter().collect_vec(), Some(poly_meta)),
                     None,
                     None,
+                    mode,
                 ),
                 vec![],
             )
@@ -238,6 +370,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         max_degree: usize,
         mut polys: Vec<VirtualPolynomial<'a, E>>,
         transcript: &mut impl Transcript<E>,
+        mode: SumcheckProverMode,
     ) -> (Vec<IOPProverState<'a, E>>, Vec<IOPProverMessage<E>>) {
         let log2_max_thread_id = ceil_log2(max_thread_id); // do not support SIZE not power of 2
 
@@ -252,6 +385,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                     mem::take(poly),
                     log2_max_thread_id,
                     Some(poly_meta.clone()),
+                    mode,
                 )
             })
             .collect();
@@ -270,6 +404,22 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         polynomial: VirtualPolynomial<'a, E>,
         phase2_numvar: Option<usize>,
         poly_meta: Option<Vec<PolyMeta>>,
+    ) -> Self {
+        Self::prover_init_with_extrapolation_aux_with_mode(
+            is_main_worker,
+            polynomial,
+            phase2_numvar,
+            poly_meta,
+            SumcheckProverMode::LegacyStable,
+        )
+    }
+
+    pub fn prover_init_with_extrapolation_aux_with_mode(
+        is_main_worker: bool,
+        polynomial: VirtualPolynomial<'a, E>,
+        phase2_numvar: Option<usize>,
+        poly_meta: Option<Vec<PolyMeta>>,
+        mode: SumcheckProverMode,
     ) -> Self {
         let start = entered_span!("sum check prover init");
         assert_ne!(
@@ -294,9 +444,11 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             // This accounts for multiple phases and potential continuation challenges,
             // ensuring we avoid reallocations when the protocol spans multiple rounds
             challenges: Vec::with_capacity(2 * polynomial.aux_info.max_num_variables),
+            inner_ctx: ProverInnerContext::from_mode(mode),
             round: 0,
             poly: polynomial,
             poly_meta: poly_meta.unwrap_or_else(|| vec![PolyMeta::Normal; num_polys]),
+            final_evaluations: None,
             phase2_numvar,
         }
     }
@@ -344,7 +496,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             let chal = challenge.unwrap();
             self.challenges.push(chal);
             let r = self.challenges.last().unwrap();
-            self.fix_var(r.elements);
+            self.handle_round_challenge(r.elements);
         }
         exit_span!(span);
         // exit_span!fix_argument);
@@ -354,7 +506,48 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         // Step 2: generate sum for the partial evaluated polynomial:
         // f(r_1, ... r_m,, x_{m+1}... x_n)
         let span = entered_span!("build_uni_poly");
-        let AdditiveVec(mut uni_polys) = self.poly.products.iter().fold(
+        let AdditiveVec(mut uni_polys) = self.build_uni_poly_with_context();
+        exit_span!(span);
+
+        exit_span!(start);
+
+        assert!(uni_polys.len() > 1);
+        // NOTE remove uni_polys.eval(0) from lagrange domain
+        // as verifier can derive via claim - uni_polys.eval(1)
+        uni_polys.remove(0);
+
+        IOPProverMessage {
+            evaluations: uni_polys,
+        }
+    }
+
+    #[inline]
+    fn handle_round_challenge(&mut self, r: E) {
+        match &mut self.inner_ctx {
+            ProverInnerContext::Legacy(_) => self.fix_var(r),
+            ProverInnerContext::ReducedPeakMemory(ctx) => {
+                if self.round == 1 {
+                    // Defer first challenge fix and avoid materializing round-1 folded buffers.
+                    ctx.pending_r0 = Some(r);
+                } else {
+                    self.fix_var(r);
+                }
+            }
+        }
+    }
+
+    fn build_uni_poly_with_context(&self) -> AdditiveVec<E> {
+        match &self.inner_ctx {
+            ProverInnerContext::ReducedPeakMemory(ReducedPeakMemoryContext {
+                pending_r0: Some(r0),
+            }) => self.build_uni_poly_round2(*r0),
+            // Legacy, or reduced-memory before deferral is armed, share default path.
+            _ => self.build_uni_poly_default(),
+        }
+    }
+
+    fn build_uni_poly_default(&self) -> AdditiveVec<E> {
+        self.poly.products.iter().fold(
             AdditiveVec::new(self.poly.aux_info.max_degree + 1),
             |mut uni_polys, MonomialTerms { terms }| {
                 for Term {
@@ -386,38 +579,249 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                         .iter_mut()
                         .zip(uni_variate_monomial)
                         .take(prod.len() + 1)
-                        .for_each(|(eval, monimial_eval,)| either::for_both!(scalar, scalar => *eval = monimial_eval**scalar));
-
+                        .for_each(|(eval, monimial_eval)| {
+                            either::for_both!(scalar, scalar => *eval = monimial_eval * *scalar)
+                        });
 
                     if prod.len() < self.poly.aux_info.max_degree {
-                        // Perform extrapolation using the precomputed extrapolation table
-                        extrapolate_from_table(
-                            &mut uni_variate,
-                            prod.len() + 1,
-                        );
+                        // Perform extrapolation using the precomputed extrapolation table.
+                        extrapolate_from_table(&mut uni_variate, prod.len() + 1);
                     }
 
                     uni_polys += AdditiveVec(uni_variate);
                 }
                 uni_polys
             },
-        );
-        exit_span!(span);
+        )
+    }
 
-        exit_span!(start);
+    /// Returns `(y0, dy)` where `y0 = fi(r0, 0, b)` and `dy = fi(r0, 1, b) - y0`,
+    /// so that `fi(r0, x, b) = y0 + dy * x` for any `x`.
+    /// Computing these once per block amortises the r0 multiplications across all x values.
+    #[inline(always)]
+    fn mle_eval_round2_endpoints_ext(block: &[E], r0: E) -> (E, E) {
+        let y0 = block[0] + (block[1] - block[0]) * r0;
+        let y1 = block[2] + (block[3] - block[2]) * r0;
+        (y0, y1 - y0)
+    }
 
-        assert!(uni_polys.len() > 1);
-        // NOTE remove uni_polys.eval(0) from lagrange domain
-        // as verifier can derive via claim - uni_polys.eval(1)
-        uni_polys.remove(0);
+    #[inline(always)]
+    fn mle_eval_round2_endpoints_base(block: &[E::BaseField], r0: E) -> (E, E) {
+        let y0 = r0 * (block[1] - block[0]) + block[0];
+        let y1 = r0 * (block[3] - block[2]) + block[2];
+        (y0, y1 - y0)
+    }
 
-        IOPProverMessage {
-            evaluations: uni_polys,
+    #[inline(always)]
+    fn mle_eval_round2_endpoints(block: Either<&[E::BaseField], &[E]>, r0: E) -> (E, E) {
+        match block {
+            Either::Left(b) => Self::mle_eval_round2_endpoints_base(b, r0),
+            Either::Right(b) => Self::mle_eval_round2_endpoints_ext(b, r0),
         }
+    }
+
+    #[inline(always)]
+    fn mle_eval_round2_endpoints_partial(block: Either<&[E::BaseField], &[E]>, r0: E) -> (E, E) {
+        match block {
+            Either::Left(b) => {
+                let v0 = b.first().copied().map(E::from).unwrap_or(E::ZERO);
+                let v1 = b.get(1).copied().map(E::from).unwrap_or(E::ZERO);
+                let v2 = b.get(2).copied().map(E::from).unwrap_or(E::ZERO);
+                let v3 = b.get(3).copied().map(E::from).unwrap_or(E::ZERO);
+                let y0 = v0 + (v1 - v0) * r0;
+                let y1 = v2 + (v3 - v2) * r0;
+                (y0, y1 - y0)
+            }
+            Either::Right(b) => {
+                let v0 = b.first().copied().unwrap_or(E::ZERO);
+                let v1 = b.get(1).copied().unwrap_or(E::ZERO);
+                let v2 = b.get(2).copied().unwrap_or(E::ZERO);
+                let v3 = b.get(3).copied().unwrap_or(E::ZERO);
+                let y0 = v0 + (v1 - v0) * r0;
+                let y1 = v2 + (v3 - v2) * r0;
+                (y0, y1 - y0)
+            }
+        }
+    }
+
+    /// Returns `(y0, dy)` where `y0 = fi(0, b)` and `dy = fi(1, b) - y0`,
+    /// so that `fi(x, b) = y0 + dy * x` for any `x`.
+    #[inline(always)]
+    fn mle_eval_round1_endpoints_ext(block: &[E]) -> (E, E) {
+        (block[0], block[1] - block[0])
+    }
+
+    #[inline(always)]
+    fn mle_eval_round1_endpoints_base(block: &[E::BaseField]) -> (E, E) {
+        (block[0].into(), (block[1] - block[0]).into())
+    }
+
+    #[inline(always)]
+    fn mle_eval_round1_endpoints(block: Either<&[E::BaseField], &[E]>) -> (E, E) {
+        match block {
+            Either::Left(b) => Self::mle_eval_round1_endpoints_base(b),
+            Either::Right(b) => Self::mle_eval_round1_endpoints_ext(b),
+        }
+    }
+
+    #[inline(always)]
+    fn mle_eval_round1_endpoints_partial(block: Either<&[E::BaseField], &[E]>) -> (E, E) {
+        match block {
+            Either::Left(b) => {
+                let lo = b.first().copied().map(E::from).unwrap_or(E::ZERO);
+                let hi = b.get(1).copied().map(E::from).unwrap_or(E::ZERO);
+                (lo, hi - lo)
+            }
+            Either::Right(b) => {
+                let lo = b.first().copied().unwrap_or(E::ZERO);
+                let hi = b.get(1).copied().unwrap_or(E::ZERO);
+                (lo, hi - lo)
+            }
+        }
+    }
+
+    /// build univariate polynomial for round 2 directly from original MLE evaluations
+    /// h(x) = \sum_b f(r0, x, b)
+    ///      = eq(r0,0)*f(0,x,b) + eq(r0,1)*f(1,x,b)
+    fn build_uni_poly_round2(&self, r0: E) -> AdditiveVec<E> {
+        self.poly.products.iter().fold(
+            AdditiveVec::new(self.poly.aux_info.max_degree + 1),
+            |mut uni_polys, MonomialTerms { terms }| {
+                for Term {
+                    scalar,
+                    product: prod,
+                } in terms
+                {
+                    let f = &self.poly.flattened_ml_extensions;
+                    let get_poly_meta = || self.poly_meta[prod[0]];
+                    let num_var = f[prod[0]].num_vars();
+
+                    let mut uni_variate = vec![E::ZERO; self.poly.aux_info.max_degree + 1];
+                    let degree = prod.len();
+
+                    if num_var == self.max_num_variables
+                        && matches!(get_poly_meta(), PolyMeta::Normal)
+                    {
+                        // Batch all x-evaluations per block b.
+                        // For each b, compute (y0_i, dy_i) = (fi(r0,0,b), fi(r0,1,b)-fi(r0,0,b))
+                        // once, then evaluate fi(r0,x,b) = y0_i + dy_i*x for every x.
+                        // This amortises the r0 multiplications across all x values.
+                        let evals_len = f[prod[0]].evaluations().len();
+                        let x_felts: Vec<E::BaseField> = (0..=degree)
+                            .map(|x| E::BaseField::from_u32(x as u32))
+                            .collect();
+                        let mut endpoints = vec![(E::ZERO, E::ZERO); degree];
+                        let quad_len = evals_len / 4 * 4;
+                        for b in (0..quad_len).step_by(4) {
+                            for (k, &poly_idx) in prod.iter().enumerate() {
+                                let block = f[poly_idx].as_ref().evaluations().as_slice(b..b + 4);
+                                endpoints[k] = Self::mle_eval_round2_endpoints(block, r0);
+                            }
+                            for (x, &x_felt) in x_felts.iter().enumerate() {
+                                uni_variate[x] += endpoints
+                                    .iter()
+                                    .map(|&(y0, dy)| y0 + dy * x_felt)
+                                    .product::<E>();
+                            }
+                        }
+                        if quad_len < evals_len {
+                            for (k, &poly_idx) in prod.iter().enumerate() {
+                                let block = f[poly_idx]
+                                    .as_ref()
+                                    .evaluations()
+                                    .as_slice(quad_len..evals_len);
+                                endpoints[k] = Self::mle_eval_round2_endpoints_partial(block, r0);
+                            }
+                            for (x, &x_felt) in x_felts.iter().enumerate() {
+                                uni_variate[x] += endpoints
+                                    .iter()
+                                    .map(|&(y0, dy)| y0 + dy * x_felt)
+                                    .product::<E>();
+                            }
+                        }
+                    } else if num_var + 1 == self.max_num_variables
+                        && matches!(get_poly_meta(), PolyMeta::Normal)
+                    {
+                        // Same batch trick for the phase-1 case fi(x,b):
+                        // compute (y0_i, dy_i) = (fi(0,b), fi(1,b)-fi(0,b)) once per b,
+                        // then evaluate for all x.
+                        let evals_len = f[prod[0]].evaluations().len();
+                        let x_felts: Vec<E::BaseField> = (0..=degree)
+                            .map(|x| E::BaseField::from_u32(x as u32))
+                            .collect();
+                        let mut endpoints = vec![(E::ZERO, E::ZERO); degree];
+                        let pair_len = largest_even_below(evals_len);
+                        for b in (0..pair_len).step_by(2) {
+                            for (k, &poly_idx) in prod.iter().enumerate() {
+                                let block = f[poly_idx].as_ref().evaluations().as_slice(b..b + 2);
+                                endpoints[k] = Self::mle_eval_round1_endpoints(block);
+                            }
+                            for (x, &x_felt) in x_felts.iter().enumerate() {
+                                uni_variate[x] += endpoints
+                                    .iter()
+                                    .map(|&(y0, dy)| y0 + dy * x_felt)
+                                    .product::<E>();
+                            }
+                        }
+                        if pair_len < evals_len {
+                            for (k, &poly_idx) in prod.iter().enumerate() {
+                                let block = f[poly_idx]
+                                    .as_ref()
+                                    .evaluations()
+                                    .as_slice(pair_len..evals_len);
+                                endpoints[k] = Self::mle_eval_round1_endpoints_partial(block);
+                            }
+                            for (x, &x_felt) in x_felts.iter().enumerate() {
+                                uni_variate[x] += endpoints
+                                    .iter()
+                                    .map(|&(y0, dy)| y0 + dy * x_felt)
+                                    .product::<E>();
+                            }
+                        }
+                    } else {
+                        let uni_variate_monomial: Vec<E> = match prod.len() {
+                            1 => sumcheck_code_gen!(1, false, |i| &f[prod[i]], || get_poly_meta())
+                                .to_vec(),
+                            2 => sumcheck_code_gen!(2, false, |i| &f[prod[i]], || get_poly_meta())
+                                .to_vec(),
+                            3 => sumcheck_code_gen!(3, false, |i| &f[prod[i]], || get_poly_meta())
+                                .to_vec(),
+                            4 => sumcheck_code_gen!(4, false, |i| &f[prod[i]], || get_poly_meta())
+                                .to_vec(),
+                            5 => sumcheck_code_gen!(5, false, |i| &f[prod[i]], || get_poly_meta())
+                                .to_vec(),
+                            6 => sumcheck_code_gen!(6, false, |i| &f[prod[i]], || get_poly_meta())
+                                .to_vec(),
+                            _ => unimplemented!("do not support degree {} > 6", prod.len()),
+                        };
+                        uni_variate
+                            .iter_mut()
+                            .zip(uni_variate_monomial)
+                            .take(degree + 1)
+                            .for_each(|(eval, monomial_eval)| *eval = monomial_eval);
+                    }
+
+                    uni_variate
+                        .iter_mut()
+                        .take(degree + 1)
+                        .for_each(|eval| either::for_both!(scalar, scalar => *eval *= *scalar));
+
+                    if degree < self.poly.aux_info.max_degree {
+                        extrapolate_from_table(&mut uni_variate, degree + 1);
+                    }
+
+                    uni_polys += AdditiveVec(uni_variate);
+                }
+                uni_polys
+            },
+        )
     }
 
     /// collect all mle evaluation (claim) after sumcheck
     pub fn get_mle_final_evaluations(&self) -> Vec<Vec<E>> {
+        if let Some(final_evaluations) = &self.final_evaluations {
+            return final_evaluations.clone();
+        }
         self.poly
             .flattened_ml_extensions
             .iter()
@@ -448,6 +852,13 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
 
     /// fix_var
     pub fn fix_var(&mut self, r: E) {
+        if let ProverInnerContext::ReducedPeakMemory(ctx) = &mut self.inner_ctx {
+            if let Some(r0) = ctx.pending_r0.take() {
+                self.fix_two_vars(r0, r);
+                return;
+            }
+        }
+
         let expected_numvars_at_round = self.expected_numvars_at_round();
         self.poly
             .flattened_ml_extensions
@@ -466,6 +877,60 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                     }
                 }
             });
+    }
+
+    fn fix_two_vars(&mut self, r0: E, r1: E) {
+        // At this point we are consuming round-2 challenge `r1` while `r0` was deferred.
+        // - MLEs with num_vars = expected + 1 still need both `r0` and `r1`.
+        // - MLEs with num_vars = expected were independent of the first round variable,
+        //   so they only need `r1`.
+        let expected_numvars_at_round = self.expected_numvars_at_round();
+        self.poly
+            .flattened_ml_extensions
+            .iter_mut()
+            .zip_eq(&self.poly_meta)
+            .for_each(|(poly, poly_type)| {
+                debug_assert!(poly.num_vars() > 0);
+                if matches!(poly_type, PolyMeta::Normal) {
+                    if poly.num_vars() == expected_numvars_at_round + 1 {
+                        if !poly.is_mut() {
+                            *poly = Arc::new(poly.fix_two_variables(r0, r1));
+                        } else {
+                            let poly = Arc::get_mut(poly).unwrap();
+                            poly.fix_two_variables_in_place(r0, r1)
+                        }
+                    } else if poly.num_vars() == expected_numvars_at_round {
+                        if !poly.is_mut() {
+                            *poly = Arc::new(poly.fix_variables(&[r1]));
+                        } else {
+                            let poly = Arc::get_mut(poly).unwrap();
+                            poly.fix_variables_in_place(&[r1])
+                        }
+                    }
+                }
+            });
+    }
+
+    pub fn set_prover_mode(&mut self, mode: SumcheckProverMode) {
+        assert_ne!(
+            mode,
+            SumcheckProverMode::Frontload,
+            "frontload mode is only available through IOPProverState::prove"
+        );
+        // This resets mode-specific transient state (e.g. deferred r0) intentionally.
+        self.inner_ctx = ProverInnerContext::from_mode(mode);
+    }
+
+    pub fn with_prover_mode(mut self, mode: SumcheckProverMode) -> Self {
+        self.set_prover_mode(mode);
+        self
+    }
+
+    pub fn prover_mode(&self) -> SumcheckProverMode {
+        if self.final_evaluations.is_some() {
+            return SumcheckProverMode::Frontload;
+        }
+        self.inner_ctx.mode()
     }
 }
 
@@ -551,9 +1016,11 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             is_main_worker: true,
             max_num_variables: polynomial.aux_info.max_num_variables,
             challenges: Vec::with_capacity(polynomial.aux_info.max_num_variables),
+            inner_ctx: ProverInnerContext::from_mode(SumcheckProverMode::LegacyStable),
             round: 0,
             poly: polynomial,
             poly_meta,
+            final_evaluations: None,
             phase2_numvar: None,
         };
 

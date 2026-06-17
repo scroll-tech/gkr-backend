@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="720" viewBox="0 0 1180 720" role="img" aria-labelledby="title desc">
+  <title id="title">Worker-aware frontload split</title>
+  <desc id="desc">Comparison of naive worker split and worker-aware frontload split for a 7-variable MLE embedded into a 10-variable domain with four workers.</desc>
+  <defs>
+    <style>
+      .bg { fill: #fbfcfe; }
+      .panel { fill: #ffffff; stroke: #d8dee9; stroke-width: 2; rx: 18; }
+      .title { font: 700 28px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
+      .subtitle { font: 500 17px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #374151; }
+      .label { font: 600 15px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
+      .small { font: 500 13px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #4b5563; }
+      .mono { font: 600 14px "SFMono-Regular", Consolas, "Liberation Mono", monospace; fill: #111827; }
+      .mono-small { font: 600 12px "SFMono-Regular", Consolas, "Liberation Mono", monospace; fill: #111827; }
+      .var-real { fill: #dbeafe; stroke: #60a5fa; }
+      .var-worker { fill: #ede9fe; stroke: #8b5cf6; }
+      .var-tail { fill: #dcfce7; stroke: #22c55e; }
+      .var-zero { fill: #fee2e2; stroke: #ef4444; }
+      .worker-on { fill: #dcfce7; stroke: #16a34a; stroke-width: 2; rx: 10; }
+      .worker-off { fill: #fee2e2; stroke: #dc2626; stroke-width: 2; rx: 10; }
+      .arrow { stroke: #6b7280; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+      .muted-line { stroke: #d1d5db; stroke-width: 2; }
+      .note { fill: #f8fafc; stroke: #cbd5e1; rx: 12; }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#6b7280" />
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1180" height="720" />
+
+  <text class="title" x="40" y="48">Worker-Aware Frontload Split</text>
+  <text class="subtitle" x="40" y="78">Embedding a 7-variable MLE into a 10-variable domain with 4 workers</text>
+
+  <g transform="translate(40,108)">
+    <rect class="note" x="0" y="0" width="1100" height="76" />
+    <text class="label" x="22" y="28">Setup</text>
+    <text class="mono" x="110" y="28">e(x0..x6)</text>
+    <text class="small" x="220" y="28">has 7 real variables</text>
+    <text class="mono" x="455" y="28">x0..x7</text>
+    <text class="small" x="535" y="28">are phase-1 local variables</text>
+    <text class="mono" x="775" y="28">x8,x9</text>
+    <text class="small" x="842" y="28">are worker bits</text>
+    <text class="small" x="22" y="56">Goal: split real non-zero MLE work across all workers before applying frontload tail factors.</text>
+  </g>
+
+  <g transform="translate(40,218)">
+    <rect class="panel" x="0" y="0" width="520" height="440" />
+    <text class="title" x="24" y="42">Naive split</text>
+    <text class="small" x="24" y="70">Pad first, then split by the last variables.</text>
+
+    <text class="mono" x="24" y="110">pad_naive(x0..x9) = e(x0..x6) * x7 * x8 * x9</text>
+    <text class="mono" x="24" y="140">worker chunk = e(x0..x6) * x7 * i0 * i1</text>
+
+    <g transform="translate(24,174)">
+      <text class="label" x="0" y="-14">Variable roles</text>
+      <g>
+        <rect class="var-real" x="0" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="12" y="22">x0</text>
+        <rect class="var-real" x="48" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="60" y="22">x1</text>
+        <rect class="var-real" x="96" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="108" y="22">x2</text>
+        <rect class="var-real" x="144" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="156" y="22">x3</text>
+        <rect class="var-real" x="192" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="204" y="22">x4</text>
+        <rect class="var-real" x="240" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="252" y="22">x5</text>
+        <rect class="var-real" x="288" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="300" y="22">x6</text>
+        <rect class="var-tail" x="336" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="348" y="22">x7</text>
+        <rect class="var-worker" x="384" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="396" y="22">x8</text>
+        <rect class="var-worker" x="432" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="444" y="22">x9</text>
+      </g>
+      <text class="small" x="0" y="62">Worker bits are tail variables, so most workers get zero.</text>
+    </g>
+
+    <g transform="translate(24,285)">
+      <text class="label" x="0" y="-12">Worker workload</text>
+      <rect class="worker-off" x="0" y="0" width="108" height="52"/><text class="mono" x="31" y="25">W00</text><text class="small" x="29" y="43">zero</text>
+      <rect class="worker-off" x="122" y="0" width="108" height="52"/><text class="mono" x="153" y="25">W01</text><text class="small" x="151" y="43">zero</text>
+      <rect class="worker-off" x="244" y="0" width="108" height="52"/><text class="mono" x="275" y="25">W10</text><text class="small" x="273" y="43">zero</text>
+      <rect class="worker-on" x="366" y="0" width="108" height="52"/><text class="mono" x="397" y="25">W11</text><text class="small" x="386" y="43">non-zero</text>
+    </g>
+
+    <g transform="translate(24,372)">
+      <rect class="note" x="0" y="0" width="472" height="46" />
+      <text class="small" x="16" y="19">Result: only the all-one worker receives non-zero tail work.</text>
+      <text class="small" x="16" y="37">Parallelism is wasted for this MLE.</text>
+    </g>
+  </g>
+
+  <g transform="translate(620,218)">
+    <rect class="panel" x="0" y="0" width="520" height="440" />
+    <text class="title" x="24" y="42">Worker-aware frontload split</text>
+    <text class="small" x="24" y="70">Move worker bits into real MLE coordinates, then tail-pad.</text>
+
+    <text class="mono" x="24" y="110">pad_e(x0..x9) = e(x0..x4, x8, x9) * x5 * x6 * x7</text>
+    <text class="mono" x="24" y="140">worker chunk = e(x0..x4, i0, i1) * x5 * x6 * x7</text>
+
+    <g transform="translate(24,174)">
+      <text class="label" x="0" y="-14">Variable roles</text>
+      <g>
+        <rect class="var-real" x="0" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="12" y="22">x0</text>
+        <rect class="var-real" x="48" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="60" y="22">x1</text>
+        <rect class="var-real" x="96" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="108" y="22">x2</text>
+        <rect class="var-real" x="144" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="156" y="22">x3</text>
+        <rect class="var-real" x="192" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="204" y="22">x4</text>
+        <rect class="var-tail" x="240" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="252" y="22">x5</text>
+        <rect class="var-tail" x="288" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="300" y="22">x6</text>
+        <rect class="var-tail" x="336" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="348" y="22">x7</text>
+        <rect class="var-worker" x="384" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="396" y="22">x8</text>
+        <rect class="var-worker" x="432" y="0" width="42" height="34" rx="7"/><text class="mono-small" x="444" y="22">x9</text>
+      </g>
+      <text class="small" x="0" y="62">Worker bits select real slices of e; x5..x7 are local tail factors.</text>
+    </g>
+
+    <g transform="translate(24,285)">
+      <text class="label" x="0" y="-12">Worker workload</text>
+      <rect class="worker-on" x="0" y="0" width="108" height="52"/><text class="mono" x="31" y="25">W00</text><text class="small" x="26" y="43">slice 00</text>
+      <rect class="worker-on" x="122" y="0" width="108" height="52"/><text class="mono" x="153" y="25">W01</text><text class="small" x="148" y="43">slice 01</text>
+      <rect class="worker-on" x="244" y="0" width="108" height="52"/><text class="mono" x="275" y="25">W10</text><text class="small" x="270" y="43">slice 10</text>
+      <rect class="worker-on" x="366" y="0" width="108" height="52"/><text class="mono" x="397" y="25">W11</text><text class="small" x="392" y="43">slice 11</text>
+    </g>
+
+    <g transform="translate(24,372)">
+      <rect class="note" x="0" y="0" width="472" height="46" />
+      <text class="small" x="16" y="19">Result: non-zero MLE data is distributed across all workers.</text>
+      <text class="small" x="16" y="37">Tail factors stay cheap and local in phase 1.</text>
+    </g>
+  </g>
+
+  <g transform="translate(40,676)">
+    <rect class="var-real" x="0" y="-17" width="18" height="18" rx="4"/><text class="small" x="26" y="-3">real MLE coordinate</text>
+    <rect class="var-worker" x="190" y="-17" width="18" height="18" rx="4"/><text class="small" x="216" y="-3">worker bit</text>
+    <rect class="var-tail" x="320" y="-17" width="18" height="18" rx="4"/><text class="small" x="346" y="-3">frontload tail</text>
+    <rect class="worker-off" x="485" y="-17" width="18" height="18" rx="4"/><text class="small" x="511" y="-3">zero worker workload</text>
+  </g>
+</svg>
