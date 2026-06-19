@@ -89,9 +89,9 @@ fn assist_sumcheck_prove_impl<E: ExtensionField>(
     // Extract Boolean symbol pairs in step-major layout:
     // cd_bits[i][y] = 2 * bit_i(t_y) + bit_i(t_{y+1}).
     let mut cd_bits = vec![vec![0u8; num_polys]; n_robp];
-    for i in 0..n_robp {
-        for y in 0..num_polys {
-            cd_bits[i][y] = ((((cumulative_heights[y] >> i) & 1) << 1)
+    for (i, cd_bits_i) in cd_bits.iter_mut().enumerate() {
+        for (y, cd_bit) in cd_bits_i.iter_mut().enumerate() {
+            *cd_bit = ((((cumulative_heights[y] >> i) & 1) << 1)
                 | ((cumulative_heights[y + 1] >> i) & 1)) as u8;
         }
     }
@@ -133,8 +133,8 @@ fn assist_sumcheck_prove_impl<E: ExtensionField>(
 
     let source = source_vec();
     let mut claimed_sum = E::ZERO;
-    for y in 0..num_polys {
-        claimed_sum += eq_col[y] * dot4(&source, &bwd[0][y]);
+    for (y, eq) in eq_col.iter().enumerate().take(num_polys) {
+        claimed_sum += *eq * dot4(&source, &bwd[0][y]);
     }
     if append_claim {
         transcript.append_field_element_ext(&claimed_sum);
