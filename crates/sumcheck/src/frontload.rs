@@ -103,6 +103,7 @@ use crate::{
 pub struct FrontloadProverState<E: ExtensionField> {
     pub challenges: Vec<Challenge<E>>,
     pub final_evaluations: Vec<Vec<E>>,
+    pub claimed_sum: E,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -181,6 +182,7 @@ pub fn prove_2phase<'a, E: ExtensionField>(
     }
     let mut proofs = Vec::with_capacity(global_num_vars);
     let mut challenge: Option<Challenge<E>> = None;
+    let mut claimed_sum = E::ZERO;
 
     for round in 0..local_num_vars {
         workers.par_iter_mut().for_each(|worker| {
@@ -208,6 +210,9 @@ pub fn prove_2phase<'a, E: ExtensionField>(
                     },
                 )
         };
+        if round == 0 {
+            claimed_sum = evaluations[0] + evaluations[1];
+        }
         evaluations.remove(0);
         transcript.append_field_element_exts(&evaluations);
         proofs.push(IOPProverMessage { evaluations });
@@ -249,6 +254,7 @@ pub fn prove_2phase<'a, E: ExtensionField>(
         FrontloadProverState {
             challenges,
             final_evaluations,
+            claimed_sum,
         },
     )
 }
@@ -268,6 +274,7 @@ fn prove_inner<'a, E: ExtensionField>(
 
     let mut proof = Vec::with_capacity(num_vars);
     let mut challenge: Option<Challenge<E>> = None;
+    let mut claimed_sum = E::ZERO;
 
     for round in 0..num_vars {
         if let Some(challenge) = challenge.take() {
@@ -276,6 +283,9 @@ fn prove_inner<'a, E: ExtensionField>(
         }
 
         let mut evaluations = state.round_evaluations(round);
+        if round == 0 {
+            claimed_sum = evaluations[0] + evaluations[1];
+        }
         evaluations.remove(0);
         transcript.append_field_element_exts(&evaluations);
         proof.push(IOPProverMessage { evaluations });
@@ -293,6 +303,7 @@ fn prove_inner<'a, E: ExtensionField>(
         FrontloadProverState {
             challenges: state.challenges,
             final_evaluations,
+            claimed_sum,
         },
     )
 }

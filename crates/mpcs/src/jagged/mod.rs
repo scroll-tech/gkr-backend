@@ -112,7 +112,9 @@ pub mod evaluator;
 pub mod sumcheck;
 mod types;
 
-pub use assist::{assist_sumcheck_prove, compute_q_at_assist_point};
+pub use assist::{
+    assist_sumcheck_prove, assist_sumcheck_prove_and_append_claim, compute_q_at_assist_point,
+};
 pub use evaluator::{evaluate_g, evaluate_g_backward, evaluate_g_forward};
 pub use sumcheck::{JaggedSumcheckInput, QPrimeEvaluations, jagged_sumcheck_prove};
 pub use types::{JaggedBatchOpenProof, JaggedCommitment, JaggedCommitmentWithWitness, JaggedProof};

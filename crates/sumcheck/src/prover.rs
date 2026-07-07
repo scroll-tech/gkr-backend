@@ -192,6 +192,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             max_num_variables,
             poly_meta: vec![],
             final_evaluations: Some(state.final_evaluations),
+            claimed_sum: state.claimed_sum,
             phase2_numvar: None,
         }
     }
@@ -449,6 +450,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             poly: polynomial,
             poly_meta: poly_meta.unwrap_or_else(|| vec![PolyMeta::Normal; num_polys]),
             final_evaluations: None,
+            claimed_sum: E::ZERO,
             phase2_numvar,
         }
     }
@@ -512,6 +514,9 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         exit_span!(start);
 
         assert!(uni_polys.len() > 1);
+        if self.round == 1 {
+            self.claimed_sum = uni_polys[0] + uni_polys[1];
+        }
         // NOTE remove uni_polys.eval(0) from lagrange domain
         // as verifier can derive via claim - uni_polys.eval(1)
         uni_polys.remove(0);
@@ -843,6 +848,10 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             .collect_vec()
     }
 
+    pub fn claimed_sum(&self) -> E {
+        self.claimed_sum
+    }
+
     pub fn expected_numvars_at_round(&self) -> usize {
         // first round start from 1
         let num_vars = self.max_num_variables + 1 - self.round;
@@ -1021,6 +1030,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             poly: polynomial,
             poly_meta,
             final_evaluations: None,
+            claimed_sum: E::ZERO,
             phase2_numvar: None,
         };
 
@@ -1130,6 +1140,9 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         exit_span!(start);
 
         assert!(uni_polys.len() > 1);
+        if self.round == 1 {
+            self.claimed_sum = uni_polys[0] + uni_polys[1];
+        }
         // NOTE remove uni_polys.eval(0) from lagrange domain
         // as verifier can derive via claim - uni_polys.eval(1)
         uni_polys.remove(0);

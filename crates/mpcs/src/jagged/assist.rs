@@ -35,27 +35,64 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
     n_robp: usize,
     transcript: &mut impl Transcript<E>,
 ) -> (IOPProof<E>, Vec<E>) {
+    let (_, proof, challenges) = assist_sumcheck_prove_impl(
+        z_row_padded,
+        rho_padded,
+        eq_col,
+        cumulative_heights,
+        n_robp,
+        transcript,
+        false,
+    );
+    (proof, challenges)
+}
+
+/// Compute the assist claimed sum, append it to the transcript, and run the
+/// assist sumcheck prover using the same ROBP precompute.
+pub fn assist_sumcheck_prove_and_append_claim<E: ExtensionField>(
+    z_row_padded: &[E],
+    rho_padded: &[E],
+    eq_col: &[E],
+    cumulative_heights: &[usize],
+    n_robp: usize,
+    transcript: &mut impl Transcript<E>,
+) -> (E, IOPProof<E>, Vec<E>) {
+    assist_sumcheck_prove_impl(
+        z_row_padded,
+        rho_padded,
+        eq_col,
+        cumulative_heights,
+        n_robp,
+        transcript,
+        true,
+    )
+}
+
+fn assist_sumcheck_prove_impl<E: ExtensionField>(
+    z_row_padded: &[E],
+    rho_padded: &[E],
+    eq_col: &[E],
+    cumulative_heights: &[usize],
+    n_robp: usize,
+    transcript: &mut impl Transcript<E>,
+    append_claim: bool,
+) -> (E, IOPProof<E>, Vec<E>) {
     let num_polys = cumulative_heights.len() - 1;
     let n_vars = 2 * n_robp;
     let max_degree: usize = 2;
-
-    // Write transcript header (must match verifier).
-    transcript.append_message(&n_vars.to_le_bytes());
-    transcript.append_message(&max_degree.to_le_bytes());
 
     // Precompute per-step symbol matrices.
     let step_mats: Vec<[TransitionMatrix<E>; 4]> = (0..n_robp)
         .map(|i| symbol_transition_matrices(z_row_padded[i], rho_padded[i]))
         .collect();
 
-    // Extract Boolean bits in step-major layout: c_bits[i][y], d_bits[i][y].
-    // c_bits[i][y] = bit_i(t_y), d_bits[i][y] = bit_i(t_{y+1})
-    let mut c_bits = vec![vec![0usize; num_polys]; n_robp];
-    let mut d_bits = vec![vec![0usize; num_polys]; n_robp];
-    for i in 0..n_robp {
-        for y in 0..num_polys {
-            c_bits[i][y] = (cumulative_heights[y] >> i) & 1;
-            d_bits[i][y] = (cumulative_heights[y + 1] >> i) & 1;
+    // Extract Boolean symbol pairs in step-major layout:
+    // cd_bits[i][y] = 2 * bit_i(t_y) + bit_i(t_{y+1}).
+    let mut cd_bits = vec![vec![0u8; num_polys]; n_robp];
+    for (i, cd_bits_i) in cd_bits.iter_mut().enumerate() {
+        for (y, cd_bit) in cd_bits_i.iter_mut().enumerate() {
+            *cd_bit = ((((cumulative_heights[y] >> i) & 1) << 1)
+                | ((cumulative_heights[y + 1] >> i) & 1)) as u8;
         }
     }
 
@@ -89,14 +126,27 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
         let dst = &mut left[i];
         let src = &right[0];
         dst.into_par_iter().enumerate().for_each(|(y, dst_y)| {
-            let cd = c_bits[i][y] * 2 + d_bits[i][y];
+            let cd = cd_bits[i][y] as usize;
             *dst_y = mat_vec_mul(&step_mats[i][cd], &src[y]);
         });
     }
 
+    let source = source_vec();
+    let mut claimed_sum = E::ZERO;
+    for (y, eq) in eq_col.iter().enumerate().take(num_polys) {
+        claimed_sum += *eq * dot4(&source, &bwd[0][y]);
+    }
+    if append_claim {
+        transcript.append_field_element_ext(&claimed_sum);
+    }
+
+    // Write transcript header (must match verifier).
+    transcript.append_message(&n_vars.to_le_bytes());
+    transcript.append_message(&max_degree.to_le_bytes());
+
     // Initialize weights and forward vector.
     let mut weights: Vec<E> = eq_col[..num_polys].to_vec();
-    let mut fwd: StateVec<E> = source_vec();
+    let mut fwd: StateVec<E> = source;
 
     let mut challenges: Vec<E> = Vec::with_capacity(n_vars);
     let mut proof_messages: Vec<IOPProverMessage<E>> = Vec::with_capacity(n_vars);
@@ -138,7 +188,7 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
             .map(|chunk| {
                 let mut local_bwd_sum = [[E::ZERO; ROBP_WIDTH]; 4];
                 for &y in chunk {
-                    let cd = c_bits[i][y] * 2 + d_bits[i][y];
+                    let cd = cd_bits[i][y] as usize;
                     let w = weights[y];
                     for s in 0..ROBP_WIDTH {
                         local_bwd_sum[cd][s] += w * bwd[i + 1][y][s];
@@ -220,7 +270,7 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
                 let start = chunk_idx * batch_size;
                 for (j, w) in w_chunk.iter_mut().enumerate() {
                     let y = start + j;
-                    let cd = c_bits[i][y] * 2 + d_bits[i][y];
+                    let cd = cd_bits[i][y] as usize;
                     *w *= eq_cd[cd];
                 }
             });
@@ -235,6 +285,7 @@ pub fn assist_sumcheck_prove<E: ExtensionField>(
     }
 
     (
+        claimed_sum,
         IOPProof {
             proofs: proof_messages,
         },

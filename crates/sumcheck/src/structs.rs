@@ -99,6 +99,7 @@ pub struct IOPProverState<'a, E: ExtensionField> {
     pub(crate) max_num_variables: usize,
     pub(crate) poly_meta: Vec<PolyMeta>,
     pub(crate) final_evaluations: Option<Vec<Vec<E>>>,
+    pub(crate) claimed_sum: E,
     /// phase 1 and phase 2 sumcheck we share similar implementation
     /// thus this option variable only use for phase 1 sumcheck to mark how many variables belongs to phase 2
     pub(crate) phase2_numvar: Option<usize>,

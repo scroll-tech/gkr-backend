@@ -282,8 +282,8 @@ pub mod jagged;
 pub use jagged::{
     JAGGED_RESHAPE_GROUP_WIDTH, Jagged, JaggedBatchOpenProof, JaggedCommitment,
     JaggedCommitmentWithWitness, JaggedProof, JaggedSumcheckInput, assist_sumcheck_prove,
-    evaluate_g, evaluate_g_backward, evaluate_g_forward, jagged_batch_open, jagged_batch_verify,
-    jagged_commit, jagged_sumcheck_prove,
+    assist_sumcheck_prove_and_append_claim, evaluate_g, evaluate_g_backward, evaluate_g_forward,
+    jagged_batch_open, jagged_batch_verify, jagged_commit, jagged_sumcheck_prove,
 };
 #[cfg(feature = "whir")]
 extern crate whir as whir_external;
