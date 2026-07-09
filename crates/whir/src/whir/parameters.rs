@@ -71,7 +71,7 @@ impl<E: ExtensionField> WhirConfig<E> {
         let protocol_security_level =
             0.max(whir_parameters.security_level - whir_parameters.pow_bits);
 
-        let starting_domain = Domain::new(
+        let starting_domain = Domain::<E>::new(
             1 << mv_parameters.num_variables,
             whir_parameters.starting_log_inv_rate,
         )

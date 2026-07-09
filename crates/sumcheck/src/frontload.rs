@@ -8,7 +8,7 @@ use multilinear_extensions::{
     virtual_poly::{MonomialTerms, VPAuxInfo, VirtualPolynomial},
     virtual_polys::{PolyMeta, VirtualPolynomials},
 };
-use p3::field::FieldAlgebra;
+use p3::field::PrimeCharacteristicRing;
 use rayon::prelude::*;
 use transcript::{Challenge, Transcript};
 
@@ -588,7 +588,7 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
             .product::<E>();
         let degree = metadata.degree;
         let evals = (0..=degree).map(|eval_idx| {
-            let z = E::from_canonical_u64(eval_idx as u64);
+            let z = E::from_u64(eval_idx as u64);
             product * (0..degree).map(|_| z).product::<E>()
         });
         self.add_evaluations(acc, degree, scalar_to_ext(&term.scalar), evals);
@@ -730,7 +730,7 @@ impl<'a, E: ExtensionField> WorkingState<'a, E> {
         let scalar = scalar_to_ext(&term.scalar);
         for_each_active_lane(lane_count, required_ones_mask, |lane| {
             for (z_idx, eval) in evaluations.iter_mut().enumerate() {
-                let z = E::from_canonical_u64(z_idx as u64);
+                let z = E::from_u64(z_idx as u64);
                 let product = term
                     .product
                     .iter()
@@ -1013,7 +1013,7 @@ fn term_round_evaluations_across_workers<'a, E: ExtensionField>(
 
     for_each_active_lane(lane_count, required_ones_mask, |lane| {
         for (z_idx, eval) in evaluations.iter_mut().enumerate() {
-            let z = E::from_canonical_u64(z_idx as u64);
+            let z = E::from_u64(z_idx as u64);
             let mut term_eval = E::ZERO;
             for group_key in layout.future_group_keys(workers, round) {
                 let product = term

@@ -308,7 +308,7 @@ pub mod test_util {
     use itertools::Itertools;
 
     #[cfg(test)]
-    use rand::{distributions::Standard, prelude::Distribution, rngs::OsRng};
+    use rand::rngs::OsRng;
     #[cfg(test)]
     use transcript::BasicTranscript;
 
@@ -356,7 +356,6 @@ pub mod test_util {
         num_vars_end: usize,
     ) where
         Pcs: PolynomialCommitmentScheme<E>,
-        Standard: Distribution<E::BaseField>,
     {
         use multilinear_extensions::mle::ArcMultilinearExtension;
 
@@ -409,7 +408,6 @@ pub mod test_util {
     ) where
         E: ExtensionField,
         Pcs: PolynomialCommitmentScheme<E>,
-        Standard: Distribution<E::BaseField>,
     {
         use multilinear_extensions::mle::ArcMultilinearExtension;
 
@@ -469,7 +467,6 @@ pub mod test_util {
     ) where
         E: ExtensionField,
         Pcs: PolynomialCommitmentScheme<E>,
-        Standard: Distribution<E::BaseField>,
     {
         for num_vars in num_vars_start..num_vars_end {
             let (pp, vp) = setup_pcs::<E, Pcs>(num_vars);

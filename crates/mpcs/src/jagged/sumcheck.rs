@@ -480,7 +480,7 @@ mod tests {
     use super::*;
     use ff_ext::{FromUniformBytes, GoldilocksExt2};
     use multilinear_extensions::virtual_poly::{VPAuxInfo, build_eq_x_r_vec};
-    use p3::{field::FieldAlgebra, goldilocks::Goldilocks};
+    use p3::{field::PrimeCharacteristicRing, goldilocks::Goldilocks};
     use rand::thread_rng;
     use std::marker::PhantomData;
     use sumcheck::structs::IOPVerifierState;
@@ -501,7 +501,7 @@ mod tests {
         let num_giga_vars = 4; // ceil(log2(12)) = 4, 2^4 = 16
 
         let q_evals: Vec<F> = (0..total_evals)
-            .map(|i| F::from_canonical_u64(i as u64 + 1))
+            .map(|i| F::from_u64(i as u64 + 1))
             .collect();
 
         let cumulative_heights: Vec<usize> = (0..=num_polys).map(|i| i * poly_height).collect();
@@ -562,7 +562,7 @@ mod tests {
         let num_giga_vars = 16; // 2^16 = 65536
 
         let q_evals: Vec<F> = (0..total_evals)
-            .map(|i| F::from_canonical_u64((i as u64 * 7 + 3) % (1 << 20)))
+            .map(|i| F::from_u64((i as u64 * 7 + 3) % (1 << 20)))
             .collect();
 
         let cumulative_heights: Vec<usize> = (0..=num_polys).map(|i| i * poly_height).collect();
@@ -614,7 +614,7 @@ mod tests {
         let num_giga_vars = 25;
 
         let q_evals: Vec<F> = (0..total_evals)
-            .map(|i| F::from_canonical_u64((i as u64 * 13 + 7) % (1 << 30)))
+            .map(|i| F::from_u64((i as u64 * 13 + 7) % (1 << 30)))
             .collect();
 
         let cumulative_heights: Vec<usize> = (0..=num_polys).map(|i| i * poly_height).collect();

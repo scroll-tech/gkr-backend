@@ -13,7 +13,7 @@ use multilinear_extensions::{
     mle::MultilinearExtension, monomial::Term, util::max_usable_threads,
     virtual_polys::VirtualPolynomials,
 };
-use p3::field::FieldAlgebra;
+use p3::field::PrimeCharacteristicRing;
 use rand::thread_rng;
 use sumcheck::structs::{IOPProverState, SumcheckProverMode};
 use transcript::BasicTranscript as Transcript;

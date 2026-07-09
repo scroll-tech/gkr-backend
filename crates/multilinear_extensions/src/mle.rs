@@ -12,7 +12,7 @@ use ff_ext::{ExtensionField, FromUniformBytes};
 #[cfg(not(feature = "parallel"))]
 use itertools::Itertools;
 use p3::{
-    field::{Field, FieldAlgebra},
+    field::{Field, PrimeCharacteristicRing},
     maybe_rayon::prelude::*,
 };
 use rand::Rng;
@@ -250,7 +250,7 @@ impl<'a, E: ExtensionField> PartialEq for FieldType<'a, E> {
             (FieldType::Base(a), FieldType::Ext(b)) | (FieldType::Ext(b), FieldType::Base(a)) => a
                 .par_iter()
                 .zip_eq(b.par_iter())
-                .all(|(a, b)| E::from_base(*a) == *b),
+                .all(|(a, b)| E::from_ref_base(a) == *b),
             _ => self.is_zero() && other.is_zero(),
         }
     }
@@ -685,7 +685,8 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
 
     #[inline(always)]
     fn eval_pair_base_tail(lo: E::BaseField, point: E) -> E {
-        E::from_base(lo) + (E::ZERO - E::from_base(lo)) * point
+        let lo = E::from_ref_base(&lo);
+        lo + (E::ZERO - lo) * point
     }
 
     #[inline(always)]
@@ -1244,13 +1245,13 @@ impl<'a, E: ExtensionField> MultilinearExtension<'a, E> {
                 slice
                     .iter()
                     .enumerate()
-                    .map(|(i, v)| E::BaseField::from_canonical_u32(i as u32 + 1) + *v)
+                    .map(|(i, v)| E::BaseField::from_u32(i as u32 + 1) + *v)
                     .product::<E::BaseField>(),
             ),
             FieldType::Ext(slice) => slice
                 .iter()
                 .enumerate()
-                .map(|(i, v)| E::from_canonical_u32(i as u32 + 1) + *v)
+                .map(|(i, v)| E::from_u32(i as u32 + 1) + *v)
                 .product::<E>(),
             _ => unreachable!(),
         }

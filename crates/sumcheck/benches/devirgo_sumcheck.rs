@@ -7,7 +7,7 @@ use criterion::*;
 use either::Either;
 use ff_ext::{ExtensionField, GoldilocksExt2};
 use itertools::Itertools;
-use p3::field::FieldAlgebra;
+use p3::field::PrimeCharacteristicRing;
 use rand::{Rng, thread_rng};
 use sumcheck::{
     frontload,

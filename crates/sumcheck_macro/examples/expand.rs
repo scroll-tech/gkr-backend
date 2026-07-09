@@ -9,7 +9,7 @@ use multilinear_extensions::{
     virtual_poly::VirtualPolynomial,
     virtual_polys::PolyMeta,
 };
-use p3::field::FieldAlgebra;
+use p3::field::PrimeCharacteristicRing;
 use rand::rngs::OsRng;
 use sumcheck::util::AdditiveArray;
 

@@ -130,7 +130,7 @@ use multilinear_extensions::{
     util::ceil_log2,
     virtual_poly::{VPAuxInfo, build_eq_x_r_vec},
 };
-use p3::{field::FieldAlgebra, maybe_rayon::prelude::*};
+use p3::{field::PrimeCharacteristicRing, maybe_rayon::prelude::*};
 use serde::{Serialize, Serializer, de::DeserializeOwned};
 use std::sync::Arc;
 use transcript::Transcript;
@@ -809,13 +809,10 @@ where
         transcript: &mut impl Transcript<E>,
     ) -> Result<(), Error> {
         InnerPcs::write_commitment(&comm.inner, transcript)?;
-        transcript
-            .append_field_element(&E::BaseField::from_canonical_usize(comm.reshape_log_height));
-        transcript.append_field_element(&E::BaseField::from_canonical_usize(
-            comm.cumulative_heights.len(),
-        ));
+        transcript.append_field_element(&E::BaseField::from_usize(comm.reshape_log_height));
+        transcript.append_field_element(&E::BaseField::from_usize(comm.cumulative_heights.len()));
         for height in &comm.cumulative_heights {
-            transcript.append_field_element(&E::BaseField::from_canonical_usize(*height));
+            transcript.append_field_element(&E::BaseField::from_usize(*height));
         }
         Ok(())
     }
@@ -1001,7 +998,9 @@ mod tests {
     };
     use ff_ext::GoldilocksExt2;
     use multilinear_extensions::mle::MultilinearExtension;
-    use p3::{field::FieldAlgebra, goldilocks::Goldilocks, matrix::dense::RowMajorMatrix};
+    use p3::{
+        field::PrimeCharacteristicRing, goldilocks::Goldilocks, matrix::dense::RowMajorMatrix,
+    };
 
     type F = Goldilocks;
     type E = GoldilocksExt2;
@@ -1009,7 +1008,7 @@ mod tests {
 
     fn make_rmm(num_rows: usize, num_cols: usize) -> WitnessRowMajorMatrix<F> {
         let values: Vec<F> = (0..num_rows * num_cols)
-            .map(|i| F::from_canonical_u64(i as u64 + 1))
+            .map(|i| F::from_u64(i as u64 + 1))
             .collect();
         WitnessRowMajorMatrix::new_by_inner_matrix(
             RowMajorMatrix::new(values, num_cols),

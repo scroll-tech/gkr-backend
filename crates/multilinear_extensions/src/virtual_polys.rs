@@ -393,7 +393,7 @@ impl<'a, E: ExtensionField> VirtualPolynomials<'a, E> {
                 let scalar = E::random(&mut *rng);
                 monimial_term.push(Term { scalar, product });
                 let scale = if scale_suffix_missing_vars {
-                    E::from_canonical_u64(1 << (max_num_variables - nv))
+                    E::from_u64(1 << (max_num_variables - nv))
                 } else {
                     E::ONE
                 };

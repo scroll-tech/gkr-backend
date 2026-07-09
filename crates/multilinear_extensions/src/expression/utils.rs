@@ -891,7 +891,7 @@ mod tests {
     };
     use either::Either;
     use ff_ext::{BabyBearExt4, ExtensionField};
-    use p3::{babybear::BabyBear, field::FieldAlgebra};
+    use p3::{babybear::BabyBear, field::PrimeCharacteristicRing};
     use std::ops::Neg;
 
     type E = BabyBearExt4;
@@ -934,9 +934,9 @@ mod tests {
     fn test_normal_expr_compression_to_dag_helper() {
         let a = Expression::<E>::WitIn(0);
         let b = Expression::<E>::WitIn(1);
-        let s2 = Expression::<E>::Constant(Either::Left(B::from_canonical_u32(2)));
-        let s3 = Expression::<E>::Constant(Either::Left(B::from_canonical_u32(3)));
-        let s4 = Expression::<E>::Constant(Either::Left(B::from_canonical_u32(4)));
+        let s2 = Expression::<E>::Constant(Either::Left(B::from_u32(2)));
+        let s3 = Expression::<E>::Constant(Either::Left(B::from_u32(3)));
+        let s4 = Expression::<E>::Constant(Either::Left(B::from_u32(4)));
 
         let e: Expression<E> = s3.expr() * (s2.expr() * a.expr() * b.expr() + s4.expr());
         let (
@@ -996,9 +996,8 @@ mod tests {
         let w1 = Expression::<E>::WitIn(1);
         let c0 = Expression::<E>::Challenge(0, 1, E::ONE, E::ZERO);
         let c1 = Expression::<E>::Challenge(1, 1, E::ONE, E::ZERO);
-        let constant_2 = Expression::<E>::Constant(Either::Left(B::from_canonical_u32(2)));
-        let constant_negative_1 =
-            Expression::<E>::Constant(Either::Left(B::from_canonical_u32(1).neg()));
+        let constant_2 = Expression::<E>::Constant(Either::Left(B::from_u32(2)));
+        let constant_negative_1 = Expression::<E>::Constant(Either::Left(B::from_u32(1).neg()));
 
         let e: Expression<E> = w1.expr()
             * (c1.expr()

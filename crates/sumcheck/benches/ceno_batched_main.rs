@@ -9,7 +9,7 @@ use multilinear_extensions::{
     util::max_usable_threads,
     virtual_polys::{VirtualPolynomials, VirtualPolynomialsBuilder},
 };
-use p3::field::FieldAlgebra;
+use p3::field::PrimeCharacteristicRing;
 use rand::{SeedableRng, rngs::StdRng};
 use sumcheck::structs::{IOPProverState, SumcheckProverMode};
 use transcript::BasicTranscript as Transcript;
@@ -214,7 +214,7 @@ fn build_case<'a>(scale: &str, max_vars_override: Option<usize>) -> CenoBatchedM
             let product = (0..degree)
                 .map(|offset| mle_start + ((term_idx * 3 + offset * 5) % shape.num_mles))
                 .collect_vec();
-            let scalar = E::from_canonical_u64(((chip_idx + 1) * 17 + term_idx + 1) as u64);
+            let scalar = E::from_u64(((chip_idx + 1) * 17 + term_idx + 1) as u64);
             terms.push(TermShape { scalar, product });
         }
     }

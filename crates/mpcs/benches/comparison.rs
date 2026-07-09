@@ -7,7 +7,9 @@ use mpcs::{
     jagged_batch_verify, jagged_commit,
 };
 use multilinear_extensions::{util::ceil_log2, virtual_poly::build_eq_x_r_vec_sequential};
-use p3::{babybear::BabyBear, field::FieldAlgebra, matrix::Matrix, maybe_rayon::prelude::*};
+use p3::{
+    babybear::BabyBear, field::PrimeCharacteristicRing, matrix::Matrix, maybe_rayon::prelude::*,
+};
 use rand::{Rng, thread_rng};
 use transcript::{BasicTranscript, Transcript};
 use witness::{InstancePaddingStrategy, RowMajorMatrix as WitnessRowMajorMatrix};
@@ -23,7 +25,7 @@ const NUM_COLS: usize = 32;
 fn make_rmm(num_rows: usize, num_cols: usize) -> WitnessRowMajorMatrix<F> {
     let values: Vec<F> = (0..num_rows * num_cols)
         .into_par_iter()
-        .map(|i| F::from_canonical_u32(((i as u64 * 13 + 7) % (1 << 30)) as u32))
+        .map(|i| F::from_u32(((i as u64 * 13 + 7) % (1 << 30)) as u32))
         .collect();
     WitnessRowMajorMatrix::new_by_values(values, num_cols, InstancePaddingStrategy::Default)
 }

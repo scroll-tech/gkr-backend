@@ -19,7 +19,7 @@ generic-array.workspace = true
 k256 = { version = "0.13.3", features = ["expose-field"] }
 num.workspace = true
 p256 = { version = "0.13.2", features = ["expose-field"] }
-p3-field.workspace = true
+p3.workspace = true
 serde = { workspace = true, features = ["derive"] }
 typenum = "1.17.0"
 
@@ -31,7 +31,7 @@ rug = { version = "1.26.1", optional = true }
 
 [dev-dependencies]
 num = { version = "0.4.3", features = ["rand"] }
-rand = "0.8.5"
+rand.workspace = true
 
 [features]
 bigint-rug = ["rug"]

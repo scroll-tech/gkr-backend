@@ -305,7 +305,7 @@ pub fn evaluate_g<E: ExtensionField>(z1: &[E], z2: &[E], z3: &[E], z4: &[E]) -> 
 mod tests {
     use ff_ext::{BabyBearExt4, FromUniformBytes};
     use multilinear_extensions::virtual_poly::build_eq_x_r_vec;
-    use p3::field::FieldAlgebra;
+    use p3::field::PrimeCharacteristicRing;
     use rand::thread_rng;
 
     use super::*;

@@ -24,4 +24,3 @@ When Copilot reviews this PR, apply `.github/copilot-instructions.md` strictly.
 - Prioritize soundness, performance, and architecture risks over style.
 - Output order: findings by severity, then open questions, then brief summary.
 - If PR description is empty or missing key context, report `PR metadata: description` as a finding.
-

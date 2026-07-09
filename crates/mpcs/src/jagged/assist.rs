@@ -339,7 +339,7 @@ mod tests {
     };
     use ff_ext::{FromUniformBytes, GoldilocksExt2};
     use multilinear_extensions::{util::ceil_log2, virtual_poly::build_eq_x_r_vec};
-    use p3::field::FieldAlgebra;
+    use p3::field::PrimeCharacteristicRing;
     use rand::thread_rng;
     use std::marker::PhantomData;
     use sumcheck::structs::IOPVerifierState;

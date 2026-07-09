@@ -13,7 +13,7 @@ use multilinear_extensions::{
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
     virtual_polys::VirtualPolynomials,
 };
-use p3::field::FieldAlgebra;
+use p3::field::PrimeCharacteristicRing;
 use rand::{Rng, SeedableRng, rngs::StdRng, thread_rng};
 use std::sync::Arc;
 use transcript::{BasicTranscript, Transcript};
@@ -573,11 +573,11 @@ fn test_runtime_prover_modes_are_compatible_helper<E: ExtensionField>() {
 #[test]
 fn test_compact_mle_matches_zero_padded_sumcheck() {
     let eval = vec![
-        GoldilocksExt2::from_canonical_u32(2),
-        GoldilocksExt2::from_canonical_u32(3),
-        GoldilocksExt2::from_canonical_u32(5),
-        GoldilocksExt2::from_canonical_u32(7),
-        GoldilocksExt2::from_canonical_u32(11),
+        GoldilocksExt2::from_u32(2),
+        GoldilocksExt2::from_u32(3),
+        GoldilocksExt2::from_u32(5),
+        GoldilocksExt2::from_u32(7),
+        GoldilocksExt2::from_u32(11),
     ];
     let compact = MultilinearExtension::from_evaluations_ext_vec_compact(3, eval.clone());
     let mut padded_eval = eval;
@@ -753,7 +753,7 @@ fn test_extrapolation() {
         let mut prng = rand::thread_rng();
         let poly = DensePolynomial::rand_coeffs(degree, &mut prng);
         let evals = (0..=degree)
-            .map(|i| poly.evaluate(&GoldilocksExt2::from_canonical_u64(i as u64)))
+            .map(|i| poly.evaluate(&GoldilocksExt2::from_u64(i as u64)))
             .collect::<Vec<_>>();
         let query = GoldilocksExt2::random(&mut prng);
         assert_eq!(

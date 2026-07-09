@@ -28,7 +28,7 @@ use crate::{
         merge_sumcheck_prover_state,
     },
 };
-use p3::field::FieldAlgebra;
+use p3::field::PrimeCharacteristicRing;
 
 struct Phase1Workers<'a, E: ExtensionField> {
     workers_states: Vec<Phase1WorkerState<'a, E>>,
@@ -713,7 +713,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                         // This amortises the r0 multiplications across all x values.
                         let evals_len = f[prod[0]].evaluations().len();
                         let x_felts: Vec<E::BaseField> = (0..=degree)
-                            .map(|x| E::BaseField::from_canonical_u32(x as u32))
+                            .map(|x| E::BaseField::from_u32(x as u32))
                             .collect();
                         let mut endpoints = vec![(E::ZERO, E::ZERO); degree];
                         let quad_len = evals_len / 4 * 4;
@@ -752,7 +752,7 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                         // then evaluate for all x.
                         let evals_len = f[prod[0]].evaluations().len();
                         let x_felts: Vec<E::BaseField> = (0..=degree)
-                            .map(|x| E::BaseField::from_canonical_u32(x as u32))
+                            .map(|x| E::BaseField::from_u32(x as u32))
                             .collect();
                         let mut endpoints = vec![(E::ZERO, E::ZERO); degree];
                         let pair_len = largest_even_below(evals_len);
