@@ -187,11 +187,34 @@ impl<T: Sync + Send + Copy + PrimeCharacteristicRing> RowMajorMatrix<T> {
         storage: D,
         layout: DeviceMatrixLayout,
     ) -> Self {
-        let num_row_padded = next_pow2_instance_padding(num_rows);
+        Self::new_by_rotation_device_backing(
+            num_rows,
+            0,
+            num_cols,
+            padding_strategy,
+            storage,
+            layout,
+        )
+    }
+
+    /// Create rotation-aware matrix metadata backed only by device storage.
+    ///
+    /// `num_rows` remains the logical instance count while `height()` includes
+    /// the physical rows introduced by `log2_num_rotation`.
+    pub fn new_by_rotation_device_backing<D: Any + Send + Sync + 'static>(
+        num_rows: usize,
+        log2_num_rotation: usize,
+        num_cols: usize,
+        padding_strategy: InstancePaddingStrategy,
+        storage: D,
+        layout: DeviceMatrixLayout,
+    ) -> Self {
+        let num_row_padded =
+            next_pow2_instance_padding(num_rows) * Self::num_rotation(log2_num_rotation);
         let mut matrix = RowMajorMatrix {
             inner: p3::matrix::dense::RowMajorMatrix::new(vec![], num_cols),
             num_rows,
-            log2_num_rotation: 0,
+            log2_num_rotation,
             is_padded: matches!(padding_strategy, InstancePaddingStrategy::Default),
             padding_strategy,
             host_elided_padded_height: Some(num_row_padded),
@@ -502,5 +525,32 @@ mod tests {
         matrix.set_device_backing(vec![1_u8, 2, 3], DeviceMatrixLayout::RowMajor);
         let _ = &mut *matrix;
         assert!(!matrix.has_device_backing());
+    }
+
+    #[test]
+    fn rotation_device_backing_preserves_logical_and_physical_shape() {
+        let matrix = RowMajorMatrix::<Goldilocks>::new_by_rotation_device_backing(
+            3,
+            5,
+            7,
+            InstancePaddingStrategy::Default,
+            vec![1_u8, 2, 3],
+            DeviceMatrixLayout::ColMajor,
+        );
+
+        assert_eq!(matrix.num_instances(), 3);
+        assert_eq!(matrix.occupied_physical_rows(), 3 * 32);
+        assert_eq!(matrix.height(), 4 * 32);
+        assert_eq!(matrix.num_vars(), 7);
+        assert_eq!(matrix.width(), 7);
+        assert!(matrix.has_device_backing());
+        assert_eq!(
+            matrix.device_backing_layout(),
+            Some(DeviceMatrixLayout::ColMajor)
+        );
+        assert_eq!(
+            matrix.device_backing_ref::<Vec<u8>>(),
+            Some(&vec![1_u8, 2, 3])
+        );
     }
 }
