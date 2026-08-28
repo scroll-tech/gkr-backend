@@ -137,10 +137,10 @@ pub fn monomialize_expr_to_wit_terms<E: ExtensionField>(
                 product.iter_mut().for_each(|t| match t {
                     Expression::WitIn(_) => (),
                     Expression::Fixed(Fixed(fixed_id)) => {
-                        *t = Expression::WitIn(fixed_offset + (*fixed_id as u16));
+                        *t = Expression::WitIn(fixed_offset + (*fixed_id as WitnessId));
                     }
                     Expression::Instance(Instance(instance_id)) => {
-                        *t = Expression::WitIn(instance_offset + (*instance_id as u16));
+                        *t = Expression::WitIn(instance_offset + (*instance_id as WitnessId));
                     }
                     Expression::StructuralWitIn(structural_wit_id, _) => {
                         *t = Expression::WitIn(structural_witin_offset + *structural_wit_id);
@@ -168,13 +168,13 @@ pub fn expr_convert_to_witins<E: ExtensionField>(
 
     match expr {
         Expression::Fixed(fixed_id) => {
-            *expr = Expression::WitIn(fixed_offset + (fixed_id.0 as u16))
+            *expr = Expression::WitIn(fixed_offset + (fixed_id.0 as WitnessId))
         }
         Expression::WitIn(..) => (),
         Expression::StructuralWitIn(structural_wit_id, ..) => {
             *expr = Expression::WitIn(structural_witin_offset + *structural_wit_id)
         }
-        Expression::Instance(i) => *expr = Expression::WitIn(instance_offset + (i.0 as u16)),
+        Expression::Instance(i) => *expr = Expression::WitIn(instance_offset + (i.0 as WitnessId)),
         Expression::InstanceScalar(..) => (),
         Expression::Constant(..) => (),
         Expression::Sum(a, b) => {
@@ -710,7 +710,7 @@ fn expr_compression_to_dag_helper<E: ExtensionField>(
 // trie
 #[derive(Default)]
 struct TrieNode {
-    children: BTreeMap<u16, TrieNode>, // Sorted keys: commutative grouping
+    children: BTreeMap<WitnessId, TrieNode>, // Sorted keys: commutative grouping
     scalar_indices: Vec<usize>,
 }
 pub fn build_factored_dag_commutative<E: ExtensionField>(
@@ -722,7 +722,7 @@ pub fn build_factored_dag_commutative<E: ExtensionField>(
 
     // ---- Step 1: canonicalize products (commutative) ----
     for term in terms {
-        let mut ids: Vec<u16> = term
+        let mut ids: Vec<WitnessId> = term
             .product
             .iter()
             .map(|e| match e {
