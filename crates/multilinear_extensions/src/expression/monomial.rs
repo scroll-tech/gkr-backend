@@ -6,10 +6,35 @@ use super::Expression;
 use Expression::*;
 use p3::field::PrimeCharacteristicRing;
 use std::{collections::BTreeMap, fmt::Display, iter::Sum};
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 impl<E: ExtensionField> Expression<E> {
     pub fn get_monomial_terms(&self) -> Vec<Term<Expression<E>, Expression<E>>> {
-        Self::combine(self.distribute())
+        // The main zerocheck expression is a large sum of independent terms.
+        // Split only that associative frontier: indexed Rayon collection keeps
+        // the exact left-to-right term order consumed by `combine`, preserving
+        // the resulting symbolic circuit and transcript identity.
+        #[cfg(feature = "parallel")]
+        let distributed = {
+            let mut addends = Vec::new();
+            self.collect_sum_addends(&mut addends);
+            if addends.len() > 1 {
+                addends
+                    .par_iter()
+                    .map(|addend| addend.distribute())
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .flatten()
+                    .collect()
+            } else {
+                self.distribute()
+            }
+        };
+        #[cfg(not(feature = "parallel"))]
+        let distributed = self.distribute();
+
+        Self::combine(distributed)
             .into_iter()
             // filter coeff = 0 monimial terms
             .filter(|Term { scalar, .. }| match scalar {
@@ -23,6 +48,16 @@ impl<E: ExtensionField> Expression<E> {
                 _ => true,
             })
             .collect_vec()
+    }
+
+    fn collect_sum_addends<'a>(&'a self, addends: &mut Vec<&'a Self>) {
+        match self {
+            Sum(lhs, rhs) => {
+                lhs.collect_sum_addends(addends);
+                rhs.collect_sum_addends(addends);
+            }
+            _ => addends.push(self),
+        }
     }
 
     fn distribute(&self) -> Vec<Term<Expression<E>, Expression<E>>> {
