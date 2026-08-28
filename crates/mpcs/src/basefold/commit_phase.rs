@@ -220,18 +220,27 @@ where
             .for_each(|prover_state| prover_state.fix_var(p.elements));
     }
 
-    // deal with log(#thread) basefold rounds
-    let merge_sumcheck_prover_state_span = entered_span!("merge_sumcheck_prover_state");
-    let poly = merge_sumcheck_prover_state(&prover_states);
-    let mut prover_states = vec![IOPProverState::prover_init_with_extrapolation_aux(
-        true, poly, None, None,
-    )];
-    exit_span!(merge_sumcheck_prover_state_span);
+    let remaining_rounds = num_rounds.saturating_sub(max_num_vars - log2_num_threads);
+    // When phase one consumed every round, its sole worker already contains
+    // the final MLE evaluations.  Re-wrapping that constant polynomial in a
+    // fresh sumcheck state is invalid (there is no phase-two variable to
+    // prove) and used to panic for a one-thread opening.
+    let mut prover_states = if remaining_rounds == 0 {
+        assert_eq!(prover_states.len(), 1);
+        prover_states
+    } else {
+        let merge_sumcheck_prover_state_span = entered_span!("merge_sumcheck_prover_state");
+        let poly = merge_sumcheck_prover_state(&prover_states);
+        let prover_states = vec![IOPProverState::prover_init_with_extrapolation_aux(
+            true, poly, None, None,
+        )];
+        exit_span!(merge_sumcheck_prover_state_span);
+        prover_states
+    };
 
     let mut challenge = None;
 
     let sumcheck_phase2 = entered_span!("sumcheck_phase2");
-    let remaining_rounds = num_rounds.saturating_sub(max_num_vars - log2_num_threads);
 
     for i in 0..remaining_rounds {
         challenge = basefold_one_round::<E, Spec>(
