@@ -5,32 +5,18 @@ use serde::{Deserialize, Serialize};
 use super::Expression;
 use Expression::*;
 use p3::field::PrimeCharacteristicRing;
-use std::{collections::BTreeMap, fmt::Display, iter::Sum};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
+use std::{collections::BTreeMap, fmt::Display, iter::Sum};
 
 impl<E: ExtensionField> Expression<E> {
     pub fn get_monomial_terms(&self) -> Vec<Term<Expression<E>, Expression<E>>> {
-        // The main zerocheck expression is a large sum of independent terms.
-        // Split only that associative frontier: indexed Rayon collection keeps
-        // the exact left-to-right term order consumed by `combine`, preserving
-        // the resulting symbolic circuit and transcript identity.
+        // Preserve the serial expression order while distributing independent
+        // subtrees.  `distribute_parallel` collects each left-hand product
+        // expansion by indexed position, so `combine` receives exactly the
+        // same term stream as the serial implementation.
         #[cfg(feature = "parallel")]
-        let distributed = {
-            let mut addends = Vec::new();
-            self.collect_sum_addends(&mut addends);
-            if addends.len() > 1 {
-                addends
-                    .par_iter()
-                    .map(|addend| addend.distribute())
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .flatten()
-                    .collect()
-            } else {
-                self.distribute()
-            }
-        };
+        let distributed = self.distribute_parallel();
         #[cfg(not(feature = "parallel"))]
         let distributed = self.distribute();
 
@@ -50,14 +36,56 @@ impl<E: ExtensionField> Expression<E> {
             .collect_vec()
     }
 
-    fn collect_sum_addends<'a>(&'a self, addends: &mut Vec<&'a Self>) {
+    #[cfg(feature = "parallel")]
+    fn distribute_parallel(&self) -> Vec<Term<Expression<E>, Expression<E>>> {
         match self {
+            Constant(_) | Challenge(..) | InstanceScalar(_) | Fixed(_) | Instance(_) | WitIn(_)
+            | StructuralWitIn(..) => self.distribute(),
             Sum(lhs, rhs) => {
-                lhs.collect_sum_addends(addends);
-                rhs.collect_sum_addends(addends);
+                let (mut lhs_terms, rhs_terms) =
+                    rayon::join(|| lhs.distribute_parallel(), || rhs.distribute_parallel());
+                lhs_terms.extend(rhs_terms);
+                lhs_terms
             }
-            _ => addends.push(self),
+            Product(lhs, rhs) => {
+                let (lhs_terms, rhs_terms) =
+                    rayon::join(|| lhs.distribute_parallel(), || rhs.distribute_parallel());
+                Self::parallel_product(lhs_terms, rhs_terms)
+            }
+            ScaledSum(x, a, b) => {
+                let (mut b_terms, (x_terms, a_terms)) = rayon::join(
+                    || b.distribute_parallel(),
+                    || rayon::join(|| x.distribute_parallel(), || a.distribute_parallel()),
+                );
+                b_terms.extend(Self::parallel_product(x_terms, a_terms));
+                b_terms
+            }
         }
+    }
+
+    #[cfg(feature = "parallel")]
+    fn parallel_product(
+        lhs_terms: Vec<Term<Expression<E>, Expression<E>>>,
+        rhs_terms: Vec<Term<Expression<E>, Expression<E>>>,
+    ) -> Vec<Term<Expression<E>, Expression<E>>> {
+        // `collect::<Vec<_>>()` on this indexed iterator retains left-hand
+        // order. Flattening then produces the serial iproduct! order: every
+        // right term for lhs[0], then every right term for lhs[1], and so on.
+        lhs_terms
+            .par_iter()
+            .map(|lhs| {
+                rhs_terms
+                    .iter()
+                    .map(|rhs| Term {
+                        scalar: &lhs.scalar * &rhs.scalar,
+                        product: chain!(&lhs.product, &rhs.product).cloned().collect(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .flatten()
+            .collect()
     }
 
     fn distribute(&self) -> Vec<Term<Expression<E>, Expression<E>>> {
