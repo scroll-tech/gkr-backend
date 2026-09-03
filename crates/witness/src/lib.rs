@@ -287,6 +287,12 @@ impl<T: Sync + Send + Copy + PrimeCharacteristicRing> RowMajorMatrix<T> {
         self.device_backing.is_some()
     }
 
+    /// True when this matrix carries shape/device metadata but deliberately
+    /// does not retain a host copy of its padded values.
+    pub fn host_values_are_elided(&self) -> bool {
+        self.host_elided_padded_height.is_some()
+    }
+
     /// Report how the attached device buffer is laid out, if present.
     pub fn device_backing_layout(&self) -> Option<DeviceMatrixLayout> {
         self.device_backing.as_ref().map(|backing| backing.layout)
